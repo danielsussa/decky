@@ -1,34 +1,65 @@
-import Versions from './components/Versions'
-import electronLogo from './assets/electron.svg'
+import { useState } from 'react'
+
+const LIVE_VIEW_DEFAULT = 'http://127.0.0.1:6789'
 
 function App(): React.JSX.Element {
-  const ipcHandle = (): void => window.electron.ipcRenderer.send('ping')
+  const [liveViewUrl, setLiveViewUrl] = useState(LIVE_VIEW_DEFAULT)
+  const [liveViewKey, setLiveViewKey] = useState(0)
 
   return (
-    <>
-      <img alt="logo" className="logo" src={electronLogo} />
-      <div className="creator">Powered by electron-vite</div>
-      <div className="text">
-        Build an Electron app with <span className="react">React</span>
-        &nbsp;and <span className="ts">TypeScript</span>
-      </div>
-      <p className="tip">
-        Please try pressing <code>F12</code> to open the devTool
-      </p>
-      <div className="actions">
-        <div className="action">
-          <a href="https://electron-vite.org/" target="_blank" rel="noreferrer">
-            Documentation
-          </a>
-        </div>
-        <div className="action">
-          <a target="_blank" rel="noreferrer" onClick={ipcHandle}>
-            Send IPC
-          </a>
-        </div>
-      </div>
-      <Versions></Versions>
-    </>
+    <div className="deck">
+      <header className="deck-titlebar">
+        <span className="deck-brand">deck</span>
+        <span className="deck-titlebar-spacer" />
+      </header>
+
+      <main className="deck-grid">
+        <section className="panel panel-terminal">
+          <div className="panel-header">terminal</div>
+          <div className="panel-body panel-placeholder">
+            <p>
+              <code>claude</code> vai rodar aqui (xterm.js + node-pty).
+            </p>
+            <p className="muted">próximo PR.</p>
+          </div>
+        </section>
+
+        <section className="panel panel-liveview">
+          <div className="panel-header">
+            <span>live view</span>
+            <input
+              className="url-input"
+              value={liveViewUrl}
+              onChange={(e) => setLiveViewUrl(e.target.value)}
+              spellCheck={false}
+            />
+            <button
+              className="icon-btn"
+              title="recarregar"
+              onClick={() => setLiveViewKey((k) => k + 1)}
+            >
+              ↻
+            </button>
+          </div>
+          <div className="panel-body panel-body-flush">
+            <iframe
+              key={liveViewKey}
+              className="liveview-frame"
+              src={liveViewUrl}
+              title="me live view"
+            />
+          </div>
+        </section>
+
+        <section className="panel panel-side">
+          <div className="panel-header">pendências</div>
+          <div className="panel-body panel-placeholder">
+            <p>parser de <code>pendencias.md</code> em breve.</p>
+            <p className="muted">próximo PR.</p>
+          </div>
+        </section>
+      </main>
+    </div>
   )
 }
 

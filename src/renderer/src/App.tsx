@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import Terminal from './components/Terminal'
 
 const LIVE_VIEW_DEFAULT = 'http://127.0.0.1:6789'
+const TERMINAL_CWD = '/Users/danielkanczuk/Documents/projects/me'
 
 function App(): React.JSX.Element {
   const [liveViewUrl, setLiveViewUrl] = useState(LIVE_VIEW_DEFAULT)
@@ -15,12 +17,12 @@ function App(): React.JSX.Element {
 
       <main className="deck-grid">
         <section className="panel panel-terminal">
-          <div className="panel-header">terminal</div>
-          <div className="panel-body panel-placeholder">
-            <p>
-              <code>claude</code> vai rodar aqui (xterm.js + node-pty).
-            </p>
-            <p className="muted">próximo PR.</p>
+          <div className="panel-header">
+            <span>terminal</span>
+            <span className="panel-header-meta">{TERMINAL_CWD.replace(/^.*\//, '')}</span>
+          </div>
+          <div className="panel-body panel-body-flush">
+            <Terminal id="main" cwd={TERMINAL_CWD} />
           </div>
         </section>
 

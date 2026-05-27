@@ -173,3 +173,35 @@ code {
   background: #000;
   display: block;
 }
+
+.panel-header-meta {
+  margin-left: auto;
+  color: var(--text-3);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+
+.terminal-host {
+  width: 100%;
+  height: 100%;
+  background: var(--bg-0);
+  padding: 8px 4px 4px 8px;
+  user-select: text;
+}
+
+.terminal-host .xterm,
+.terminal-host .xterm-viewport,
+.terminal-host .xterm-screen {
+  background: transparent !important;
+}
+
+.terminal-host .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}

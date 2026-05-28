@@ -31,12 +31,15 @@ export async function rehydratePreviews(
       if (source.type === 'markdown' && source.path && !source.content) {
         try {
           const content = await readFile(source.path, 'utf-8')
-          out[sessionId][cardId] = {
-            type: 'markdown',
-            content,
-            title: source.title ?? basename(source.path),
-            path: source.path
-          }
+          // Generated card files (.deck/cards/<id>.md) have meaningless basenames.
+          // Drop a title that's just the filename so it derives from the content
+          // (heading / first line); keep a real custom title if the bot set one.
+          const generated = source.path.includes('/.deck/cards/')
+          const bn = basename(source.path)
+          let title = source.title
+          if (generated && (!title || title === bn)) title = undefined
+          else if (!generated && !title) title = bn
+          out[sessionId][cardId] = { type: 'markdown', content, title, path: source.path }
         } catch {
           out[sessionId][cardId] = {
             type: 'markdown',

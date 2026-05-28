@@ -15,7 +15,7 @@ import { registerWorkspaceHandlers } from './workspace-store'
 import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from './mcp-installer'
 import { ensureDeckInstruction } from './claude-md-installer'
-import { resolveClaudeBin } from './claude-bin'
+import { resolveClaudeBin, readAiTitle } from './claude-bin'
 import { registerStateHandlers } from './state-store'
 
 let mainWindow: BrowserWindow | null = null
@@ -99,6 +99,7 @@ app.whenReady().then(() => {
   ipcMain.handle('preview:get-all', () => getPreviewSources())
   ipcMain.handle('preview:rehydrate', (_e, byCard) => rehydratePreviews(byCard))
   ipcMain.handle('claude:get-bin', () => resolveClaudeBin())
+  ipcMain.handle('claude:ai-title', (_e, cwd: string, uuid: string) => readAiTitle(cwd, uuid))
   ipcMain.handle('sessions:get-titles', () => getSessionTitles())
   ipcMain.handle('app:get-startup-cwd', () => process.cwd())
 

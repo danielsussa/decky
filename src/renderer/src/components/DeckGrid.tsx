@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { GridStack, type GridStackOptions, type GridStackWidget } from 'gridstack'
-import { Focus, Maximize2, Minimize2 } from 'lucide-react'
+import { Focus, Maximize2, Minimize2, Pin } from 'lucide-react'
 import 'gridstack/dist/gridstack.min.css'
 
 export interface DeckCard {
@@ -12,6 +12,7 @@ export interface DeckCard {
   minW?: number
   minH?: number
   title?: string
+  pinned?: boolean
   render: () => ReactNode
 }
 
@@ -19,6 +20,7 @@ interface DeckGridProps {
   cards: DeckCard[]
   focusedId: string | null
   onFocusChange: (id: string | null) => void
+  onTogglePin?: (id: string) => void
 }
 
 const GRID_OPTS: GridStackOptions = {
@@ -36,7 +38,8 @@ const GRID_OPTS: GridStackOptions = {
 export default function DeckGrid({
   cards,
   focusedId,
-  onFocusChange
+  onFocusChange,
+  onTogglePin
 }: DeckGridProps): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
   const gridRef = useRef<GridStack | null>(null)
@@ -91,6 +94,20 @@ export default function DeckGrid({
       >
         <div className="deck-card-header">
           <span className="deck-card-title">{c.title ?? c.id}</span>
+          {onTogglePin && (
+            <button
+              type="button"
+              className={`deck-card-icon ${c.pinned ? 'deck-card-pinned' : ''}`}
+              title={c.pinned ? 'desafixar' : 'fixar em todas as sessões'}
+              onClick={(e) => {
+                e.stopPropagation()
+                onTogglePin(c.id)
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <Pin size={13} strokeWidth={1.75} fill={c.pinned ? 'currentColor' : 'none'} />
+            </button>
+          )}
           <button
             type="button"
             className="deck-card-icon"

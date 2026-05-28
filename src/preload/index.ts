@@ -64,7 +64,9 @@ const deckApi = {
     }
   },
   claude: {
-    getBin: (): Promise<string> => ipcRenderer.invoke('claude:get-bin')
+    getBin: (): Promise<string> => ipcRenderer.invoke('claude:get-bin'),
+    aiTitle: (cwd: string, uuid: string): Promise<string | null> =>
+      ipcRenderer.invoke('claude:ai-title', cwd, uuid)
   },
   sessions: {
     getTitles: (): Promise<Record<string, string>> => ipcRenderer.invoke('sessions:get-titles'),

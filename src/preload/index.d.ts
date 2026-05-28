@@ -40,6 +40,7 @@ export interface DeckAPI {
   }
   claude: {
     getBin: () => Promise<string>
+    aiTitle: (cwd: string, uuid: string) => Promise<string | null>
   }
   sessions: {
     getTitles: () => Promise<Record<string, string>>

@@ -5,10 +5,28 @@ import Preview from './components/Preview'
 import DeckGrid from './components/DeckGrid'
 import DeckTabs from './components/DeckTabs'
 import SessionStack, { type Session } from './components/SessionStack'
+import ShortcutsPanel from './components/ShortcutsPanel'
+import CommandPalette, { type Command } from './components/CommandPalette'
 import type { PreviewSource } from '../../shared/preview'
+import {
+  ACTIONS,
+  eventToAccel,
+  isMac,
+  resolveKeymap,
+  type ActionId,
+  type Keymap
+} from '../../shared/keymap'
 
 // Experimento: alterna o layout do painel central entre 'grid' (gridstack) e 'tabs'.
 const DECK_LAYOUT: 'grid' | 'tabs' = 'tabs'
+
+// System (session-independent) panels that open as center tabs from the command
+// palette. Their card ids are prefixed so they never collide with bot cards.
+type PanelId = 'shortcuts'
+const PANEL_PREFIX = '__panel:'
+const PANELS: { id: PanelId; title: string; paletteLabel: string }[] = [
+  { id: 'shortcuts', title: 'Atalhos', paletteLabel: 'Atalhos de teclado' }
+]
 
 const HOME = '/Users/danielkanczuk'
 const LAST_WORKSPACE_KEY = 'lastWorkspace'
@@ -33,7 +51,14 @@ const DECK_SESSION_PROMPT = [
   '- "show me the pendencies file" → preview_show(path) NOT Read.',
   '- "give me a quick yes/no" → plain terminal answer (no card needed).',
   '',
-  'Rule of thumb: if the answer would benefit from being formatted/scrollable/kept visible, it goes in a card. Plain conversation stays in the terminal.'
+  'Rule of thumb: if the answer would benefit from being formatted/scrollable/kept visible, it goes in a card. Plain conversation stays in the terminal.',
+  '',
+  'SHARED CARD LIBRARY — the cards you create are real .md files at `<workspace>/.deck/cards/`, SHARED across all sessions of this workspace. A doc one session produced is often useful to another.',
+  '- Use SEMANTIC `card` ids so files are findable, and "/" for subfolders: card:"saude/carol-agua", card:"pr/42-resumo". Avoid generic ids.',
+  '- BEFORE generating a doc from scratch, check what already exists: Glob `<workspace>/.deck/cards/**/*.md`, then Read/Grep the relevant ones and build on them instead of duplicating.',
+  '- To revise an existing card, reuse the same `card` id (overwrites the file) or just edit the .md directly (the card live-updates via file-watch).',
+  '',
+  'PINNED CONTEXT — `<workspace>/.deck/cards/PINNED.md` lists cards the user pinned. Pinned cards are shown in EVERY session and are meant as shared, always-relevant context. At the start of a task, read PINNED.md and the files it points to.'
 ].join('\n')
 
 interface WorkspaceState {
@@ -43,6 +68,7 @@ interface WorkspaceState {
   focusedCardBySession?: Record<string, string | null>
   previews?: Record<string, Record<string, PreviewSource>>
   titles?: Record<string, string>
+  pinned?: Record<string, PreviewSource>
 }
 
 function pickTitles(
@@ -56,6 +82,32 @@ function pickTitles(
 
 function freshClaudeId(): string {
   return crypto.randomUUID()
+}
+
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*(?:\x07|\x1b\\)|[\x00-\x08\x0b-\x1f]/g
+
+// Classify a chunk of terminal output into a short status the bot is doing.
+function deriveStatus(text: string): string | null {
+  const clean = text.replace(ANSI_RE, '')
+  const tool =
+    /[⏺●▶]\s*(Bash|Read|Edit|Write|MultiEdit|Grep|Glob|Task|Update|WebFetch|WebSearch|NotebookEdit)\b/.test(
+      clean
+    )
+  if (tool) return 'running'
+  if (/esc to interrupt/i.test(clean)) return 'thinking'
+  if (/\p{L}{4,}/u.test(clean)) return 'writing'
+  return null
+}
+
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
 }
 
 function projectFromCwd(cwd: string): string {
@@ -137,19 +189,52 @@ function App(): React.JSX.Element {
   const [previewsByCard, setPreviewsByCard] = useState<
     Record<string, Record<string, PreviewSource>>
   >({})
+  // Pinned cards are workspace-global: shown in every session, source kept here.
+  const [pinned, setPinned] = useState<Record<string, PreviewSource>>({})
   const [titles, setTitles] = useState<Record<string, string>>({})
   const [wsLoaded, setWsLoaded] = useState(false)
   const [lastWorkspaceResolved, setLastWorkspaceResolved] = useState(false)
+  const [activity, setActivity] = useState<Record<string, { status: string; at: number }>>({})
+  const [aiTitles, setAiTitles] = useState<Record<string, string>>({})
+  const [now, setNow] = useState(Date.now())
+  // Keyboard bindings: stored overrides (global, ~/.deck/state.json).
+  const [keymapOverrides, setKeymapOverrides] = useState<Keymap>({})
+  // Command palette (Cmd/Ctrl+P) + which system panels are open as center tabs.
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [openPanels, setOpenPanels] = useState<PanelId[]>([])
 
   const loadedWorkspaceRef = useRef<string | null>(null)
-  const stateRef = useRef({ sessions, activeId, workspace, startupCwd, cardsBySession, focusedCardBySession })
+  const userInputAtRef = useRef<Record<string, number>>({})
+  // Latest nav state for the global keyboard shortcuts (Ctrl+Arrows). Assigned
+  // each render below; the listener (registered once) reads through this ref.
+  const navRef = useRef<{
+    sessionIds: string[]
+    cardIds: string[]
+    activeId?: string
+    focusedCardId: string | null
+  }>({ sessionIds: [], cardIds: [], activeId: undefined, focusedCardId: null })
+  const keymapRef = useRef<Record<ActionId, string>>(resolveKeymap({}))
+  const paletteOpenRef = useRef(false)
+  // Set true while ShortcutsPanel records a chord, so the global nav handler
+  // stands down and lets the panel's own capture listener grab the keys.
+  const captureLockRef = useRef(false)
+  const stateRef = useRef({
+    sessions,
+    activeId,
+    workspace,
+    startupCwd,
+    cardsBySession,
+    focusedCardBySession,
+    pinned
+  })
   stateRef.current = {
     sessions,
     activeId,
     workspace,
     startupCwd,
     cardsBySession,
-    focusedCardBySession
+    focusedCardBySession,
+    pinned
   }
 
   // Mount: resolve env + subscriptions.
@@ -162,31 +247,58 @@ function App(): React.JSX.Element {
       setLastWorkspaceResolved(true)
     })
 
+    // Track per-session output activity (in parallel with the terminal) for the
+    // border animation + last-line preview. Output that's an echo of recent user
+    // typing doesn't count as "bot active" (so typing doesn't trigger the animation).
+    const unsubData = window.deck.pty.onData(({ id, data }) => {
+      const t = Date.now()
+      // ignore output that's just an echo of recent user typing
+      if (t - (userInputAtRef.current[id] ?? 0) < 700) return
+      const status = deriveStatus(data)
+      if (!status) return
+      setActivity((prev) => ({ ...prev, [id]: { status, at: t } }))
+    })
+
     const unsubPreview = window.deck.preview.onSourceChange(({ sessionId, cardId, source }) => {
-      const { cardsBySession: cm, focusedCardBySession: fm, workspace: ws } = stateRef.current
+      const { cardsBySession: cm, focusedCardBySession: fm, workspace: ws, pinned: pin } =
+        stateRef.current
       const existing = cm[sessionId] ?? []
-      // Target card: explicit cardId from the bot, else the focused card, else create one.
+      // Target card: explicit cardId from the bot, else the focused card, else create one
+      // with a semantic name (slug of the content title) so the file is discoverable.
       let target = cardId || fm[sessionId] || existing[0]
-      if (!target || !existing.includes(target)) {
-        target = cardId || `card-${Date.now().toString(36)}`
+      const targetIsPinned = !!target && !!pin[target]
+      if (!target || (!existing.includes(target) && !targetIsPinned)) {
+        const slug = cardId ? '' : slugify(cardTitle(source, ''))
+        target = cardId || slug || `card-${Date.now().toString(36)}`
+        if (existing.includes(target)) target += `-${Date.now().toString(36).slice(-4)}`
+        const finalTarget = target
         setCardsBySession((prev) => {
           const list = prev[sessionId] ?? []
-          if (list.includes(target!)) return prev
-          return { ...prev, [sessionId]: [...list, target!] }
+          if (list.includes(finalTarget)) return prev
+          return { ...prev, [sessionId]: [...list, finalTarget] }
         })
       }
       setFocusedCardBySession((prev) => ({ ...prev, [sessionId]: target! }))
 
       const apply = (s: PreviewSource): void => {
-        setPreviewsByCard((prev) => ({
-          ...prev,
-          [sessionId]: { ...(prev[sessionId] ?? {}), [target!]: s }
-        }))
+        if (pin[target!]) {
+          setPinned((prev) => ({ ...prev, [target!]: s }))
+        } else {
+          setPreviewsByCard((prev) => ({
+            ...prev,
+            [sessionId]: { ...(prev[sessionId] ?? {}), [target!]: s }
+          }))
+        }
       }
 
-      // Materialize inline markdown into a real file → editable, versionable, live-watched.
+      // Materialize inline markdown into a real file → editable, versionable, live-watched,
+      // and discoverable by other sessions. cardId may contain "/" for subfolders.
       if (source.type === 'markdown' && !source.path && ws) {
-        const safe = target.replace(/[^a-zA-Z0-9._-]/g, '-')
+        const safe = target
+          .split('/')
+          .map((seg) => seg.replace(/[^a-zA-Z0-9._-]/g, '-'))
+          .filter(Boolean)
+          .join('/')
         const filePath = `${ws}/.deck/cards/${safe}.md`
         void window.deck.file.write(filePath, source.content).then((ok) => {
           apply(
@@ -232,6 +344,7 @@ function App(): React.JSX.Element {
       setActiveId(replacement?.id)
     })
     return () => {
+      unsubData()
       unsubPreview()
       unsubTitle()
       unsubAdd()
@@ -240,6 +353,33 @@ function App(): React.JSX.Element {
       unsubCloseTab()
     }
   }, [])
+
+  // Liveness tick for the collapsed-tab spinner (re-evaluates "active" every 600ms).
+  useEffect(() => {
+    const iv = setInterval(() => setNow(Date.now()), 600)
+    return () => clearInterval(iv)
+  }, [])
+
+  // Pull claude's auto-generated session title (aiTitle in the .jsonl) as the tab name.
+  // Persisted on disk → survives restarts, no dependency on the bot calling a tool.
+  useEffect(() => {
+    if (!wsLoaded) return
+    let cancelled = false
+    const fetchTitles = async (): Promise<void> => {
+      for (const s of sessions) {
+        if (s.kind !== 'claude' || !s.claudeSessionId) continue
+        const t = await window.deck.claude.aiTitle(s.cwd, s.claudeSessionId)
+        if (cancelled || !t) continue
+        setAiTitles((prev) => (prev[s.id] === t ? prev : { ...prev, [s.id]: t }))
+      }
+    }
+    void fetchTitles()
+    const iv = setInterval(fetchTitles, 12000)
+    return () => {
+      cancelled = true
+      clearInterval(iv)
+    }
+  }, [wsLoaded, sessions])
 
   // Adopt startup cwd ONLY after we've checked lastWorkspace and it was empty.
   // (Avoids a race where startupCwd loads first and flashes the wrong workspace.)
@@ -264,7 +404,8 @@ function App(): React.JSX.Element {
         cardsBySession,
         focusedCardBySession,
         previews: serializePreviews(previewsByCard),
-        titles: pickTitles(sessions, titles)
+        titles: pickTitles(sessions, titles),
+        pinned: serializePreviews({ p: pinned }).p
       })
     }
 
@@ -287,6 +428,10 @@ function App(): React.JSX.Element {
         setFocusedCardBySession(data.focusedCardBySession ?? {})
         setPreviewsByCard(previews)
         if (data.titles) setTitles((prev) => ({ ...prev, ...data.titles }))
+        const pinnedRe = data.pinned
+          ? (await window.deck.preview.rehydrate({ p: data.pinned })).p ?? {}
+          : {}
+        if (!cancelled) setPinned(pinnedRe)
       } else {
         const def = defaultClaudeSession(workspace)
         setSessions([def])
@@ -294,6 +439,7 @@ function App(): React.JSX.Element {
         setCardsBySession({})
         setFocusedCardBySession({})
         setPreviewsByCard({})
+        setPinned({})
       }
       loadedWorkspaceRef.current = workspace
       void window.deck.state.set(LAST_WORKSPACE_KEY, workspace)
@@ -315,7 +461,8 @@ function App(): React.JSX.Element {
         cardsBySession,
         focusedCardBySession,
         previews: serializePreviews(previewsByCard),
-        titles: pickTitles(sessions, titles)
+        titles: pickTitles(sessions, titles),
+        pinned: serializePreviews({ p: pinned }).p
       })
     }, 400)
     return () => clearTimeout(t)
@@ -327,13 +474,64 @@ function App(): React.JSX.Element {
     cardsBySession,
     focusedCardBySession,
     previewsByCard,
-    titles
+    titles,
+    pinned
   ])
 
   useEffect(() => {
     const workspaceName = workspace ? projectFromCwd(workspace) : ''
     document.title = workspaceName ? `${workspaceName} — deck` : 'deck'
   }, [workspace])
+
+  // Load global key bindings once on mount.
+  useEffect(() => {
+    void window.deck.state.get<Keymap>('keymap').then((km) => {
+      if (km) setKeymapOverrides(km)
+    })
+  }, [])
+
+  // Global keyboard handler (capture phase, so it wins over xterm). Cmd/Ctrl+P
+  // toggles the command palette (fixed); everything else is matched against the
+  // current keymap, read through refs so this stays registered once.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const openMod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+      if (openMod && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault()
+        e.stopPropagation()
+        setPaletteOpen((v) => !v)
+        return
+      }
+      // Let the palette / a recording shortcut field handle their own keys.
+      if (captureLockRef.current || paletteOpenRef.current) return
+      const accel = eventToAccel(e)
+      if (!accel) return
+      const km = keymapRef.current
+      const action = (ACTIONS.find((a) => km[a.id] === accel)?.id ?? null) as ActionId | null
+      if (!action) return
+      e.preventDefault()
+      e.stopPropagation()
+      const nav = navRef.current
+      if (action === 'session.prev' || action === 'session.next') {
+        const ids = nav.sessionIds
+        if (ids.length < 2 || !nav.activeId) return
+        const i = ids.indexOf(nav.activeId)
+        const d = action === 'session.prev' ? -1 : 1
+        setActiveId(ids[(i + d + ids.length) % ids.length])
+      } else {
+        const ids = nav.cardIds
+        if (!ids.length || !nav.activeId) return
+        const cur = nav.focusedCardId
+        const d = action === 'tab.prev' ? -1 : 1
+        const base = cur && ids.includes(cur) ? ids.indexOf(cur) : action === 'tab.prev' ? 0 : -1
+        const next = ids[(base + d + ids.length) % ids.length]
+        const aId = nav.activeId
+        setFocusedCardBySession((prev) => ({ ...prev, [aId]: next }))
+      }
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [])
 
   // Keep fs watchers in sync with the file-backed cards (markdown sources with a path).
   const watchedPathsRef = useRef<Set<string>>(new Set())
@@ -375,9 +573,35 @@ function App(): React.JSX.Element {
     })
   }, [])
 
-  const sessionsWithTitles = sessions.map((s) =>
-    titles[s.id] ? { ...s, label: titles[s.id] } : s
-  )
+  // Write a manifest of pinned cards so any session's bot can read it as shared context.
+  useEffect(() => {
+    if (!wsLoaded || !workspace) return
+    const lines = [
+      '# Pinned cards',
+      '',
+      'Contexto FIXO compartilhado entre todas as sessions deste workspace. Leia estes antes de agir.',
+      ''
+    ]
+    for (const [id, src] of Object.entries(pinned)) {
+      if (src.type === 'markdown' && src.path) lines.push(`- **${id}** — \`${src.path}\``)
+      else if (src.type === 'markdown') lines.push(`- **${id}** — (markdown inline)`)
+      else if (src.type === 'json') lines.push(`- **${id}** — (json)`)
+      else if (src.type === 'me') lines.push(`- **${id}** — (live view: ${src.url ?? 'me'})`)
+    }
+    if (Object.keys(pinned).length === 0) lines.push('_(nenhum card fixado)_')
+    void window.deck.file.write(`${workspace}/.deck/cards/PINNED.md`, lines.join('\n') + '\n')
+  }, [pinned, workspace, wsLoaded])
+
+  // Tab name priority: explicit session_set_title > claude's aiTitle > default label.
+  const sessionsWithTitles = sessions.map((s) => {
+    const label = titles[s.id] || aiTitles[s.id] || s.label
+    return label !== s.label ? { ...s, label } : s
+  })
+
+  const sessionActivity: Record<string, { status: string; active: boolean }> = {}
+  for (const [id, a] of Object.entries(activity)) {
+    sessionActivity[id] = { status: a.status, active: now - a.at < 1500 }
+  }
 
   const cardPreviews: Record<string, PreviewSource> = activeId
     ? previewsByCard[activeId] ?? {}
@@ -411,7 +635,25 @@ function App(): React.JSX.Element {
     setActiveId(def.id)
   }
 
+  const openPanel = (pid: PanelId): void => {
+    setOpenPanels((prev) => (prev.includes(pid) ? prev : [...prev, pid]))
+    if (activeId) setFocusedCardBySession((prev) => ({ ...prev, [activeId]: `${PANEL_PREFIX}${pid}` }))
+  }
+
   const closeCard = (id: string): void => {
+    if (id.startsWith(PANEL_PREFIX)) {
+      const pid = id.slice(PANEL_PREFIX.length) as PanelId
+      setOpenPanels((prev) => prev.filter((p) => p !== pid))
+      return
+    }
+    if (pinned[id]) {
+      setPinned((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      return
+    }
     if (!activeId) return
     setCardsBySession((prev) => ({
       ...prev,
@@ -424,17 +666,132 @@ function App(): React.JSX.Element {
     })
   }
 
+  const togglePin = (id: string): void => {
+    if (pinned[id]) {
+      // unpin → card volta a ser próprio da session ativa
+      const src = pinned[id]
+      setPinned((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      if (activeId) {
+        setPreviewsByCard((p) => ({ ...p, [activeId]: { ...(p[activeId] ?? {}), [id]: src } }))
+        setCardsBySession((c) => {
+          const list = c[activeId] ?? []
+          return list.includes(id) ? c : { ...c, [activeId]: [...list, id] }
+        })
+      }
+    } else {
+      // pin → vira global; tira da session ativa
+      const src = activeId ? previewsByCard[activeId]?.[id] : undefined
+      if (!src) return
+      setPinned((prev) => ({ ...prev, [id]: src }))
+      if (activeId) {
+        setPreviewsByCard((p) => {
+          const cards = { ...(p[activeId] ?? {}) }
+          delete cards[id]
+          return { ...p, [activeId]: cards }
+        })
+        setCardsBySession((c) => ({
+          ...c,
+          [activeId]: (c[activeId] ?? []).filter((x) => x !== id)
+        }))
+      }
+    }
+  }
+
   const footer = (
     <button type="button" className="sstack-add" onClick={newClaudeSession}>
       + nova sessão
     </button>
   )
 
-  const activeCardIds = activeId ? cardsBySession[activeId] ?? [] : []
-  const deckCards = activeCardIds.map((id, i) => ({
-    id,
-    title: cardTitle(cardPreviews[id], `card ${i + 1}`),
-    render: () => <Preview source={cardPreviews[id] ?? { type: 'none' }} />
+  // Reorder cards from a drag-drop: split the new sequence back into pinned
+  // (workspace-global, rebuilt to preserve key order) and the active session's own.
+  const reorderCards = (orderedIds: string[]): void => {
+    const pinnedOrder = orderedIds.filter((id) => pinned[id])
+    const ownOrder = orderedIds.filter((id) => !pinned[id] && !id.startsWith(PANEL_PREFIX))
+    if (pinnedOrder.length) {
+      setPinned((prev) => {
+        const next: Record<string, PreviewSource> = {}
+        pinnedOrder.forEach((id) => {
+          if (prev[id]) next[id] = prev[id]
+        })
+        Object.keys(prev).forEach((id) => {
+          if (!(id in next)) next[id] = prev[id]
+        })
+        return next
+      })
+    }
+    if (activeId) setCardsBySession((c) => ({ ...c, [activeId]: ownOrder }))
+  }
+
+  const resolvedKeymap = resolveKeymap(keymapOverrides)
+  keymapRef.current = resolvedKeymap
+  paletteOpenRef.current = paletteOpen
+
+  const persistKeymap = (next: Keymap): void => {
+    setKeymapOverrides(next)
+    void window.deck.state.set('keymap', next)
+  }
+  const setBinding = (id: ActionId, accel: string): void =>
+    persistKeymap({ ...keymapOverrides, [id]: accel })
+  const resetBinding = (id: ActionId): void => {
+    const next = { ...keymapOverrides }
+    delete next[id]
+    persistKeymap(next)
+  }
+
+  const renderPanel = (pid: PanelId): React.JSX.Element => {
+    // Only 'shortcuts' for now; switch here as more panels are added.
+    void pid
+    return (
+      <ShortcutsPanel
+        resolved={resolvedKeymap}
+        onSet={setBinding}
+        onReset={resetBinding}
+        onCapturingChange={(active) => {
+          captureLockRef.current = active
+        }}
+      />
+    )
+  }
+
+  // System panel tabs (session-independent) first, then pinned (workspace-global),
+  // then the active session's own cards.
+  const panelCards = openPanels.map((pid) => ({
+    id: `${PANEL_PREFIX}${pid}`,
+    title: PANELS.find((p) => p.id === pid)?.title ?? pid,
+    pinned: false,
+    render: () => renderPanel(pid)
+  }))
+  const pinnedIds = Object.keys(pinned)
+  const ownIds = (activeId ? cardsBySession[activeId] ?? [] : []).filter((id) => !pinned[id])
+  const contentCards = [...pinnedIds, ...ownIds].map((id, i) => {
+    const isPinned = !!pinned[id]
+    const source = isPinned ? pinned[id] : cardPreviews[id] ?? { type: 'none' }
+    return {
+      id,
+      title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
+      pinned: isPinned,
+      render: () => <Preview source={source} />
+    }
+  })
+  const deckCards = [...panelCards, ...contentCards]
+
+  navRef.current = {
+    sessionIds: sessions.map((s) => s.id),
+    cardIds: deckCards.map((c) => c.id),
+    activeId,
+    focusedCardId
+  }
+
+  const paletteCommands: Command[] = PANELS.map((p) => ({
+    id: `panel:${p.id}`,
+    label: p.paletteLabel,
+    hint: 'painel',
+    run: () => openPanel(p.id)
   }))
 
   return (
@@ -452,6 +809,19 @@ function App(): React.JSX.Element {
                 activeId={activeId}
                 onActiveChange={setActiveId}
                 onClose={handleClose}
+                onReorder={(orderedIds) => {
+                  setSessions((prev) => {
+                    const byId = new Map(prev.map((s) => [s.id, s]))
+                    const next = orderedIds
+                      .map((id) => byId.get(id))
+                      .filter((s): s is Session => !!s)
+                    prev.forEach((s) => {
+                      if (!orderedIds.includes(s.id)) next.push(s)
+                    })
+                    return next
+                  })
+                }}
+                activity={sessionActivity}
                 footer={footer}
                 renderBody={(s, { isActive }) => {
                   if (s.kind === 'claude' && !claudeBin) {
@@ -473,7 +843,17 @@ function App(): React.JSX.Element {
                           ]
                         : [claudeBin!, '--append-system-prompt', DECK_SESSION_PROMPT]
                       : undefined
-                  return <Terminal id={s.id} cwd={s.cwd} command={cmd} visible={isActive} />
+                  return (
+                    <Terminal
+                      id={s.id}
+                      cwd={s.cwd}
+                      command={cmd}
+                      visible={isActive}
+                      onUserInput={() => {
+                        userInputAtRef.current[s.id] = Date.now()
+                      }}
+                    />
+                  )
                 }}
               />
             </div>
@@ -489,12 +869,15 @@ function App(): React.JSX.Element {
                   focusedId={focusedCardId}
                   onFocusChange={setFocusedCard}
                   onClose={closeCard}
+                  onTogglePin={togglePin}
+                  onReorder={reorderCards}
                   cards={deckCards}
                 />
               ) : (
                 <DeckGrid
                   focusedId={focusedCardId}
                   onFocusChange={setFocusedCard}
+                  onTogglePin={togglePin}
                   cards={deckCards}
                 />
               )}
@@ -502,6 +885,9 @@ function App(): React.JSX.Element {
           </section>
         </ResizableSplit>
       </main>
+      {paletteOpen && (
+        <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
+      )}
     </div>
   )
 }

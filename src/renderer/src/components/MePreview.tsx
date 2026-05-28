@@ -15,26 +15,28 @@ function tabFromUrl(url?: string): string | null {
 export default function MePreview({ url }: MePreviewProps): React.JSX.Element {
   const [tabs, setTabs] = useState<string[]>([])
   const [selected, setSelected] = useState<string | null>(() => tabFromUrl(url))
+  const [daemonUp, setDaemonUp] = useState<boolean | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
 
-  // If the caller passes a specific tab URL, follow it.
   useEffect(() => {
     const t = tabFromUrl(url)
     if (t) setSelected(t)
   }, [url])
 
-  // Poll the daemon for the live tab list (picks up popup-N as OAuth/popups appear).
   useEffect(() => {
     let active = true
     const fetchTabs = async (): Promise<void> => {
       try {
         const res = await fetch(`${BASE}/api/tabs`)
         const list = (await res.json()) as unknown
-        if (active && Array.isArray(list)) {
+        if (!active) return
+        setDaemonUp(true)
+        if (Array.isArray(list)) {
           setTabs(list as string[])
           setSelected((cur) => cur ?? (list as string[])[0] ?? null)
         }
       } catch {
-        // daemon down — leave tabs as-is
+        if (active) setDaemonUp(false)
       }
     }
     void fetchTabs()
@@ -43,7 +45,23 @@ export default function MePreview({ url }: MePreviewProps): React.JSX.Element {
       active = false
       clearInterval(iv)
     }
-  }, [])
+  }, [reloadKey])
+
+  if (daemonUp === false) {
+    return (
+      <div className="preview-empty">
+        <p>
+          o <strong>me daemon</strong> não está rodando (sem servidor em{' '}
+          <code>127.0.0.1:6789</code>).
+          <br />
+          rode <code>handoff start</code> num terminal e clique recarregar.
+        </p>
+        <button className="sstack-add-btn primary" onClick={() => setReloadKey((k) => k + 1)}>
+          recarregar
+        </button>
+      </div>
+    )
+  }
 
   const iframeSrc = selected ? `${BASE}/tab/${encodeURIComponent(selected)}` : url ?? BASE
 

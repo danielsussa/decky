@@ -242,6 +242,43 @@ code {
   border-bottom-color: var(--accent);
 }
 
+.deck-tab-pinmark {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.deck-tab-ispinned {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.deck-tab[draggable='true'] {
+  cursor: grab;
+}
+
+.deck-tab-dragging {
+  opacity: 0.4;
+}
+
+.deck-tab-dragover {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.deck-card-icon.deck-card-pinned {
+  color: var(--accent);
+}
+
+.sstack-header[draggable='true'] {
+  cursor: grab;
+}
+
+.sstack-dragging {
+  opacity: 0.4;
+}
+
+.sstack-dragover > .sstack-header {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
 .deck-tab-close {
   background: transparent;
   border: none;
@@ -383,6 +420,8 @@ code {
 
 .preview-empty {
   display: flex;
+  flex-direction: column;
+  gap: 12px;
   align-items: center;
   justify-content: center;
   height: 100%;
@@ -683,6 +722,7 @@ code {
 }
 
 .sstack-header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -730,6 +770,50 @@ code {
 
 .sstack-label {
   font-weight: 500;
+}
+
+/* Animated running-border on a session tab that's currently producing output. */
+@property --deck-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.sstack-working::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 5px;
+  padding: 1px;
+  opacity: 0.5;
+  background: conic-gradient(
+    from var(--deck-angle),
+    transparent 65%,
+    var(--accent) 88%,
+    transparent 100%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: deck-rotate 3.2s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes deck-rotate {
+  to {
+    --deck-angle: 360deg;
+  }
+}
+
+.sstack-status {
+  color: var(--accent);
+  font-size: 10.5px;
+  font-style: italic;
+  opacity: 0.85;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .sstack-project {
@@ -902,4 +986,212 @@ code {
 .terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 4px;
+}
+
+/* ── Remap (keyboard shortcuts) modal ───────────────────────────────────── */
+.remap-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.remap-modal {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 440px;
+  max-width: 90vw;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+}
+
+.remap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.remap-title {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.remap-x {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.remap-x:hover {
+  color: var(--text-1);
+  background: var(--bg-2);
+}
+
+.remap-rows {
+  padding: 8px 0;
+}
+
+.remap-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+}
+
+.remap-label {
+  flex: 1;
+  color: var(--text-2);
+}
+
+.remap-chip {
+  min-width: 96px;
+  text-align: center;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-1);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.remap-chip:hover {
+  border-color: var(--accent);
+}
+
+.remap-chip-recording {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: transparent;
+}
+
+.remap-reset {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.remap-reset:hover {
+  color: var(--text-1);
+  background: var(--bg-2);
+}
+
+.remap-error {
+  color: #f48771;
+  padding: 4px 16px 0;
+  font-size: 12px;
+}
+
+.remap-hint {
+  color: var(--text-3);
+  padding: 10px 16px 14px;
+  font-size: 11px;
+  border-top: 1px solid var(--border);
+  margin-top: 6px;
+}
+
+.remap-section {
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 10px 16px 2px;
+}
+
+/* ── Command palette (Cmd/Ctrl+P) ───────────────────────────────────────── */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  z-index: 1000;
+}
+
+.palette {
+  width: 520px;
+  max-width: 92vw;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-0);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+  font-size: 14px;
+  padding: 12px 14px;
+  outline: none;
+}
+
+.palette-input::placeholder {
+  color: var(--text-3);
+}
+
+.palette-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette-empty {
+  color: var(--text-3);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.palette-item-sel {
+  background: var(--accent);
+  color: #fff;
+}
+
+.palette-item-hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.palette-item-sel .palette-item-hint {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* ── Shortcuts panel (opens as a center tab) ────────────────────────────── */
+.shortcuts-panel {
+  height: 100%;
+  overflow-y: auto;
+  padding: 4px 0 12px;
 }

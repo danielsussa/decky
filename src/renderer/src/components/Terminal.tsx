@@ -11,16 +11,22 @@ interface TerminalProps {
   command?: string[]
   /** When true, terminal is visible. When transitioning false → true, refits to the new container size. */
   visible?: boolean
+  /** Called when the user types (keystroke) — lets the parent ignore echo as "bot activity". */
+  onUserInput?: () => void
 }
 
 export default function Terminal({
   id,
   cwd,
   command,
-  visible = true
+  visible = true,
+  onUserInput
 }: TerminalProps): React.JSX.Element {
+  const onUserInputRef = useRef(onUserInput)
+  onUserInputRef.current = onUserInput
   const hostRef = useRef<HTMLDivElement>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const termRef = useRef<XTerm | null>(null)
   // Serialize command for stable useEffect deps — parent may pass new array refs
   // with identical content each render; we only want to re-spawn PTY when content changes.
   const commandKey = command ? command.join('\x00') : ''
@@ -62,6 +68,7 @@ export default function Terminal({
       }
     })
 
+    termRef.current = term
     const fit = new FitAddon()
     fitRef.current = fit
     term.loadAddon(fit)
@@ -88,7 +95,10 @@ export default function Terminal({
       const { cols, rows } = term
       void window.deck.pty.create(id, { cols, rows, cwd, command }).then(() => {
         if (disposed) return
-        term.onData((data) => window.deck.pty.write(id, data))
+        term.onData((data) => {
+          onUserInputRef.current?.()
+          window.deck.pty.write(id, data)
+        })
         term.onResize(({ cols, rows }) => window.deck.pty.resize(id, cols, rows))
         term.focus()
       })
@@ -165,6 +175,7 @@ export default function Terminal({
       window.deck.pty.kill(id)
       term.dispose()
       fitRef.current = null
+      termRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, cwd, commandKey])
@@ -189,7 +200,12 @@ export default function Terminal({
         // ignore
       }
     }
-    const raf = requestAnimationFrame(() => tryRefit())
+    const raf = requestAnimationFrame(() => {
+      tryRefit()
+      // Terminal is the preferred focus target — grab it whenever this session
+      // becomes visible (e.g. switching sessions via Ctrl+Up/Down).
+      termRef.current?.focus()
+    })
     return () => {
       cancelled = true
       cancelAnimationFrame(raf)

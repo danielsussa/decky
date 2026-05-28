@@ -1,7 +1,31 @@
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+
+// Claude Code writes an auto-generated `ai-title` into the session .jsonl. Read the
+// latest one — it's a stable, persisted name for the session (survives restarts).
+export async function readAiTitle(cwd: string, uuid: string): Promise<string | null> {
+  const encoded = cwd.replace(/\//g, '-')
+  const p = join(homedir(), '.claude', 'projects', encoded, `${uuid}.jsonl`)
+  try {
+    const text = await readFile(p, 'utf-8')
+    let title: string | null = null
+    for (const ln of text.split('\n')) {
+      if (!ln.includes('"ai-title"')) continue
+      try {
+        const o = JSON.parse(ln)
+        if (o.type === 'ai-title' && typeof o.aiTitle === 'string' && o.aiTitle) title = o.aiTitle
+      } catch {
+        // skip malformed line
+      }
+    }
+    return title
+  } catch {
+    return null
+  }
+}
 
 let cached: string | null = null
 

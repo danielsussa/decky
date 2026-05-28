@@ -1,5 +1,5 @@
 import { watch, type FSWatcher } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { ipcMain, type BrowserWindow } from 'electron'
 
@@ -77,6 +77,17 @@ export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null)
       return await readFile(path, 'utf-8')
     } catch {
       return null
+    }
+  })
+
+  ipcMain.handle('file:write', async (_e, path: string, content: string) => {
+    try {
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(path, content, 'utf-8')
+      return true
+    } catch (err) {
+      console.error('[file-watcher] write failed:', path, err)
+      return false
     }
   })
 }

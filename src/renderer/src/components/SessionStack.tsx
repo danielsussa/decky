@@ -59,7 +59,6 @@ export default function SessionStack({
             >
               <span className="sstack-caret">{isActive ? '▾' : '▸'}</span>
               <span className="sstack-label">{s.label}</span>
-              {s.project && <span className="sstack-project">· {s.project}</span>}
               {onClose && (
                 <button
                   type="button"

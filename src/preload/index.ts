@@ -55,6 +55,8 @@ const deckApi = {
     unwatch: (path: string): Promise<true> => ipcRenderer.invoke('file:unwatch', path),
     readText: (path: string): Promise<string | null> =>
       ipcRenderer.invoke('file:read-text', path),
+    write: (path: string, content: string): Promise<boolean> =>
+      ipcRenderer.invoke('file:write', path, content),
     onChanged: (callback: (msg: { path: string }) => void): (() => void) => {
       const listener = (_: unknown, msg: { path: string }): void => callback(msg)
       ipcRenderer.on('file:changed', listener)

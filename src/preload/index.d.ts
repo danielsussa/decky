@@ -35,6 +35,7 @@ export interface DeckAPI {
     watch: (path: string) => Promise<true>
     unwatch: (path: string) => Promise<true>
     readText: (path: string) => Promise<string | null>
+    write: (path: string, content: string) => Promise<boolean>
     onChanged: (callback: (msg: { path: string }) => void) => () => void
   }
   claude: {

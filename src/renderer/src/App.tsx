@@ -42,6 +42,16 @@ interface WorkspaceState {
   cardsBySession?: Record<string, string[]>
   focusedCardBySession?: Record<string, string | null>
   previews?: Record<string, Record<string, PreviewSource>>
+  titles?: Record<string, string>
+}
+
+function pickTitles(
+  sessions: Session[],
+  titles: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const s of sessions) if (titles[s.id]) out[s.id] = titles[s.id]
+  return out
 }
 
 function freshClaudeId(): string {
@@ -153,7 +163,7 @@ function App(): React.JSX.Element {
     })
 
     const unsubPreview = window.deck.preview.onSourceChange(({ sessionId, cardId, source }) => {
-      const { cardsBySession: cm, focusedCardBySession: fm } = stateRef.current
+      const { cardsBySession: cm, focusedCardBySession: fm, workspace: ws } = stateRef.current
       const existing = cm[sessionId] ?? []
       // Target card: explicit cardId from the bot, else the focused card, else create one.
       let target = cardId || fm[sessionId] || existing[0]
@@ -166,10 +176,28 @@ function App(): React.JSX.Element {
         })
       }
       setFocusedCardBySession((prev) => ({ ...prev, [sessionId]: target! }))
-      setPreviewsByCard((prev) => ({
-        ...prev,
-        [sessionId]: { ...(prev[sessionId] ?? {}), [target!]: source }
-      }))
+
+      const apply = (s: PreviewSource): void => {
+        setPreviewsByCard((prev) => ({
+          ...prev,
+          [sessionId]: { ...(prev[sessionId] ?? {}), [target!]: s }
+        }))
+      }
+
+      // Materialize inline markdown into a real file → editable, versionable, live-watched.
+      if (source.type === 'markdown' && !source.path && ws) {
+        const safe = target.replace(/[^a-zA-Z0-9._-]/g, '-')
+        const filePath = `${ws}/.deck/cards/${safe}.md`
+        void window.deck.file.write(filePath, source.content).then((ok) => {
+          apply(
+            ok
+              ? { type: 'markdown', content: source.content, title: source.title, path: filePath }
+              : source
+          )
+        })
+      } else {
+        apply(source)
+      }
     })
     const unsubTitle = window.deck.sessions.onTitleChange(({ id, title }) => {
       setTitles((prev) => ({ ...prev, [id]: title }))
@@ -235,7 +263,8 @@ function App(): React.JSX.Element {
         activeId,
         cardsBySession,
         focusedCardBySession,
-        previews: serializePreviews(previewsByCard)
+        previews: serializePreviews(previewsByCard),
+        titles: pickTitles(sessions, titles)
       })
     }
 
@@ -257,6 +286,7 @@ function App(): React.JSX.Element {
         setCardsBySession(data.cardsBySession ?? {})
         setFocusedCardBySession(data.focusedCardBySession ?? {})
         setPreviewsByCard(previews)
+        if (data.titles) setTitles((prev) => ({ ...prev, ...data.titles }))
       } else {
         const def = defaultClaudeSession(workspace)
         setSessions([def])
@@ -284,7 +314,8 @@ function App(): React.JSX.Element {
         activeId,
         cardsBySession,
         focusedCardBySession,
-        previews: serializePreviews(previewsByCard)
+        previews: serializePreviews(previewsByCard),
+        titles: pickTitles(sessions, titles)
       })
     }, 400)
     return () => clearTimeout(t)
@@ -295,7 +326,8 @@ function App(): React.JSX.Element {
     activeId,
     cardsBySession,
     focusedCardBySession,
-    previewsByCard
+    previewsByCard,
+    titles
   ])
 
   useEffect(() => {

@@ -45,16 +45,21 @@ const deckApi = {
     }
   },
   workspace: {
-    read: <T = unknown,>(cwd: string): Promise<T | null> =>
+    read: <T = unknown>(cwd: string): Promise<T | null> =>
       ipcRenderer.invoke('workspace:read', cwd),
     write: (cwd: string, state: unknown): Promise<true> =>
       ipcRenderer.invoke('workspace:write', cwd, state)
   },
+  cards: {
+    // Materialize a card to its file under the workspace's .deck/cards/. Returns the
+    // resolved abs path (to store on the source + watch), or null on failure.
+    write: (workspace: string, cardId: string, content: string): Promise<string | null> =>
+      ipcRenderer.invoke('cards:write', workspace, cardId, content)
+  },
   file: {
     watch: (path: string): Promise<true> => ipcRenderer.invoke('file:watch', path),
     unwatch: (path: string): Promise<true> => ipcRenderer.invoke('file:unwatch', path),
-    readText: (path: string): Promise<string | null> =>
-      ipcRenderer.invoke('file:read-text', path),
+    readText: (path: string): Promise<string | null> => ipcRenderer.invoke('file:read-text', path),
     write: (path: string, content: string): Promise<boolean> =>
       ipcRenderer.invoke('file:write', path, content),
     onChanged: (callback: (msg: { path: string }) => void): (() => void) => {
@@ -75,13 +80,9 @@ const deckApi = {
       ipcRenderer.on('session:title-changed', listener)
       return () => ipcRenderer.removeListener('session:title-changed', listener)
     },
-    onAdd: (
-      callback: (msg: { cwd: string; kind: 'claude' | 'shell' }) => void
-    ): (() => void) => {
-      const listener = (
-        _: unknown,
-        msg: { cwd: string; kind: 'claude' | 'shell' }
-      ): void => callback(msg)
+    onAdd: (callback: (msg: { cwd: string; kind: 'claude' | 'shell' }) => void): (() => void) => {
+      const listener = (_: unknown, msg: { cwd: string; kind: 'claude' | 'shell' }): void =>
+        callback(msg)
       ipcRenderer.on('session:add', listener)
       return () => ipcRenderer.removeListener('session:add', listener)
     },
@@ -93,6 +94,7 @@ const deckApi = {
   },
   app: {
     getStartupCwd: (): Promise<string> => ipcRenderer.invoke('app:get-startup-cwd'),
+    pickFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:pick-folder'),
     onMenuNewSession: (callback: () => void): (() => void) => {
       const listener = (): void => callback()
       ipcRenderer.on('menu:new-session', listener)
@@ -105,9 +107,8 @@ const deckApi = {
     }
   },
   state: {
-    get: <T = unknown,>(key: string): Promise<T | null> => ipcRenderer.invoke('state:get', key),
-    set: (key: string, value: unknown): Promise<true> =>
-      ipcRenderer.invoke('state:set', key, value)
+    get: <T = unknown>(key: string): Promise<T | null> => ipcRenderer.invoke('state:get', key),
+    set: (key: string, value: unknown): Promise<true> => ipcRenderer.invoke('state:set', key, value)
   }
 }
 

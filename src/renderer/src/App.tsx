@@ -5,6 +5,7 @@ import Preview from './components/Preview'
 import DeckGrid from './components/DeckGrid'
 import DeckTabs from './components/DeckTabs'
 import SessionStack, { type Session } from './components/SessionStack'
+import WorkspaceBar from './components/WorkspaceBar'
 import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
 import type { PreviewSource } from '../../shared/preview'
@@ -19,6 +20,11 @@ import {
 
 // Experimento: alterna o layout do painel central entre 'grid' (gridstack) e 'tabs'.
 const DECK_LAYOUT: 'grid' | 'tabs' = 'tabs'
+
+// Browser-tab model: sessions are always LISTED, but only this many keep a live pty
+// (claude process). Opening one beyond the cap suspends the least-recently-used; reopening
+// resumes it (--resume keeps the conversation). Keeps idle workspaces from spawning N claudes.
+const MAX_LIVE_SESSIONS = 6
 
 // System (session-independent) panels that open as center tabs from the command
 // palette. Their card ids are prefixed so they never collide with bot cards.
@@ -39,7 +45,7 @@ const DECK_SESSION_PROMPT = [
   '- mcp__deck__preview_show(path): render a .md/.json file in a deck card. USE THIS — NOT `Read` or `cat` — when the user asks to *show/view/open* a file. Read brings content into your context; preview_show actually displays it to them.',
   '- mcp__deck__preview_markdown(content, title?): render inline markdown content in a deck card.',
   '- mcp__deck__preview_json(value): render a JSON tree in a deck card (better than cat-ing JSON to terminal).',
-  '- mcp__deck__preview_me(url?): route a deck card to the me browser daemon\'s Live View (embedded iframe). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see what `me` (browser automation) is doing or to open a 127.0.0.1:6789/tab/... URL.',
+  "- mcp__deck__preview_me(url?): route a deck card to the me browser daemon's Live View (embedded iframe). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see what `me` (browser automation) is doing or to open a 127.0.0.1:6789/tab/... URL.",
   '- mcp__deck__preview_hide(): clear the active card.',
   '',
   'IMPORTANT — Cards as the default surface for content:',
@@ -57,14 +63,14 @@ const DECK_SESSION_PROMPT = [
   'A card does NOT update from your reasoning — only a file-backed card auto-reloads, and only when its file changes on disk.',
   '- preview_show(path): live-reloads on every save — just keep editing the file, no re-render needed.',
   '- preview_markdown / preview_json: a SNAPSHOT of what you passed. After you change anything it shows (finished a step, revised a list/plan/table, recomputed a value), CALL THE SAME TOOL AGAIN with the updated content. A stale card is worse than none.',
-  '- Showing something you\'ll keep revising (a running plan/checklist/status table)? Write it to a real file and preview_show(path) so your edits auto-refresh it.',
+  "- Showing something you'll keep revising (a running plan/checklist/status table)? Write it to a real file and preview_show(path) so your edits auto-refresh it.",
   '',
-  'SHARED CARD LIBRARY — the cards you create are real .md files at `<workspace>/.deck/cards/`, SHARED across all sessions of this workspace. A doc one session produced is often useful to another.',
+  "SHARED CARD LIBRARY — the cards you create are real .md files in this project's `.deck/cards/` (the env var `$DECK_CARDS_DIR` holds the absolute path), SHARED across all sessions of this workspace. A doc one session produced is often useful to another.",
   '- Use SEMANTIC `card` ids so files are findable, and "/" for subfolders: card:"saude/carol-agua", card:"pr/42-resumo". Avoid generic ids.',
-  '- BEFORE generating a doc from scratch, check what already exists: Glob `<workspace>/.deck/cards/**/*.md`, then Read/Grep the relevant ones and build on them instead of duplicating.',
+  '- BEFORE generating a doc from scratch, check what already exists: Glob `$DECK_CARDS_DIR/**/*.md` (run `echo "$DECK_CARDS_DIR"` if you need the literal path), then Read/Grep the relevant ones and build on them instead of duplicating.',
   '- To revise an existing card, reuse the same `card` id (overwrites the file) or just edit the .md directly (the card live-updates via file-watch).',
   '',
-  'PINNED CONTEXT — `<workspace>/.deck/cards/PINNED.md` lists cards the user pinned. Pinned cards are shown in EVERY session and are meant as shared, always-relevant context. At the start of a task, read PINNED.md and the files it points to.'
+  'PINNED CONTEXT — `$DECK_CARDS_DIR/PINNED.md` lists cards the user pinned. Pinned cards are shown in EVERY session and are meant as shared, always-relevant context. At the start of a task, read PINNED.md and the files it points to.'
 ].join('\n')
 
 interface WorkspaceState {
@@ -77,10 +83,7 @@ interface WorkspaceState {
   pinned?: Record<string, PreviewSource>
 }
 
-function pickTitles(
-  sessions: Session[],
-  titles: Record<string, string>
-): Record<string, string> {
+function pickTitles(sessions: Session[], titles: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const s of sessions) if (titles[s.id]) out[s.id] = titles[s.id]
   return out
@@ -165,7 +168,10 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
       .map((l) => l.trim())
       .find((l) => l.length > 0)
     if (firstLine) {
-      const clean = firstLine.replace(/^[#>*\-`\s]+/, '').trim().slice(0, 40)
+      const clean = firstLine
+        .replace(/^[#>*\-`\s]+/, '')
+        .trim()
+        .slice(0, 40)
       if (clean) return clean
     }
   }
@@ -193,13 +199,18 @@ function App(): React.JSX.Element {
   const [claudeBin, setClaudeBin] = useState<string | null>(null)
   const [startupCwd, setStartupCwd] = useState<string | null>(null)
   const [workspace, setWorkspace] = useState<string | null>(null)
+  // Registry of folders opened as workspaces (global, ~/.deck/state.json) — drives the switcher.
+  const [workspaces, setWorkspaces] = useState<string[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeId, setActiveId] = useState<string | undefined>(undefined)
+  // LRU of sessions that currently have a live pty (most-recent at the end). Active is
+  // always live; others stay warm until evicted past MAX_LIVE_SESSIONS.
+  const [liveIds, setLiveIds] = useState<string[]>([])
   // Cards are created on-demand by the session's bot (via preview_*); a session starts empty.
   const [cardsBySession, setCardsBySession] = useState<Record<string, string[]>>({})
-  const [focusedCardBySession, setFocusedCardBySession] = useState<
-    Record<string, string | null>
-  >({})
+  const [focusedCardBySession, setFocusedCardBySession] = useState<Record<string, string | null>>(
+    {}
+  )
   const [previewsByCard, setPreviewsByCard] = useState<
     Record<string, Record<string, PreviewSource>>
   >({})
@@ -256,6 +267,9 @@ function App(): React.JSX.Element {
     void window.deck.claude.getBin().then(setClaudeBin)
     void window.deck.app.getStartupCwd().then(setStartupCwd)
     void window.deck.sessions.getTitles().then(setTitles)
+    void window.deck.state.get<string[]>('workspaces').then((ws) => {
+      if (Array.isArray(ws)) setWorkspaces(ws)
+    })
     void window.deck.state.get<string>(LAST_WORKSPACE_KEY).then((ws) => {
       if (ws) setWorkspace(ws)
       setLastWorkspaceResolved(true)
@@ -274,8 +288,12 @@ function App(): React.JSX.Element {
     })
 
     const unsubPreview = window.deck.preview.onSourceChange(({ sessionId, cardId, source }) => {
-      const { cardsBySession: cm, focusedCardBySession: fm, workspace: ws, pinned: pin } =
-        stateRef.current
+      const {
+        cardsBySession: cm,
+        focusedCardBySession: fm,
+        workspace: ws,
+        pinned: pin
+      } = stateRef.current
       const existing = cm[sessionId] ?? []
       // Target card: explicit cardId from the bot, else the focused card, else create one
       // with a semantic name (slug of the content title) so the file is discoverable.
@@ -305,18 +323,12 @@ function App(): React.JSX.Element {
         }
       }
 
-      // Materialize inline markdown into a real file → editable, versionable, live-watched,
-      // and discoverable by other sessions. cardId may contain "/" for subfolders.
+      // Materialize inline markdown into a real file (main owns the path, in <workspace>/.deck) →
+      // editable, live-watched, discoverable by other sessions. target may contain "/".
       if (source.type === 'markdown' && !source.path && ws) {
-        const safe = target
-          .split('/')
-          .map((seg) => seg.replace(/[^a-zA-Z0-9._-]/g, '-'))
-          .filter(Boolean)
-          .join('/')
-        const filePath = `${ws}/.deck/cards/${safe}.md`
-        void window.deck.file.write(filePath, source.content).then((ok) => {
+        void window.deck.cards.write(ws, target!, source.content).then((filePath) => {
           apply(
-            ok
+            filePath
               ? { type: 'markdown', content: source.content, title: source.title, path: filePath }
               : source
           )
@@ -329,7 +341,7 @@ function App(): React.JSX.Element {
       setTitles((prev) => ({ ...prev, [id]: title }))
     })
     const unsubAdd = window.deck.sessions.onAdd(({ cwd }) => {
-      // Open Folder semantics: just switch workspace — its .deck/ state loads (or resurrects).
+      // Open Folder semantics: just switch workspace — its state (~/.deck) loads (or resurrects).
       setWorkspace(cwd)
     })
     const unsubConflict = window.deck.sessions.onUuidConflict(({ id }) => {
@@ -404,7 +416,7 @@ function App(): React.JSX.Element {
     setWorkspace(startupCwd)
   }, [lastWorkspaceResolved, workspace, startupCwd])
 
-  // Load <workspace>/.deck/workspace.json whenever the active workspace changes.
+  // Load the workspace's persisted state (~/.deck/workspaces/<slug>/workspace.json) on switch.
   useEffect(() => {
     if (!workspace) return
     const prevWs = loadedWorkspaceRef.current
@@ -434,16 +446,14 @@ function App(): React.JSX.Element {
         if (cancelled) return
         setSessions(sess)
         setActiveId(
-          data.activeId && sess.some((s) => s.id === data.activeId)
-            ? data.activeId
-            : sess[0]?.id
+          data.activeId && sess.some((s) => s.id === data.activeId) ? data.activeId : sess[0]?.id
         )
         setCardsBySession(data.cardsBySession ?? {})
         setFocusedCardBySession(data.focusedCardBySession ?? {})
         setPreviewsByCard(previews)
         if (data.titles) setTitles((prev) => ({ ...prev, ...data.titles }))
         const pinnedRe = data.pinned
-          ? (await window.deck.preview.rehydrate({ p: data.pinned })).p ?? {}
+          ? ((await window.deck.preview.rehydrate({ p: data.pinned })).p ?? {})
           : {}
         if (!cancelled) setPinned(pinnedRe)
       } else {
@@ -496,6 +506,34 @@ function App(): React.JSX.Element {
     const workspaceName = workspace ? projectFromCwd(workspace) : ''
     document.title = workspaceName ? `${workspaceName} — deck` : 'deck'
   }, [workspace])
+
+  // Register every opened workspace in the switcher list, and persist the registry.
+  useEffect(() => {
+    if (!workspace) return
+    setWorkspaces((prev) => (prev.includes(workspace) ? prev : [...prev, workspace]))
+  }, [workspace])
+  useEffect(() => {
+    if (workspaces.length) void window.deck.state.set('workspaces', workspaces)
+  }, [workspaces])
+
+  // Promote the active session to most-recently-used; evict the LRU past the cap.
+  useEffect(() => {
+    if (!activeId) return
+    setLiveIds((prev) => {
+      const next = [...prev.filter((id) => id !== activeId), activeId]
+      while (next.length > MAX_LIVE_SESSIONS) next.shift() // drop oldest (never the active, it's last)
+      return next
+    })
+  }, [activeId])
+
+  // Drop closed/replaced sessions from the live set (e.g. after closing a tab or switching workspace).
+  useEffect(() => {
+    setLiveIds((prev) => {
+      const ids = new Set(sessions.map((s) => s.id))
+      const filtered = prev.filter((id) => ids.has(id))
+      return filtered.length === prev.length ? prev : filtered
+    })
+  }, [sessions])
 
   // Load global key bindings once on mount.
   useEffect(() => {
@@ -603,7 +641,7 @@ function App(): React.JSX.Element {
       else if (src.type === 'me') lines.push(`- **${id}** — (live view: ${src.url ?? 'me'})`)
     }
     if (Object.keys(pinned).length === 0) lines.push('_(nenhum card fixado)_')
-    void window.deck.file.write(`${workspace}/.deck/cards/PINNED.md`, lines.join('\n') + '\n')
+    void window.deck.cards.write(workspace, 'PINNED', lines.join('\n') + '\n')
   }, [pinned, workspace, wsLoaded])
 
   // Tab name priority: explicit session_set_title > claude's aiTitle > default label.
@@ -618,10 +656,10 @@ function App(): React.JSX.Element {
   }
 
   const cardPreviews: Record<string, PreviewSource> = activeId
-    ? previewsByCard[activeId] ?? {}
+    ? (previewsByCard[activeId] ?? {})
     : {}
 
-  const focusedCardId = activeId ? focusedCardBySession[activeId] ?? null : null
+  const focusedCardId = activeId ? (focusedCardBySession[activeId] ?? null) : null
 
   const setFocusedCard = (id: string | null): void => {
     if (!activeId) return
@@ -649,9 +687,15 @@ function App(): React.JSX.Element {
     setActiveId(def.id)
   }
 
+  const addFolder = async (): Promise<void> => {
+    const p = await window.deck.app.pickFolder()
+    if (p) setWorkspace(p)
+  }
+
   const openPanel = (pid: PanelId): void => {
     setOpenPanels((prev) => (prev.includes(pid) ? prev : [...prev, pid]))
-    if (activeId) setFocusedCardBySession((prev) => ({ ...prev, [activeId]: `${PANEL_PREFIX}${pid}` }))
+    if (activeId)
+      setFocusedCardBySession((prev) => ({ ...prev, [activeId]: `${PANEL_PREFIX}${pid}` }))
   }
 
   const closeCard = (id: string): void => {
@@ -781,10 +825,10 @@ function App(): React.JSX.Element {
     render: () => renderPanel(pid)
   }))
   const pinnedIds = Object.keys(pinned)
-  const ownIds = (activeId ? cardsBySession[activeId] ?? [] : []).filter((id) => !pinned[id])
+  const ownIds = (activeId ? (cardsBySession[activeId] ?? []) : []).filter((id) => !pinned[id])
   const contentCards = [...pinnedIds, ...ownIds].map((id, i) => {
     const isPinned = !!pinned[id]
-    const source = isPinned ? pinned[id] : cardPreviews[id] ?? { type: 'none' }
+    const source = isPinned ? pinned[id] : (cardPreviews[id] ?? { type: 'none' })
     return {
       id,
       title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
@@ -817,6 +861,13 @@ function App(): React.JSX.Element {
           storageKey="deck-layout-2col-v0"
         >
           <section className="panel panel-sessions">
+            <WorkspaceBar
+              current={workspace}
+              workspaces={workspaces}
+              onSwitch={setWorkspace}
+              onAddFolder={() => void addFolder()}
+              nameOf={projectFromCwd}
+            />
             <div className="panel-body panel-body-flush">
               <SessionStack
                 sessions={sessionsWithTitles}
@@ -842,6 +893,15 @@ function App(): React.JSX.Element {
                     return (
                       <div className="panel-placeholder">
                         <p className="muted">resolvendo claude…</p>
+                      </div>
+                    )
+                  }
+                  // Suspended (LRU-evicted) sessions don't mount a Terminal → no pty. Active is
+                  // always treated as live so it mounts immediately (before the LRU effect runs).
+                  if (!isActive && !liveIds.includes(s.id)) {
+                    return (
+                      <div className="panel-placeholder">
+                        <p className="muted">sessão suspensa — clique pra retomar</p>
                       </div>
                     )
                   }

@@ -1,17 +1,39 @@
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readFile, writeFile, mkdir, rename, access } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { ipcMain } from 'electron'
+import { workspaceStatePath, workspaceDir } from './paths'
 
-const DECK_DIR = '.deck'
 const FILE = 'workspace.json'
 
 // Serialize writes per-path to avoid clobbering on rapid successive saves.
 const writeChains = new Map<string, Promise<void>>()
 
+// Keep the transient workspace state out of git but leave cards/ trackable. Contained
+// inside .deck/ — doesn't touch the project's root .gitignore.
+async function ensureGitignore(cwd: string): Promise<void> {
+  const gi = join(workspaceDir(cwd), '.gitignore')
+  try {
+    await access(gi)
+    return
+  } catch {
+    // doesn't exist yet
+  }
+  const body =
+    '# deck local-only workspace state. cards/ stay trackable (commit to share project docs,\n' +
+    '# or add `cards/` below to keep them private).\n' +
+    'workspace.json\n' +
+    '*.tmp\n'
+  try {
+    await writeFile(gi, body)
+  } catch {
+    // best-effort
+  }
+}
+
 export function registerWorkspaceHandlers(): void {
   ipcMain.handle('workspace:read', async (_e, cwd: string) => {
     try {
-      const text = await readFile(join(cwd, DECK_DIR, FILE), 'utf-8')
+      const text = await readFile(workspaceStatePath(cwd, FILE), 'utf-8')
       return JSON.parse(text)
     } catch {
       return null
@@ -22,11 +44,12 @@ export function registerWorkspaceHandlers(): void {
     const prev = writeChains.get(cwd) ?? Promise.resolve()
     const next = prev
       .then(async () => {
-        const dir = join(cwd, DECK_DIR)
-        await mkdir(dir, { recursive: true })
-        const tmp = join(dir, FILE + '.tmp')
+        const dest = workspaceStatePath(cwd, FILE)
+        await mkdir(dirname(dest), { recursive: true })
+        await ensureGitignore(cwd)
+        const tmp = dest + '.tmp'
         await writeFile(tmp, JSON.stringify(state, null, 2))
-        await rename(tmp, join(dir, FILE))
+        await rename(tmp, dest)
       })
       .catch((err) => {
         console.error(`[workspace-store] write failed for ${cwd}:`, err)

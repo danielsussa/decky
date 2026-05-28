@@ -15,6 +15,7 @@ Este shell pode estar rodando dentro do **deck** (casca Electron com painel de p
 - \`Read\` continua certo quando você precisa **processar** o conteúdo (parse, edit, search, grep).
 - Outras tools do MCP deck: \`preview_markdown\` (conteúdo inline), \`preview_json\` (tree colapsível, melhor que cuspir JSON gigante no terminal), \`preview_me\` (volta pro Live View do me daemon), \`preview_hide\`.
 - **Manter o card em sincronia depois de atuar**: um card NÃO se atualiza a partir do teu raciocínio — só um card de arquivo se auto-recarrega, e só quando o arquivo muda no disco. \`preview_show(path)\` faz live-reload a cada save (é só seguir editando o arquivo, sem re-renderizar). Já \`preview_markdown\`/\`preview_json\` são um **snapshot** do que você passou: depois de mudar algo que o card mostra (concluiu um passo, revisou lista/plano/tabela, recalculou um valor), **chame a MESMA tool de novo** com o conteúdo novo — card desatualizado é pior que card nenhum. Se for algo que vai revisar várias vezes, grave num arquivo e use \`preview_show(path)\` pra ele atualizar sozinho.
+- **Biblioteca de cards**: os cards que você cria são arquivos \`.md\` reais no \`.deck/cards/\` do projeto (a env var \`$DECK_CARDS_DIR\` tem o caminho absoluto), compartilhados entre todas as sessions do workspace. Antes de gerar um doc do zero, dê um Glob \`$DECK_CARDS_DIR/**/*.md\` e reaproveite/edite o existente. \`$DECK_CARDS_DIR/PINNED.md\` lista os cards fixados (contexto sempre relevante).
 - Se o MCP \`deck\` não estiver disponível (ex.: shell fora do deck, ou deck não iniciado), use \`Read\` normalmente — sem reclamar.
 `
 
@@ -40,9 +41,7 @@ export async function ensureDeckInstruction(): Promise<void> {
   const startIdx = existing.indexOf(MARKER_START)
   if (startIdx === -1) {
     // append (with separator if there's prior content)
-    next = existing
-      ? existing.replace(/\s*$/, '') + '\n\n' + BLOCK
-      : BLOCK
+    next = existing ? existing.replace(/\s*$/, '') + '\n\n' + BLOCK : BLOCK
   } else {
     const endIdx = existing.indexOf(MARKER_END, startIdx)
     if (endIdx === -1) {
@@ -51,7 +50,8 @@ export async function ensureDeckInstruction(): Promise<void> {
     } else {
       const before = existing.slice(0, startIdx)
       const after = existing.slice(endIdx + MARKER_END.length)
-      next = before + BLOCK.trimEnd() + after.replace(/^\s*/, '\n') + (after.endsWith('\n') ? '' : '\n')
+      next =
+        before + BLOCK.trimEnd() + after.replace(/^\s*/, '\n') + (after.endsWith('\n') ? '' : '\n')
     }
   }
 

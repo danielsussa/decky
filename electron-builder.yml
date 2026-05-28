@@ -1,4 +1,4 @@
-appId: com.electron.app
+appId: com.danielsussa.deck
 productName: deck
 directories:
   buildResources: build
@@ -11,6 +11,10 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
   - resources/**
+  # dk-mcp/dk are spawned by an EXTERNAL process (claude reads ~/.claude.json and
+  # runs `node <path>`); a path inside app.asar isn't a real file to a non-Electron
+  # node, so these must live unpacked on disk.
+  - bin/**
 win:
   executableName: deck
 nsis:

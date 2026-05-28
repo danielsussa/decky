@@ -1,9 +1,9 @@
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { ipcMain } from 'electron'
+import { deckStateDir } from './paths'
 
-const STATE_DIR = join(homedir(), '.deck')
+const STATE_DIR = deckStateDir()
 const STATE_PATH = join(STATE_DIR, 'state.json')
 
 type State = Record<string, unknown>

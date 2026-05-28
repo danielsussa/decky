@@ -31,6 +31,9 @@ export interface DeckAPI {
     read: <T = unknown>(cwd: string) => Promise<T | null>
     write: (cwd: string, state: unknown) => Promise<true>
   }
+  cards: {
+    write: (workspace: string, cardId: string, content: string) => Promise<string | null>
+  }
   file: {
     watch: (path: string) => Promise<true>
     unwatch: (path: string) => Promise<true>
@@ -45,13 +48,12 @@ export interface DeckAPI {
   sessions: {
     getTitles: () => Promise<Record<string, string>>
     onTitleChange: (callback: (msg: { id: string; title: string }) => void) => () => void
-    onAdd: (
-      callback: (msg: { cwd: string; kind: 'claude' | 'shell' }) => void
-    ) => () => void
+    onAdd: (callback: (msg: { cwd: string; kind: 'claude' | 'shell' }) => void) => () => void
     onUuidConflict: (callback: (msg: { id: string }) => void) => () => void
   }
   app: {
     getStartupCwd: () => Promise<string>
+    pickFolder: () => Promise<string | null>
     onMenuNewSession: (callback: () => void) => () => void
     onMenuCloseTab: (callback: () => void) => () => void
   }

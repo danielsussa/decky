@@ -3,7 +3,9 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 const CONFIG_PATH = join(homedir(), '.claude.json')
-const SERVER_NAME = 'deck'
+// A DECK_DEV instance registers under its own name + port so it never clobbers the
+// stable app's MCP registration (both live in the global ~/.claude.json).
+const SERVER_NAME = process.env.DECK_DEV ? 'deck-dev' : 'deck'
 
 interface McpServerConfig {
   command: string
@@ -16,12 +18,19 @@ interface ClaudeConfig {
   [key: string]: unknown
 }
 
+function envsEqual(a: Record<string, string> = {}, b: Record<string, string> = {}): boolean {
+  const ak = Object.keys(a)
+  const bk = Object.keys(b)
+  if (ak.length !== bk.length) return false
+  return ak.every((k) => a[k] === b[k])
+}
+
 function serversEqual(a: McpServerConfig | undefined, b: McpServerConfig): boolean {
   if (!a) return false
   if (a.command !== b.command) return false
   if (a.args.length !== b.args.length) return false
   for (let i = 0; i < a.args.length; i++) if (a.args[i] !== b.args[i]) return false
-  return true
+  return envsEqual(a.env, b.env)
 }
 
 /**
@@ -47,6 +56,8 @@ export async function ensureDeckMcpRegistered(serverScriptPath: string): Promise
     command: 'node',
     args: [serverScriptPath]
   }
+  // Point the spawned dk-mcp at THIS instance's preview server (dev uses 6791).
+  if (process.env.DECK_URL) desired.env = { DECK_URL: process.env.DECK_URL }
 
   if (serversEqual(config.mcpServers[SERVER_NAME], desired)) return
 

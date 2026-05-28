@@ -10,11 +10,11 @@ const BASE = process.env.DECK_URL || 'http://127.0.0.1:6790'
 // Cards (tabs) in the center panel are created on demand by you, the session bot.
 // A session starts with NO cards. Each preview_* call lands in a card.
 const CARD_DESC =
-  'Optional card/tab id, ALSO the filename of the shared .md at <workspace>/.deck/cards/<id>.md. ' +
+  'Optional card/tab id, ALSO the filename of the shared .md at $DECK_CARDS_DIR/<id>.md. ' +
   'Use SEMANTIC ids (e.g. "carol-agua", "pr/42-resumo") — "/" makes subfolders. ' +
   'Omit to use the focused card (or auto-create from the title slug). ' +
   'Distinct ids = multiple tabs at once; reuse an id to update/overwrite that card. ' +
-  'These files are shared across sessions — prefer reusing existing ones (Glob/Read .deck/cards/) over duplicating.'
+  'These files are shared across sessions — prefer reusing existing ones (Glob/Read $DECK_CARDS_DIR) over duplicating.'
 
 const TOOLS = [
   {

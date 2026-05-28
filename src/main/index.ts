@@ -1,5 +1,6 @@
-import { app, shell, BrowserWindow, ipcMain, Menu } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, Menu, dialog } from 'electron'
 import { join } from 'path'
+import { existsSync, statSync } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { buildMenu } from './menu'
@@ -12,6 +13,7 @@ import {
   rehydratePreviews
 } from './preview-server'
 import { registerWorkspaceHandlers } from './workspace-store'
+import { registerCardsHandlers } from './cards-store'
 import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from './mcp-installer'
 import { ensureDeckInstruction } from './claude-md-installer'
@@ -20,14 +22,43 @@ import { registerStateHandlers } from './state-store'
 
 let mainWindow: BrowserWindow | null = null
 
+// DECK_DEV runs a fully isolated dev instance alongside the installed app: its own name +
+// userData (→ separate single-instance lock, so both run), paired with DECK_STATE_DIR /
+// DECK_PREVIEW_PORT / DECK_URL from the `dev` script. Must run BEFORE the lock below,
+// since requestSingleInstanceLock keys off userData.
+if (process.env.DECK_DEV) {
+  app.setName('deck-dev')
+  app.setPath('userData', join(app.getPath('appData'), 'deck-dev'))
+}
+
+// Single instance is the design: a relaunch (e.g. `deck ~/proj`) routes the folder
+// into the running window as a workspace instead of spawning a second process.
+function firstDirArg(argv: string[], fallbackCwd: string): string | null {
+  for (let i = argv.length - 1; i >= 1; i--) {
+    const a = argv[i]
+    if (a.startsWith('-')) continue
+    try {
+      if (existsSync(a) && statSync(a).isDirectory()) return a
+    } catch {
+      // not a path
+    }
+  }
+  return existsSync(fallbackCwd) ? fallbackCwd : null
+}
+
+function routeFolderToWindow(dir: string | null): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
+  if (dir) mainWindow.webContents.send('session:add', { cwd: dir, kind: 'claude' })
+}
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
+  app.on('second-instance', (_event, argv, workingDirectory) => {
+    routeFolderToWindow(firstDirArg(argv, workingDirectory))
   })
 }
 
@@ -93,8 +124,20 @@ app.whenReady().then(() => {
   registerPtyHandlers(() => mainWindow)
   registerStateHandlers()
   registerWorkspaceHandlers()
+  registerCardsHandlers()
   registerFileWatchHandlers(() => mainWindow)
   startPreviewServer(() => mainWindow)
+
+  ipcMain.handle('dialog:pick-folder', async () => {
+    const opts: Electron.OpenDialogOptions = {
+      properties: ['openDirectory', 'createDirectory'],
+      title: 'Adicionar pasta de trabalho'
+    }
+    const res = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, opts)
+      : await dialog.showOpenDialog(opts)
+    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
+  })
 
   ipcMain.handle('preview:get-all', () => getPreviewSources())
   ipcMain.handle('preview:rehydrate', (_e, byCard) => rehydratePreviews(byCard))
@@ -103,7 +146,12 @@ app.whenReady().then(() => {
   ipcMain.handle('sessions:get-titles', () => getSessionTitles())
   ipcMain.handle('app:get-startup-cwd', () => process.cwd())
 
-  const dkMcpPath = join(app.getAppPath(), 'bin', 'dk-mcp')
+  // Packaged: getAppPath() is .../app.asar, but claude spawns dk-mcp with a plain
+  // `node` (no asar support), so point at the unpacked copy (see asarUnpack bin/**).
+  const appBase = app.isPackaged
+    ? app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked')
+    : app.getAppPath()
+  const dkMcpPath = join(appBase, 'bin', 'dk-mcp')
   void ensureDeckMcpRegistered(dkMcpPath).catch((err) => {
     console.warn('[mcp-installer] failed to register:', err)
   })

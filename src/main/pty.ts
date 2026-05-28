@@ -4,6 +4,7 @@ import os from 'os'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { sanitizeTranscript } from './transcript-repair'
+import { workspaceCardsDir } from './paths'
 
 // claude stores each session at ~/.claude/projects/<cwd-with-slashes-as-dashes>/<uuid>.jsonl.
 // `--session-id <uuid>` CREATES a session and errors ("already in use") if it exists;
@@ -174,7 +175,9 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
       env: {
         ...(process.env as { [key: string]: string }),
         DECK_SESSION_ID: args.id,
-        DECK_URL: process.env.DECK_URL || 'http://127.0.0.1:6790'
+        DECK_URL: process.env.DECK_URL || 'http://127.0.0.1:6790',
+        // Where this workspace's shared card .md files live, so the bot can Glob/Read them.
+        DECK_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir())
       }
     })
 

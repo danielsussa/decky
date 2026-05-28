@@ -111,6 +111,10 @@ app.whenReady().then(() => {
     console.warn('[claude-md-installer] failed to write CLAUDE.md:', err)
   })
 
+  // Packaged macOS apps use build/icon.icns; in dev the dock falls back to the
+  // default Electron icon unless we set it explicitly.
+  if (process.platform === 'darwin') app.dock?.setIcon(icon)
+
   createWindow()
 
   app.on('activate', function () {

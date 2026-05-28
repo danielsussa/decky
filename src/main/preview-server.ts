@@ -104,6 +104,9 @@ async function normalize(wire: PreviewSourceWire): Promise<PreviewSource> {
     }
     throw new Error('markdown source requires content or path')
   }
+  if (wire.type === 'web' && !wire.url) {
+    throw new Error('web source requires a url')
+  }
   return wire as PreviewSource
 }
 

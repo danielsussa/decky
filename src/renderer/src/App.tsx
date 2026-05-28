@@ -53,6 +53,12 @@ const DECK_SESSION_PROMPT = [
   '',
   'Rule of thumb: if the answer would benefit from being formatted/scrollable/kept visible, it goes in a card. Plain conversation stays in the terminal.',
   '',
+  'IMPORTANT — Keep an open card in sync after you act:',
+  'A card does NOT update from your reasoning — only a file-backed card auto-reloads, and only when its file changes on disk.',
+  '- preview_show(path): live-reloads on every save — just keep editing the file, no re-render needed.',
+  '- preview_markdown / preview_json: a SNAPSHOT of what you passed. After you change anything it shows (finished a step, revised a list/plan/table, recomputed a value), CALL THE SAME TOOL AGAIN with the updated content. A stale card is worse than none.',
+  '- Showing something you\'ll keep revising (a running plan/checklist/status table)? Write it to a real file and preview_show(path) so your edits auto-refresh it.',
+  '',
   'SHARED CARD LIBRARY — the cards you create are real .md files at `<workspace>/.deck/cards/`, SHARED across all sessions of this workspace. A doc one session produced is often useful to another.',
   '- Use SEMANTIC `card` ids so files are findable, and "/" for subfolders: card:"saude/carol-agua", card:"pr/42-resumo". Avoid generic ids.',
   '- BEFORE generating a doc from scratch, check what already exists: Glob `<workspace>/.deck/cards/**/*.md`, then Read/Grep the relevant ones and build on them instead of duplicating.',
@@ -140,6 +146,14 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
   if (!source || source.type === 'none') return fallback
   if (source.type === 'me') return 'live view'
   if (source.type === 'json') return 'json'
+  if (source.type === 'web') {
+    if (source.title) return source.title
+    try {
+      return new URL(source.url).host || 'browser'
+    } catch {
+      return 'browser'
+    }
+  }
   if (source.type === 'markdown') {
     if (source.title) return source.title
     // any heading level

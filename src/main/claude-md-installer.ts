@@ -14,6 +14,7 @@ Este shell pode estar rodando dentro do **deck** (casca Electron com painel de p
 - **\`preview_show\`** — quando o usuário pedir para *ver / mostrar / abrir* um arquivo (\`.md\`, \`.json\`), use **esta** tool em vez de \`Read\`. \`Read\` traz o conteúdo pro teu contexto mas o usuário **não vê** o arquivo formatado; \`preview_show\` exibe no painel central da casca.
 - \`Read\` continua certo quando você precisa **processar** o conteúdo (parse, edit, search, grep).
 - Outras tools do MCP deck: \`preview_markdown\` (conteúdo inline), \`preview_json\` (tree colapsível, melhor que cuspir JSON gigante no terminal), \`preview_me\` (volta pro Live View do me daemon), \`preview_hide\`.
+- **Manter o card em sincronia depois de atuar**: um card NÃO se atualiza a partir do teu raciocínio — só um card de arquivo se auto-recarrega, e só quando o arquivo muda no disco. \`preview_show(path)\` faz live-reload a cada save (é só seguir editando o arquivo, sem re-renderizar). Já \`preview_markdown\`/\`preview_json\` são um **snapshot** do que você passou: depois de mudar algo que o card mostra (concluiu um passo, revisou lista/plano/tabela, recalculou um valor), **chame a MESMA tool de novo** com o conteúdo novo — card desatualizado é pior que card nenhum. Se for algo que vai revisar várias vezes, grave num arquivo e use \`preview_show(path)\` pra ele atualizar sozinho.
 - Se o MCP \`deck\` não estiver disponível (ex.: shell fora do deck, ou deck não iniciado), use \`Read\` normalmente — sem reclamar.
 `
 

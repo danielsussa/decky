@@ -3,6 +3,7 @@ import * as pty from 'node-pty'
 import os from 'os'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { sanitizeTranscript } from './transcript-repair'
 
 // claude stores each session at ~/.claude/projects/<cwd-with-slashes-as-dashes>/<uuid>.jsonl.
 // `--session-id <uuid>` CREATES a session and errors ("already in use") if it exists;
@@ -13,11 +14,26 @@ function claudeSessionExists(cwd: string, uuid: string): boolean {
   return existsSync(join(os.homedir(), '.claude', 'projects', encoded, `${uuid}.jsonl`))
 }
 
+function sessionUuidFromArgv(argv: string[]): string | null {
+  const i = argv.indexOf('--session-id')
+  return i !== -1 && argv[i + 1] ? argv[i + 1] : null
+}
+
 function resolveClaudeArgv(argv: string[], cwd: string): string[] {
   const i = argv.indexOf('--session-id')
   if (i === -1 || !argv[i + 1]) return argv
   const uuid = argv[i + 1]
   if (!claudeSessionExists(cwd, uuid)) return argv
+  // Heal any poisoned thinking blocks before resuming (see transcript-repair.ts).
+  try {
+    const removed = sanitizeTranscript(cwd, uuid)
+    if (removed)
+      console.log(
+        `[transcript-repair] healed ${removed} entr${removed === 1 ? 'y' : 'ies'} in ${uuid}`
+      )
+  } catch (err) {
+    console.warn('[transcript-repair] failed:', err)
+  }
   const out = [...argv]
   out[i] = '--resume'
   return out
@@ -29,6 +45,25 @@ const ptys = new Map<string, pty.IPty>()
 // so we never have two claudes on the same session id at once.
 const dying = new Map<string, Promise<void>>()
 const dyingResolvers = new Map<string, () => void>()
+
+// Auto-recovery for the claude-code "thinking blocks cannot be modified" 400 (a known
+// upstream bug that freezes the whole thread). When we see it in a session's output we
+// kill + resume that session: the resume reruns sanitizeTranscript, which strips the
+// poisoned thinking block so the thread un-freezes.
+const recovering = new Set<string>()
+const spawnArgs = new Map<string, CreatePtyArgs>()
+const recoverHistory = new Map<string, { firstAt: number; count: number }>()
+const RECOVER_WINDOW_MS = 120_000
+const MAX_RECOVERIES = 2
+
+// Distinctive phrase from the API error, matched after stripping ANSI + collapsing
+// whitespace so terminal formatting / line wraps don't defeat it.
+const THINKING_ERR = /blocks in the latest assistant message cannot be modified/i
+// eslint-disable-next-line no-control-regex -- intentionally stripping ANSI/control bytes
+const ANSI_CONTROL = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*(?:\x07|\x1b\\)|[\x00-\x09\x0b-\x1f]/g
+function normalizeForMatch(s: string): string {
+  return s.replace(ANSI_CONTROL, ' ').replace(/\s+/g, ' ')
+}
 
 function defaultShell(): string {
   if (process.platform === 'win32') return 'powershell.exe'
@@ -55,7 +90,78 @@ export interface CreatePtyArgs {
 }
 
 export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void {
+  function sendToTerminal(id: string, data: string): void {
+    const win = getWindow()
+    if (win && !win.isDestroyed()) win.webContents.send('pty:data', { id, data })
+  }
+
+  function notify(id: string, msg: string): void {
+    sendToTerminal(id, `\r\n\x1b[2m[deck] ${msg}\x1b[0m\r\n`)
+  }
+
+  // Graceful kill that lets a racing create() await the real exit (releases the session
+  // lock). SIGTERM first so claude can flush its transcript; SIGKILL only if it ignores us.
+  function killGraceful(id: string, term: pty.IPty): void {
+    if (!dying.has(id)) {
+      dying.set(id, new Promise<void>((resolve) => dyingResolvers.set(id, resolve)))
+    }
+    let exited = false
+    dying.get(id)?.then(() => {
+      exited = true
+    })
+    setTimeout(() => settleDying(id), 3000)
+    try {
+      term.kill('SIGTERM')
+      setTimeout(() => {
+        if (exited) return
+        try {
+          term.kill('SIGKILL')
+        } catch {
+          // already gone
+        }
+      }, 1500)
+    } catch {
+      settleDying(id)
+    }
+  }
+
+  function triggerRecovery(id: string): void {
+    if (recovering.has(id)) return
+    // Only resume sessions we know how to (a claude --session-id), and only if the
+    // transcript exists for the repair to act on.
+    const args = spawnArgs.get(id)
+    const uuid = args?.command ? sessionUuidFromArgv(args.command.slice(1)) : null
+    if (!args || !uuid || !claudeSessionExists(args.cwd ?? os.homedir(), uuid)) return
+
+    const now = Date.now()
+    const h = recoverHistory.get(id)
+    if (h && now - h.firstAt < RECOVER_WINDOW_MS) {
+      if (h.count >= MAX_RECOVERIES) {
+        notify(
+          id,
+          'bug de thinking-block reincidente — reinicie a sessão manualmente (o repair não resolveu)'
+        )
+        return
+      }
+      h.count++
+    } else {
+      recoverHistory.set(id, { firstAt: now, count: 1 })
+    }
+
+    recovering.add(id)
+    notify(id, 'bug de thinking-block detectado — auto-recuperando a sessão (kill + resume)…')
+    const term = ptys.get(id)
+    if (!term) {
+      recovering.delete(id)
+      return
+    }
+    // onExit respawns when it sees recovering.has(id).
+    ptys.delete(id)
+    killGraceful(id, term)
+  }
+
   function spawnPty(args: CreatePtyArgs): void {
+    spawnArgs.set(args.id, args)
     const file = args.command?.[0] ?? args.shell ?? defaultShell()
     const rawArgv = args.command ? args.command.slice(1) : []
     const argv = resolveClaudeArgv(rawArgv, args.cwd ?? os.homedir())
@@ -76,6 +182,7 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
 
     let conflictChecked = false
     let earlyBuf = ''
+    let errBuf = ''
     term.onData((data) => {
       if (!conflictChecked) {
         earlyBuf += data
@@ -90,17 +197,36 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
           earlyBuf = ''
         }
       }
+      // Watch the stream for the thinking-block 400 (rolling, ANSI-tolerant buffer).
+      if (!recovering.has(args.id)) {
+        errBuf = normalizeForMatch(errBuf + data).slice(-4000)
+        if (THINKING_ERR.test(errBuf)) {
+          errBuf = ''
+          triggerRecovery(args.id)
+        }
+      }
       const win = getWindow()
       if (!win || win.isDestroyed()) return
       win.webContents.send('pty:data', { id: args.id, data })
     })
 
     term.onExit(({ exitCode }) => {
+      ptys.delete(args.id)
+      if (recovering.has(args.id)) {
+        // Recovery exit: don't surface it as a process exit; resume the session instead.
+        recovering.delete(args.id)
+        settleDying(args.id)
+        const a = spawnArgs.get(args.id)
+        if (a) {
+          notify(args.id, 'retomando sessão…')
+          spawnPty(a)
+        }
+        return
+      }
       const win = getWindow()
       if (win && !win.isDestroyed()) {
         win.webContents.send('pty:exit', { id: args.id, code: exitCode })
       }
-      ptys.delete(args.id)
       settleDying(args.id) // unblock any create() waiting on this id to die
     })
   }
@@ -122,20 +248,9 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
     const term = ptys.get(args.id)
     if (!term) return
     ptys.delete(args.id)
-    // Register a "dying" promise BEFORE killing so a racing create() awaits the real exit.
-    if (!dying.has(args.id)) {
-      dying.set(
-        args.id,
-        new Promise<void>((resolve) => dyingResolvers.set(args.id, resolve))
-      )
-    }
-    // Safety: don't block forever if onExit never fires.
-    setTimeout(() => settleDying(args.id), 3000)
-    try {
-      term.kill()
-    } catch {
-      settleDying(args.id)
-    }
+    // A user-initiated kill cancels any pending auto-recovery for this id.
+    recovering.delete(args.id)
+    killGraceful(args.id, term)
   })
 
   ipcMain.on('pty:resize', (_e, args: { id: string; cols: number; rows: number }) => {
@@ -150,7 +265,7 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
 export function killAllPtys(): void {
   for (const term of ptys.values()) {
     try {
-      term.kill()
+      term.kill('SIGTERM') // graceful so claude can flush before deck exits
     } catch {
       // already dead
     }

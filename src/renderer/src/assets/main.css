@@ -820,61 +820,39 @@ code {
   color: var(--text-3);
 }
 
-/* Workspace switcher bar atop the sessions panel. */
+/* Workspace list atop the sessions panel — all workspaces always visible, stacked. */
 .wsbar {
-  position: relative;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
-}
-.wsbar-current {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  padding: 8px 12px;
-  background: var(--bg-0, var(--bg-1));
-  border: none;
-  color: var(--text-1);
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
+  flex-direction: column;
+  min-height: 0;
 }
-.wsbar-current:hover {
-  background: var(--bg-2);
-}
-.wsbar-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.wsbar-caret {
+.wsbar-title {
+  padding: 8px 12px 4px;
   color: var(--text-3);
-  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
-.wsbar-menu {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  z-index: 20;
-  background: var(--bg-1);
-  border: 1px solid var(--border);
-  border-top: none;
-  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.5);
-  max-height: 60vh;
+.wsbar-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 32vh;
   overflow-y: auto;
+  padding-bottom: 4px;
 }
 .wsbar-item {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 7px 12px;
+  padding: 6px 12px;
   background: transparent;
   border: none;
+  border-left: 2px solid transparent;
   color: var(--text-2);
   font-family: var(--mono);
   font-size: 12px;
@@ -887,6 +865,9 @@ code {
 }
 .wsbar-item-active {
   color: var(--text-1);
+  font-weight: 600;
+  border-left-color: var(--accent);
+  background: var(--bg-1);
 }
 .wsbar-check {
   display: inline-flex;
@@ -899,13 +880,9 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wsbar-sep {
-  height: 1px;
-  background: var(--border);
-  margin: 4px 0;
-}
 .wsbar-add {
   color: var(--accent);
+  margin-top: 2px;
 }
 
 .sstack-body {

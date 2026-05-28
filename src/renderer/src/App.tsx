@@ -128,10 +128,28 @@ function projectFromCwd(cwd: string): string {
   return cwd.replace(/\/+$/, '').split('/').pop() || cwd
 }
 
+// Placeholder session name (animal + gender-neutral adjective, so it reads right with any
+// animal) shown until the bot titles the session via session_set_title / aiTitle.
+const SESSION_ANIMALS = [
+  'lontra', 'tatu', 'coruja', 'raposa', 'lobo', 'gato', 'pardal', 'onça', 'jaguar', 'lince',
+  'tucano', 'golfinho', 'polvo', 'texugo', 'furão', 'esquilo', 'castor', 'lebre', 'falcão',
+  'gavião', 'garça', 'sabiá', 'quati', 'capivara'
+]
+const SESSION_ADJS = [
+  'veloz', 'ágil', 'feroz', 'audaz', 'voraz', 'tenaz', 'fugaz', 'sutil', 'sagaz', 'vivaz',
+  'gentil', 'hábil', 'nobre', 'livre', 'célere', 'errante', 'elegante', 'brilhante',
+  'vigilante', 'radiante', 'valente', 'ardente', 'prudente', 'silente'
+]
+function randomSessionName(): string {
+  const a = SESSION_ANIMALS[Math.floor(Math.random() * SESSION_ANIMALS.length)]
+  const j = SESSION_ADJS[Math.floor(Math.random() * SESSION_ADJS.length)]
+  return `${a}-${j}`
+}
+
 function defaultClaudeSession(cwd: string): Session {
   return {
     id: `claude-${Date.now().toString(36)}`,
-    label: 'claude',
+    label: randomSessionName(),
     project: projectFromCwd(cwd),
     cwd,
     kind: 'claude',

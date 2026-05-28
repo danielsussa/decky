@@ -1,10 +1,32 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, Menu } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { buildMenu } from './menu'
 import { registerPtyHandlers, killAllPtys } from './pty'
+import {
+  startPreviewServer,
+  stopPreviewServer,
+  getPreviewSource,
+  getSessionTitles
+} from './preview-server'
+import { ensureDeckMcpRegistered } from './mcp-installer'
+import { ensureDeckInstruction } from './claude-md-installer'
+import { resolveClaudeBin } from './claude-bin'
+import { registerStateHandlers } from './state-store'
 
 let mainWindow: BrowserWindow | null = null
+
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  })
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -15,7 +37,7 @@ function createWindow(): void {
     title: 'deck',
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#0e0e10',
+    backgroundColor: '#1e2330',
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -63,7 +85,24 @@ app.whenReady().then(() => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  Menu.setApplicationMenu(buildMenu(() => mainWindow))
+
   registerPtyHandlers(() => mainWindow)
+  registerStateHandlers()
+  startPreviewServer(() => mainWindow)
+
+  ipcMain.handle('preview:get-current', () => getPreviewSource())
+  ipcMain.handle('claude:get-bin', () => resolveClaudeBin())
+  ipcMain.handle('sessions:get-titles', () => getSessionTitles())
+  ipcMain.handle('app:get-startup-cwd', () => process.cwd())
+
+  const dkMcpPath = join(app.getAppPath(), 'bin', 'dk-mcp')
+  void ensureDeckMcpRegistered(dkMcpPath).catch((err) => {
+    console.warn('[mcp-installer] failed to register:', err)
+  })
+  void ensureDeckInstruction().catch((err) => {
+    console.warn('[claude-md-installer] failed to write CLAUDE.md:', err)
+  })
 
   createWindow()
 
@@ -85,7 +124,11 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   killAllPtys()
+  stopPreviewServer()
 })
+
+process.on('SIGTERM', () => app.quit())
+process.on('SIGINT', () => app.quit())
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.

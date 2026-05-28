@@ -1,0 +1,186 @@
+#!/usr/bin/env node
+'use strict'
+
+// MCP server that exposes the deck preview panel as tools.
+// Talks to the deck app's local HTTP server (default 127.0.0.1:6790).
+// Uses dynamic import so this CJS shebang script can load the ESM SDK.
+
+const BASE = process.env.DECK_URL || 'http://127.0.0.1:6790'
+
+const TOOLS = [
+  {
+    name: 'preview_show',
+    description:
+      'Display a file to the user in the deck preview panel (rendered/formatted). USE THIS — NOT Read — when the user asks to "show / view / open / see" a .md or .json file. Read brings content into your context but the user never sees the file; preview_show actually displays it to them in the deck UI. Use Read only when you need to programmatically process the content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the file to render.' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'preview_markdown',
+    description:
+      'Render markdown content (inline string) in the deck preview panel. Use when you want to show formatted text the user did not request to read from a file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'Markdown content.' },
+        title: { type: 'string', description: 'Optional header title.' }
+      },
+      required: ['content']
+    }
+  },
+  {
+    name: 'preview_json',
+    description:
+      'Render a JSON value as a collapsible tree in the deck preview panel. Use instead of printing large JSON to the terminal.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        value: { description: 'Any JSON-serializable value.' }
+      },
+      required: ['value']
+    }
+  },
+  {
+    name: 'preview_me',
+    description:
+      'Switch the deck preview to the me browser daemon live view. Use when starting browser automation work so the user can see what is happening.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'Optional override URL (default http://127.0.0.1:6789).'
+        }
+      }
+    }
+  },
+  {
+    name: 'preview_hide',
+    description: 'Clear the deck preview panel back to its empty state.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'session_set_title',
+    description:
+      'Label the current deck session tab so the user can tell tabs apart. Call this when starting a new task or when the current focus changes meaningfully (e.g. "fixing auth bug", "drafting PR description"). Keep it short (under 40 chars).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short label for this session tab.' }
+      },
+      required: ['title']
+    }
+  }
+]
+
+async function post(path, body) {
+  const res = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`deck ${path}: HTTP ${res.status} ${text}`)
+  }
+  return res.json()
+}
+
+async function handleCall(name, args) {
+  const a = args || {}
+
+  if (name === 'preview_show') {
+    if (typeof a.path !== 'string') throw new Error('preview_show: path required')
+    const ext = a.path.split('.').pop()?.toLowerCase()
+    if (ext === 'md' || ext === 'markdown') {
+      await post('/preview', { type: 'markdown', path: a.path })
+      return `markdown rendered: ${a.path}`
+    }
+    if (ext === 'json') {
+      const fs = require('node:fs/promises')
+      const text = await fs.readFile(a.path, 'utf-8')
+      const value = JSON.parse(text)
+      await post('/preview', { type: 'json', value })
+      return `json rendered: ${a.path}`
+    }
+    throw new Error(
+      `unsupported file extension: .${ext}. Use preview_markdown/preview_json for inline content.`
+    )
+  }
+
+  if (name === 'preview_markdown') {
+    if (typeof a.content !== 'string') throw new Error('preview_markdown: content required')
+    await post('/preview', { type: 'markdown', content: a.content, title: a.title })
+    return 'markdown rendered in deck preview'
+  }
+
+  if (name === 'preview_json') {
+    if (!('value' in a)) throw new Error('preview_json: value required')
+    await post('/preview', { type: 'json', value: a.value })
+    return 'json rendered in deck preview'
+  }
+
+  if (name === 'preview_me') {
+    await post('/preview', { type: 'me', ...(a.url ? { url: a.url } : {}) })
+    return 'switched to me live view'
+  }
+
+  if (name === 'preview_hide') {
+    await post('/preview/clear', {})
+    return 'preview cleared'
+  }
+
+  if (name === 'session_set_title') {
+    if (typeof a.title !== 'string') throw new Error('session_set_title: title required')
+    const sessionId = process.env.DECK_SESSION_ID
+    if (!sessionId) {
+      throw new Error(
+        'DECK_SESSION_ID not set — this MCP server is not running inside a deck session'
+      )
+    }
+    await post(`/sessions/${encodeURIComponent(sessionId)}/title`, { title: a.title })
+    return `session ${sessionId} titled "${a.title}"`
+  }
+
+  throw new Error(`unknown tool: ${name}`)
+}
+
+;(async () => {
+  const { Server } = await import('@modelcontextprotocol/sdk/server/index.js')
+  const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js')
+  const { CallToolRequestSchema, ListToolsRequestSchema } = await import(
+    '@modelcontextprotocol/sdk/types.js'
+  )
+
+  const server = new Server(
+    { name: 'deck', version: '0.1.0' },
+    { capabilities: { tools: {} } }
+  )
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
+
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const { name, arguments: args } = req.params
+    try {
+      const text = await handleCall(name, args)
+      return { content: [{ type: 'text', text }] }
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `error: ${err.message || String(err)}` }],
+        isError: true
+      }
+    }
+  })
+
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+})().catch((err) => {
+  // log to stderr — stdout is reserved for MCP protocol frames
+  process.stderr.write(`dk-mcp fatal: ${err.message || err}\n`)
+  process.exit(1)
+})

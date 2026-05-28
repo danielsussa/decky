@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+import type { PreviewSource } from '../shared/preview'
+
 type PtyDataMsg = { id: string; data: string }
 type PtyExitMsg = { id: string; code: number }
 
@@ -8,7 +10,7 @@ const deckApi = {
   pty: {
     create: (
       id: string,
-      opts: { cwd?: string; cols: number; rows: number; shell?: string }
+      opts: { cwd?: string; cols: number; rows: number; shell?: string; command?: string[] }
     ): Promise<void> => ipcRenderer.invoke('pty:create', { id, ...opts }),
     write: (id: string, data: string): void => ipcRenderer.send('pty:write', { id, data }),
     resize: (id: string, cols: number, rows: number): void =>
@@ -24,6 +26,58 @@ const deckApi = {
       ipcRenderer.on('pty:exit', listener)
       return () => ipcRenderer.removeListener('pty:exit', listener)
     }
+  },
+  preview: {
+    getCurrent: (): Promise<PreviewSource> => ipcRenderer.invoke('preview:get-current'),
+    onSourceChange: (callback: (source: PreviewSource) => void): (() => void) => {
+      const listener = (_: unknown, source: PreviewSource): void => callback(source)
+      ipcRenderer.on('preview:source', listener)
+      return () => ipcRenderer.removeListener('preview:source', listener)
+    }
+  },
+  claude: {
+    getBin: (): Promise<string> => ipcRenderer.invoke('claude:get-bin')
+  },
+  sessions: {
+    getTitles: (): Promise<Record<string, string>> => ipcRenderer.invoke('sessions:get-titles'),
+    onTitleChange: (callback: (msg: { id: string; title: string }) => void): (() => void) => {
+      const listener = (_: unknown, msg: { id: string; title: string }): void => callback(msg)
+      ipcRenderer.on('session:title-changed', listener)
+      return () => ipcRenderer.removeListener('session:title-changed', listener)
+    },
+    onAdd: (
+      callback: (msg: { cwd: string; kind: 'claude' | 'shell' }) => void
+    ): (() => void) => {
+      const listener = (
+        _: unknown,
+        msg: { cwd: string; kind: 'claude' | 'shell' }
+      ): void => callback(msg)
+      ipcRenderer.on('session:add', listener)
+      return () => ipcRenderer.removeListener('session:add', listener)
+    },
+    onUuidConflict: (callback: (msg: { id: string }) => void): (() => void) => {
+      const listener = (_: unknown, msg: { id: string }): void => callback(msg)
+      ipcRenderer.on('session:uuid-conflict', listener)
+      return () => ipcRenderer.removeListener('session:uuid-conflict', listener)
+    }
+  },
+  app: {
+    getStartupCwd: (): Promise<string> => ipcRenderer.invoke('app:get-startup-cwd'),
+    onMenuNewSession: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('menu:new-session', listener)
+      return () => ipcRenderer.removeListener('menu:new-session', listener)
+    },
+    onMenuCloseTab: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('menu:close-tab', listener)
+      return () => ipcRenderer.removeListener('menu:close-tab', listener)
+    }
+  },
+  state: {
+    get: <T = unknown,>(key: string): Promise<T | null> => ipcRenderer.invoke('state:get', key),
+    set: (key: string, value: unknown): Promise<true> =>
+      ipcRenderer.invoke('state:set', key, value)
   }
 }
 

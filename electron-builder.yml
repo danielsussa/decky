@@ -1,5 +1,5 @@
-appId: com.danielsussa.deck
-productName: deck
+appId: com.danielsussa.decky
+productName: decky
 directories:
   buildResources: build
 files:
@@ -16,7 +16,7 @@ asarUnpack:
   # node, so these must live unpacked on disk.
   - bin/**
 win:
-  executableName: deck
+  executableName: decky
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

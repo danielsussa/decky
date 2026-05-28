@@ -62,9 +62,7 @@ export default function DeckGrid({
     grid.batchUpdate()
     grid.removeAll(false)
     cards.forEach((c) => {
-      const el = ref.current?.querySelector<HTMLElement>(
-        `.grid-stack-item[gs-id="${c.id}"]`
-      )
+      const el = ref.current?.querySelector<HTMLElement>(`.grid-stack-item[gs-id="${c.id}"]`)
       if (!el) return
       const widget: GridStackWidget = {
         x: c.x,

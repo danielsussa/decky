@@ -6,7 +6,7 @@ import { cardFilePath } from './paths'
 // Serialize writes per-file so rapid successive updates to the same card don't clobber.
 const writeChains = new Map<string, Promise<void>>()
 
-// Main owns where a card file lives (<workspace>/.deck/cards/<id>.md). The renderer only
+// Main owns where a card file lives (<workspace>/.decky/cards/<id>.md). The renderer only
 // passes (workspace, cardId, content) and gets back the resolved abs path to store on the
 // source + watch. Returns null on failure.
 export function registerCardsHandlers(): void {

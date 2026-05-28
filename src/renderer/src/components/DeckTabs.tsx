@@ -45,8 +45,8 @@ export default function DeckTabs({
     return (
       <div className="preview-empty">
         <p>
-          nenhum card ainda. o claude desta sessão cria cards conforme renderiza
-          (markdown, json, live view).
+          nenhum card ainda. o claude desta sessão cria cards conforme renderiza (markdown, json,
+          live view).
         </p>
       </div>
     )
@@ -61,7 +61,9 @@ export default function DeckTabs({
             className={`deck-tab ${c.id === activeId ? 'deck-tab-active' : ''} ${c.pinned ? 'deck-tab-ispinned' : ''} ${overId === c.id && dragId !== c.id ? 'deck-tab-dragover' : ''} ${dragId === c.id ? 'deck-tab-dragging' : ''}`}
             role="button"
             tabIndex={0}
-            title={onTogglePin ? 'duplo-clique pra fixar/desafixar · arraste pra reordenar' : undefined}
+            title={
+              onTogglePin ? 'duplo-clique pra fixar/desafixar · arraste pra reordenar' : undefined
+            }
             draggable={!!onReorder}
             onDragStart={() => setDragId(c.id)}
             onDragOver={(e) => {

@@ -3,9 +3,11 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 const CONFIG_PATH = join(homedir(), '.claude.json')
-// A DECK_DEV instance registers under its own name + port so it never clobbers the
+// A DECKY_DEV instance registers under its own name + port so it never clobbers the
 // stable app's MCP registration (both live in the global ~/.claude.json).
-const SERVER_NAME = process.env.DECK_DEV ? 'deck-dev' : 'deck'
+const SERVER_NAME = process.env.DECKY_DEV ? 'decky-dev' : 'decky'
+// Old names from before the deck→decky rename; removed on registration so they don't linger.
+const LEGACY_NAMES = ['deck', 'deck-dev']
 
 interface McpServerConfig {
   command: string
@@ -57,13 +59,15 @@ export async function ensureDeckMcpRegistered(serverScriptPath: string): Promise
     args: [serverScriptPath]
   }
   // Point the spawned dk-mcp at THIS instance's preview server (dev uses 6791).
-  if (process.env.DECK_URL) desired.env = { DECK_URL: process.env.DECK_URL }
+  if (process.env.DECKY_URL) desired.env = { DECKY_URL: process.env.DECKY_URL }
 
-  if (serversEqual(config.mcpServers[SERVER_NAME], desired)) return
+  const hasLegacy = LEGACY_NAMES.some((n) => config.mcpServers![n])
+  if (!hasLegacy && serversEqual(config.mcpServers[SERVER_NAME], desired)) return
 
+  for (const n of LEGACY_NAMES) delete config.mcpServers[n]
   config.mcpServers[SERVER_NAME] = desired
 
-  const tmp = CONFIG_PATH + '.deck-tmp'
+  const tmp = CONFIG_PATH + '.decky-tmp'
   await writeFile(tmp, JSON.stringify(config, null, 2))
   await rename(tmp, CONFIG_PATH)
 

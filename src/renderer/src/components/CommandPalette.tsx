@@ -12,7 +12,10 @@ interface CommandPaletteProps {
   onClose: () => void
 }
 
-export default function CommandPalette({ commands, onClose }: CommandPaletteProps): React.JSX.Element {
+export default function CommandPalette({
+  commands,
+  onClose
+}: CommandPaletteProps): React.JSX.Element {
   const [q, setQ] = useState('')
   const [sel, setSel] = useState(0)
   const filtered = commands.filter((c) => c.label.toLowerCase().includes(q.toLowerCase().trim()))

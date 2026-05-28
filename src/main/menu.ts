@@ -14,7 +14,7 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
     const result = await dialog.showOpenDialog(win, {
       properties: ['openDirectory', 'createDirectory'],
       title: 'Open Folder as Workspace',
-      buttonLabel: 'Open in deck'
+      buttonLabel: 'Open in decky'
     })
     if (!result.canceled && result.filePaths[0]) {
       win.webContents.send('session:add', { cwd: result.filePaths[0], kind: 'claude' })
@@ -63,7 +63,9 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
           accelerator: 'CmdOrCtrl+W',
           click: () => sendToRenderer('menu:close-tab')
         },
-        ...(!isMac ? ([{ type: 'separator' }, { role: 'quit' }] satisfies MenuItemConstructorOptions[]) : [])
+        ...(!isMac
+          ? ([{ type: 'separator' }, { role: 'quit' }] satisfies MenuItemConstructorOptions[])
+          : [])
       ]
     },
 
@@ -96,7 +98,9 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
       submenu: [
         { role: 'minimize' },
         { role: 'close' },
-        ...(isMac ? ([{ type: 'separator' }, { role: 'front' }] satisfies MenuItemConstructorOptions[]) : [])
+        ...(isMac
+          ? ([{ type: 'separator' }, { role: 'front' }] satisfies MenuItemConstructorOptions[])
+          : [])
       ]
     }
   ]

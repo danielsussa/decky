@@ -4,25 +4,25 @@
 const path = require('node:path')
 const fs = require('node:fs/promises')
 
-const BASE = process.env.DECK_URL || 'http://127.0.0.1:6790'
+const BASE = process.env.DECKY_URL || 'http://127.0.0.1:6790'
 
-const HELP = `dk — controla o painel de preview e workspaces do deck.
+const HELP = `dky — controla o painel de preview e workspaces do decky.
 
 uso:
-  dk show <arquivo>            renderiza arquivo (.md, .markdown, .json)
-  dk show --md <conteúdo|->    markdown inline (- lê stdin)
-  dk show --json <json|->      JSON inline (parseado em tree)
-  dk show --me [url]           live view do me daemon (default: http://127.0.0.1:6789)
-  dk hide                      esvazia o preview
-  dk current                   imprime o source atual (JSON)
+  dky show <arquivo>            renderiza arquivo (.md, .markdown, .json)
+  dky show --md <conteúdo|->    markdown inline (- lê stdin)
+  dky show --json <json|->      JSON inline (parseado em tree)
+  dky show --me [url]           live view do me daemon (default: http://127.0.0.1:6789)
+  dky hide                      esvazia o preview
+  dky current                   imprime o source atual (JSON)
 
-  dk workspace [path]          abre uma sessão claude no path (default: cwd atual)
-  dk workspace --shell [path]  mesmo, mas como sessão shell
+  dky workspace [path]          abre uma sessão claude no path (default: cwd atual)
+  dky workspace --shell [path]  mesmo, mas como sessão shell
 
-  dk help                      esta mensagem
+  dky help                      esta mensagem
 
 env:
-  DECK_URL  base do http server interno (default ${BASE})
+  DECKY_URL  base do http server interno (default ${BASE})
 `
 
 function die(msg, code = 1) {
@@ -39,7 +39,7 @@ async function readStdin() {
 
 async function post(p, body) {
   const headers = { 'content-type': 'application/json' }
-  if (process.env.DECK_SESSION_ID) headers['x-deck-session-id'] = process.env.DECK_SESSION_ID
+  if (process.env.DECKY_SESSION_ID) headers['x-deck-session-id'] = process.env.DECKY_SESSION_ID
   const res = await fetch(BASE + p, {
     method: 'POST',
     headers,
@@ -47,7 +47,7 @@ async function post(p, body) {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    die(`deck ${p}: HTTP ${res.status} ${text}`)
+    die(`decky ${p}: HTTP ${res.status} ${text}`)
   }
   return res.json()
 }

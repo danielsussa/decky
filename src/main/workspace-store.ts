@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, rename, access } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { ipcMain } from 'electron'
 import { workspaceStatePath, workspaceDir } from './paths'
+import { migrateWorkspaceDir } from './migrate'
 
 const FILE = 'workspace.json'
 
@@ -9,7 +10,7 @@ const FILE = 'workspace.json'
 const writeChains = new Map<string, Promise<void>>()
 
 // Keep the transient workspace state out of git but leave cards/ trackable. Contained
-// inside .deck/ — doesn't touch the project's root .gitignore.
+// inside .decky/ — doesn't touch the project's root .gitignore.
 async function ensureGitignore(cwd: string): Promise<void> {
   const gi = join(workspaceDir(cwd), '.gitignore')
   try {
@@ -19,7 +20,7 @@ async function ensureGitignore(cwd: string): Promise<void> {
     // doesn't exist yet
   }
   const body =
-    '# deck local-only workspace state. cards/ stay trackable (commit to share project docs,\n' +
+    '# decky local-only workspace state. cards/ stay trackable (commit to share project docs,\n' +
     '# or add `cards/` below to keep them private).\n' +
     'workspace.json\n' +
     '*.tmp\n'
@@ -32,6 +33,7 @@ async function ensureGitignore(cwd: string): Promise<void> {
 
 export function registerWorkspaceHandlers(): void {
   ipcMain.handle('workspace:read', async (_e, cwd: string) => {
+    await migrateWorkspaceDir(cwd)
     try {
       const text = await readFile(workspaceStatePath(cwd, FILE), 'utf-8')
       return JSON.parse(text)

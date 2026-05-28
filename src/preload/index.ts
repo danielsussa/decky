@@ -51,7 +51,7 @@ const deckApi = {
       ipcRenderer.invoke('workspace:write', cwd, state)
   },
   cards: {
-    // Materialize a card to its file under the workspace's .deck/cards/. Returns the
+    // Materialize a card to its file under the workspace's .decky/cards/. Returns the
     // resolved abs path (to store on the source + watch), or null on failure.
     write: (workspace: string, cardId: string, content: string): Promise<string | null> =>
       ipcRenderer.invoke('cards:write', workspace, cardId, content)

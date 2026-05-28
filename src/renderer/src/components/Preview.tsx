@@ -17,8 +17,8 @@ export default function Preview({ source }: PreviewProps): React.JSX.Element {
   return (
     <div className="preview-empty">
       <p>
-        nada pra mostrar. use <code>dk show &lt;arquivo&gt;</code> ou{' '}
-        <code>dk show --me</code> no terminal.
+        nada pra mostrar. use <code>dky show &lt;arquivo&gt;</code> ou <code>dky show --me</code> no
+        terminal.
       </p>
     </div>
   )

@@ -5,7 +5,7 @@ import { BrowserWindow } from 'electron'
 import type { PreviewSource, PreviewSourceWire } from '../shared/preview'
 import { isGeneratedCardPath } from './paths'
 
-const PORT = Number(process.env.DECK_PREVIEW_PORT) || 6790
+const PORT = Number(process.env.DECKY_PREVIEW_PORT) || 6790
 const HOST = '127.0.0.1'
 
 const GLOBAL_KEY = 'global'
@@ -32,7 +32,7 @@ export async function rehydratePreviews(
       if (source.type === 'markdown' && source.path && !source.content) {
         try {
           const content = await readFile(source.path, 'utf-8')
-          // Generated card files (<workspace>/.deck/cards/<id>.md) have meaningless
+          // Generated card files (<workspace>/.decky/cards/<id>.md) have meaningless
           // basenames. Drop a title that's just the filename so it derives from the content
           // (heading / first line); keep a real custom title if the bot set one.
           const generated = isGeneratedCardPath(source.path)

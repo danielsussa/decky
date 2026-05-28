@@ -97,7 +97,9 @@ export default function ShortcutsPanel({
         })}
       </div>
       {error && <div className="remap-error">{error}</div>}
-      <div className="remap-hint">clique num atalho e pressione a nova combinação · Esc cancela</div>
+      <div className="remap-hint">
+        clique num atalho e pressione a nova combinação · Esc cancela
+      </div>
     </div>
   )
 }

@@ -14,6 +14,7 @@ import {
 } from './preview-server'
 import { registerWorkspaceHandlers } from './workspace-store'
 import { registerCardsHandlers } from './cards-store'
+import { migrateGlobalState } from './migrate'
 import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from './mcp-installer'
 import { ensureDeckInstruction } from './claude-md-installer'
@@ -22,16 +23,16 @@ import { registerStateHandlers } from './state-store'
 
 let mainWindow: BrowserWindow | null = null
 
-// DECK_DEV runs a fully isolated dev instance alongside the installed app: its own name +
-// userData (→ separate single-instance lock, so both run), paired with DECK_STATE_DIR /
-// DECK_PREVIEW_PORT / DECK_URL from the `dev` script. Must run BEFORE the lock below,
+// DECKY_DEV runs a fully isolated dev instance alongside the installed app: its own name +
+// userData (→ separate single-instance lock, so both run), paired with DECKY_STATE_DIR /
+// DECKY_PREVIEW_PORT / DECKY_URL from the `dev` script. Must run BEFORE the lock below,
 // since requestSingleInstanceLock keys off userData.
-if (process.env.DECK_DEV) {
-  app.setName('deck-dev')
-  app.setPath('userData', join(app.getPath('appData'), 'deck-dev'))
+if (process.env.DECKY_DEV) {
+  app.setName('decky-dev')
+  app.setPath('userData', join(app.getPath('appData'), 'decky-dev'))
 }
 
-// Single instance is the design: a relaunch (e.g. `deck ~/proj`) routes the folder
+// Single instance is the design: a relaunch (e.g. `decky ~/proj`) routes the folder
 // into the running window as a workspace instead of spawning a second process.
 function firstDirArg(argv: string[], fallbackCwd: string): string | null {
   for (let i = argv.length - 1; i >= 1; i--) {
@@ -68,7 +69,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 1024,
     minHeight: 640,
-    title: 'deck',
+    title: 'decky',
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#1e2330',
@@ -105,7 +106,10 @@ function createWindow(): void {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Migrate pre-rename data (~/.deck → ~/.decky) BEFORE the renderer reads any state.
+  await migrateGlobalState()
+
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
@@ -151,7 +155,7 @@ app.whenReady().then(() => {
   const appBase = app.isPackaged
     ? app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked')
     : app.getAppPath()
-  const dkMcpPath = join(appBase, 'bin', 'dk-mcp')
+  const dkMcpPath = join(appBase, 'bin', 'dky-mcp')
   void ensureDeckMcpRegistered(dkMcpPath).catch((err) => {
     console.warn('[mcp-installer] failed to register:', err)
   })

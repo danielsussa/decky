@@ -97,7 +97,7 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
   }
 
   function notify(id: string, msg: string): void {
-    sendToTerminal(id, `\r\n\x1b[2m[deck] ${msg}\x1b[0m\r\n`)
+    sendToTerminal(id, `\r\n\x1b[2m[decky] ${msg}\x1b[0m\r\n`)
   }
 
   // Graceful kill that lets a racing create() await the real exit (releases the session
@@ -174,10 +174,10 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
       cwd: args.cwd ?? os.homedir(),
       env: {
         ...(process.env as { [key: string]: string }),
-        DECK_SESSION_ID: args.id,
-        DECK_URL: process.env.DECK_URL || 'http://127.0.0.1:6790',
+        DECKY_SESSION_ID: args.id,
+        DECKY_URL: process.env.DECKY_URL || 'http://127.0.0.1:6790',
         // Where this workspace's shared card .md files live, so the bot can Glob/Read them.
-        DECK_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir())
+        DECKY_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir())
       }
     })
 

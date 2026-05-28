@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 'use strict'
 
-// MCP server that exposes the deck preview panel as tools.
-// Talks to the deck app's local HTTP server (default 127.0.0.1:6790).
+// MCP server that exposes the decky preview panel as tools.
+// Talks to the decky app's local HTTP server (default 127.0.0.1:6790).
 // Uses dynamic import so this CJS shebang script can load the ESM SDK.
 
-const BASE = process.env.DECK_URL || 'http://127.0.0.1:6790'
+const BASE = process.env.DECKY_URL || 'http://127.0.0.1:6790'
 
 // Cards (tabs) in the center panel are created on demand by you, the session bot.
 // A session starts with NO cards. Each preview_* call lands in a card.
 const CARD_DESC =
-  'Optional card/tab id, ALSO the filename of the shared .md at $DECK_CARDS_DIR/<id>.md. ' +
+  'Optional card/tab id, ALSO the filename of the shared .md at $DECKY_CARDS_DIR/<id>.md. ' +
   'Use SEMANTIC ids (e.g. "carol-agua", "pr/42-resumo") — "/" makes subfolders. ' +
   'Omit to use the focused card (or auto-create from the title slug). ' +
   'Distinct ids = multiple tabs at once; reuse an id to update/overwrite that card. ' +
-  'These files are shared across sessions — prefer reusing existing ones (Glob/Read $DECK_CARDS_DIR) over duplicating.'
+  'These files are shared across sessions — prefer reusing existing ones (Glob/Read $DECKY_CARDS_DIR) over duplicating.'
 
 const TOOLS = [
   {
     name: 'preview_show',
     description:
-      'Display a file to the user in the deck preview panel (rendered/formatted). USE THIS — NOT Read — when the user asks to "show / view / open / see" a .md or .json file. Read brings content into your context but the user never sees the file; preview_show actually displays it to them in the deck UI. Use Read only when you need to programmatically process the content.',
+      'Display a file to the user in the decky preview panel (rendered/formatted). USE THIS — NOT Read — when the user asks to "show / view / open / see" a .md or .json file. Read brings content into your context but the user never sees the file; preview_show actually displays it to them in the decky UI. Use Read only when you need to programmatically process the content.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -33,7 +33,7 @@ const TOOLS = [
   {
     name: 'preview_markdown',
     description:
-      'Render markdown content (inline string) in a deck card. Use when you want to show formatted text the user did not request to read from a file.',
+      'Render markdown content (inline string) in a decky card. Use when you want to show formatted text the user did not request to read from a file.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -47,7 +47,7 @@ const TOOLS = [
   {
     name: 'preview_json',
     description:
-      'Render a JSON value as a collapsible tree in a deck card. Use instead of printing large JSON to the terminal.',
+      'Render a JSON value as a collapsible tree in a decky card. Use instead of printing large JSON to the terminal.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -60,7 +60,7 @@ const TOOLS = [
   {
     name: 'preview_me',
     description:
-      'Route a deck card to the me browser daemon\'s Live View (embedded). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see the browser automation, or when you produce a 127.0.0.1:6789/tab/<name> URL. The deck embeds the Live View inline; spawning an external browser is the wrong path.',
+      'Route a decky card to the me browser daemon\'s Live View (embedded). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see the browser automation, or when you produce a 127.0.0.1:6789/tab/<name> URL. The decky embeds the Live View inline; spawning an external browser is the wrong path.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -75,13 +75,13 @@ const TOOLS = [
   },
   {
     name: 'preview_hide',
-    description: 'Clear the deck preview panel back to its empty state.',
+    description: 'Clear the decky preview panel back to its empty state.',
     inputSchema: { type: 'object', properties: {} }
   },
   {
     name: 'session_set_title',
     description:
-      'Label the current deck session tab so the user can tell tabs apart. Call this when starting a new task or when the current focus changes meaningfully (e.g. "fixing auth bug", "drafting PR description"). Keep it short (under 40 chars).',
+      'Label the current decky session tab so the user can tell tabs apart. Call this when starting a new task or when the current focus changes meaningfully (e.g. "fixing auth bug", "drafting PR description"). Keep it short (under 40 chars).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -94,7 +94,7 @@ const TOOLS = [
 
 async function post(path, body, cardId) {
   const headers = { 'content-type': 'application/json' }
-  if (process.env.DECK_SESSION_ID) headers['x-deck-session-id'] = process.env.DECK_SESSION_ID
+  if (process.env.DECKY_SESSION_ID) headers['x-deck-session-id'] = process.env.DECKY_SESSION_ID
   if (cardId) headers['x-deck-card-id'] = String(cardId)
   const res = await fetch(BASE + path, {
     method: 'POST',
@@ -103,7 +103,7 @@ async function post(path, body, cardId) {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new Error(`deck ${path}: HTTP ${res.status} ${text}`)
+    throw new Error(`decky ${path}: HTTP ${res.status} ${text}`)
   }
   return res.json()
 }
@@ -133,13 +133,13 @@ async function handleCall(name, args) {
   if (name === 'preview_markdown') {
     if (typeof a.content !== 'string') throw new Error('preview_markdown: content required')
     await post('/preview', { type: 'markdown', content: a.content, title: a.title }, a.card)
-    return 'markdown rendered in deck card'
+    return 'markdown rendered in decky card'
   }
 
   if (name === 'preview_json') {
     if (!('value' in a)) throw new Error('preview_json: value required')
     await post('/preview', { type: 'json', value: a.value }, a.card)
-    return 'json rendered in deck card'
+    return 'json rendered in decky card'
   }
 
   if (name === 'preview_me') {
@@ -154,10 +154,10 @@ async function handleCall(name, args) {
 
   if (name === 'session_set_title') {
     if (typeof a.title !== 'string') throw new Error('session_set_title: title required')
-    const sessionId = process.env.DECK_SESSION_ID
+    const sessionId = process.env.DECKY_SESSION_ID
     if (!sessionId) {
       throw new Error(
-        'DECK_SESSION_ID not set — this MCP server is not running inside a deck session'
+        'DECKY_SESSION_ID not set — this MCP server is not running inside a deck session'
       )
     }
     await post(`/sessions/${encodeURIComponent(sessionId)}/title`, { title: a.title })
@@ -175,7 +175,7 @@ async function handleCall(name, args) {
   )
 
   const server = new Server(
-    { name: 'deck', version: '0.1.0' },
+    { name: 'decky', version: '0.1.0' },
     { capabilities: { tools: {} } }
   )
 

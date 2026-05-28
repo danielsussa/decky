@@ -4,5 +4,7 @@ out
 .DS_Store
 .eslintcache
 *.log*
+.decky/
+.decky-dev/
 .deck/
 .deck-dev/

@@ -4,25 +4,40 @@ import { homedir } from 'node:os'
 
 const CLAUDE_MD = join(homedir(), '.claude', 'CLAUDE.md')
 
-const MARKER_START = '<!-- deck:auto-start — editado pelo deck, não remova os markers -->'
-const MARKER_END = '<!-- deck:auto-end -->'
+const MARKER_START = '<!-- decky:auto-start — editado pelo decky, não remova os markers -->'
+const MARKER_END = '<!-- decky:auto-end -->'
 
-const BLOCK_BODY = `## deck (auto-instalado)
+// Pre-rename block markers — stripped on install so we don't leave a stale `deck` block.
+const LEGACY_START_PREFIX = '<!-- deck:auto-start'
+const LEGACY_END = '<!-- deck:auto-end -->'
 
-Este shell pode estar rodando dentro do **deck** (casca Electron com painel de preview à direita do terminal). Quando o servidor MCP \`deck\` aparecer em \`mcp__deck__*\`, ele tem ferramentas para **mostrar** conteúdo ao usuário em vez de só ler.
+const BLOCK_BODY = `## decky (auto-instalado)
+
+Este shell pode estar rodando dentro do **decky** (casca Electron com painel de preview à direita do terminal). Quando o servidor MCP \`decky\` aparecer em \`mcp__decky__*\`, ele tem ferramentas para **mostrar** conteúdo ao usuário em vez de só ler.
 
 - **\`preview_show\`** — quando o usuário pedir para *ver / mostrar / abrir* um arquivo (\`.md\`, \`.json\`), use **esta** tool em vez de \`Read\`. \`Read\` traz o conteúdo pro teu contexto mas o usuário **não vê** o arquivo formatado; \`preview_show\` exibe no painel central da casca.
 - \`Read\` continua certo quando você precisa **processar** o conteúdo (parse, edit, search, grep).
-- Outras tools do MCP deck: \`preview_markdown\` (conteúdo inline), \`preview_json\` (tree colapsível, melhor que cuspir JSON gigante no terminal), \`preview_me\` (volta pro Live View do me daemon), \`preview_hide\`.
+- Outras tools do MCP decky: \`preview_markdown\` (conteúdo inline), \`preview_json\` (tree colapsível, melhor que cuspir JSON gigante no terminal), \`preview_me\` (volta pro Live View do me daemon), \`preview_hide\`.
 - **Manter o card em sincronia depois de atuar**: um card NÃO se atualiza a partir do teu raciocínio — só um card de arquivo se auto-recarrega, e só quando o arquivo muda no disco. \`preview_show(path)\` faz live-reload a cada save (é só seguir editando o arquivo, sem re-renderizar). Já \`preview_markdown\`/\`preview_json\` são um **snapshot** do que você passou: depois de mudar algo que o card mostra (concluiu um passo, revisou lista/plano/tabela, recalculou um valor), **chame a MESMA tool de novo** com o conteúdo novo — card desatualizado é pior que card nenhum. Se for algo que vai revisar várias vezes, grave num arquivo e use \`preview_show(path)\` pra ele atualizar sozinho.
-- **Biblioteca de cards**: os cards que você cria são arquivos \`.md\` reais no \`.deck/cards/\` do projeto (a env var \`$DECK_CARDS_DIR\` tem o caminho absoluto), compartilhados entre todas as sessions do workspace. Antes de gerar um doc do zero, dê um Glob \`$DECK_CARDS_DIR/**/*.md\` e reaproveite/edite o existente. \`$DECK_CARDS_DIR/PINNED.md\` lista os cards fixados (contexto sempre relevante).
-- Se o MCP \`deck\` não estiver disponível (ex.: shell fora do deck, ou deck não iniciado), use \`Read\` normalmente — sem reclamar.
+- **Biblioteca de cards**: os cards que você cria são arquivos \`.md\` reais no \`.decky/cards/\` do projeto (a env var \`$DECKY_CARDS_DIR\` tem o caminho absoluto), compartilhados entre todas as sessions do workspace. Antes de gerar um doc do zero, dê um Glob \`$DECKY_CARDS_DIR/**/*.md\` e reaproveite/edite o existente. \`$DECKY_CARDS_DIR/PINNED.md\` lista os cards fixados (contexto sempre relevante).
+- Se o MCP \`decky\` não estiver disponível (ex.: shell fora do decky, ou decky não iniciado), use \`Read\` normalmente — sem reclamar.
 `
 
 const BLOCK = `${MARKER_START}\n${BLOCK_BODY}${MARKER_END}\n`
 
+// Remove the pre-rename `deck` auto block, if present, so the rename leaves no stale copy.
+function stripLegacyBlock(text: string): string {
+  const start = text.indexOf(LEGACY_START_PREFIX)
+  if (start === -1) return text
+  const endMarker = text.indexOf(LEGACY_END, start)
+  if (endMarker === -1) return text
+  const before = text.slice(0, start)
+  const after = text.slice(endMarker + LEGACY_END.length)
+  return before.replace(/\s*$/, '') + after.replace(/^\s*/, after && before ? '\n\n' : '')
+}
+
 /**
- * Ensure the global ~/.claude/CLAUDE.md contains an up-to-date deck instruction block.
+ * Ensure the global ~/.claude/CLAUDE.md contains an up-to-date decky instruction block.
  * Idempotent: only writes when content changed. Preserves any other content the user has.
  */
 export async function ensureDeckInstruction(): Promise<void> {
@@ -36,6 +51,9 @@ export async function ensureDeckInstruction(): Promise<void> {
       return
     }
   }
+
+  const original = existing
+  existing = stripLegacyBlock(existing)
 
   let next: string
   const startIdx = existing.indexOf(MARKER_START)
@@ -55,9 +73,9 @@ export async function ensureDeckInstruction(): Promise<void> {
     }
   }
 
-  if (next === existing) return
+  if (next === original) return
 
   await mkdir(dirname(CLAUDE_MD), { recursive: true })
   await writeFile(CLAUDE_MD, next)
-  console.log(`[claude-md-installer] updated ${CLAUDE_MD} with deck instruction block`)
+  console.log(`[claude-md-installer] updated ${CLAUDE_MD} with decky instruction block`)
 }

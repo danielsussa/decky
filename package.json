@@ -1,11 +1,11 @@
 {
-  "name": "deck",
+  "name": "decky",
   "version": "0.0.1",
   "private": true,
-  "description": "Casca pra dirigir o agente Claude + me CLI — terminal, Live View, arquivos do projeto e pendências num só painel.",
+  "description": "decky — casca pra dirigir o agente Claude + me CLI: terminal, Live View, arquivos do projeto e pendências num só painel.",
   "main": "./out/main/index.js",
   "author": "Daniel Kanczuk <danielsussa@gmail.com>",
-  "homepage": "https://github.com/danielsussa/deck",
+  "homepage": "https://github.com/danielsussa/decky",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
@@ -13,7 +13,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "start": "electron-vite preview",
-    "dev": "DECK_DEV=1 DECK_STATE_DIR=\"$HOME/.deck-dev\" DECK_PREVIEW_PORT=6791 DECK_URL=http://127.0.0.1:6791 electron-vite dev",
+    "dev": "DECKY_DEV=1 DECKY_STATE_DIR=\"$HOME/.decky-dev\" DECKY_PREVIEW_PORT=6791 DECKY_URL=http://127.0.0.1:6791 electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",

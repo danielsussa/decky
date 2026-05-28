@@ -51,8 +51,8 @@ export default function MePreview({ url }: MePreviewProps): React.JSX.Element {
     return (
       <div className="preview-empty">
         <p>
-          o <strong>me daemon</strong> não está rodando (sem servidor em{' '}
-          <code>127.0.0.1:6789</code>).
+          o <strong>me daemon</strong> não está rodando (sem servidor em <code>127.0.0.1:6789</code>
+          ).
           <br />
           rode <code>handoff start</code> num terminal e clique recarregar.
         </p>
@@ -63,7 +63,7 @@ export default function MePreview({ url }: MePreviewProps): React.JSX.Element {
     )
   }
 
-  const iframeSrc = selected ? `${BASE}/tab/${encodeURIComponent(selected)}` : url ?? BASE
+  const iframeSrc = selected ? `${BASE}/tab/${encodeURIComponent(selected)}` : (url ?? BASE)
 
   return (
     <div className="me-preview">

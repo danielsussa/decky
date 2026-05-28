@@ -19,7 +19,7 @@ import {
 } from '../../shared/keymap'
 
 // Experimento: alterna o layout do painel central entre 'grid' (gridstack) e 'tabs'.
-const DECK_LAYOUT: 'grid' | 'tabs' = 'tabs'
+const DECKY_LAYOUT: 'grid' | 'tabs' = 'tabs'
 
 // Browser-tab model: sessions are always LISTED, but only this many keep a live pty
 // (claude process). Opening one beyond the cap suspends the least-recently-used; reopening
@@ -37,19 +37,19 @@ const PANELS: { id: PanelId; title: string; paletteLabel: string }[] = [
 const HOME = '/Users/danielkanczuk'
 const LAST_WORKSPACE_KEY = 'lastWorkspace'
 
-const DECK_SESSION_PROMPT = [
-  'You are running INSIDE the deck IDE: a 2-panel UI (sessions left, deck-grid center with cards) paired with an MCP server named "deck".',
+const DECKY_SESSION_PROMPT = [
+  'You are running INSIDE the decky IDE: a 2-panel UI (sessions left, decky-grid center with cards) paired with an MCP server named "decky".',
   '',
-  'Available deck tools (PREFER these over plain terminal output whenever the user wants to *see* or *read* something):',
-  '- mcp__deck__session_set_title(title): label this tab. CALL this immediately at the start of any NEW conversation with 1-3 short words (e.g. "fixing auth bug"). Skip in continued conversations unless focus shifts.',
-  '- mcp__deck__preview_show(path): render a .md/.json file in a deck card. USE THIS — NOT `Read` or `cat` — when the user asks to *show/view/open* a file. Read brings content into your context; preview_show actually displays it to them.',
-  '- mcp__deck__preview_markdown(content, title?): render inline markdown content in a deck card.',
-  '- mcp__deck__preview_json(value): render a JSON tree in a deck card (better than cat-ing JSON to terminal).',
-  "- mcp__deck__preview_me(url?): route a deck card to the me browser daemon's Live View (embedded iframe). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see what `me` (browser automation) is doing or to open a 127.0.0.1:6789/tab/... URL.",
-  '- mcp__deck__preview_hide(): clear the active card.',
+  'Available decky tools (PREFER these over plain terminal output whenever the user wants to *see* or *read* something):',
+  '- mcp__decky__session_set_title(title): label this tab. CALL this immediately at the start of any NEW conversation with 1-3 short words (e.g. "fixing auth bug"). Skip in continued conversations unless focus shifts.',
+  '- mcp__decky__preview_show(path): render a .md/.json file in a decky card. USE THIS — NOT `Read` or `cat` — when the user asks to *show/view/open* a file. Read brings content into your context; preview_show actually displays it to them.',
+  '- mcp__decky__preview_markdown(content, title?): render inline markdown content in a decky card.',
+  '- mcp__decky__preview_json(value): render a JSON tree in a decky card (better than cat-ing JSON to terminal).',
+  "- mcp__decky__preview_me(url?): route a decky card to the me browser daemon's Live View (embedded iframe). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see what `me` (browser automation) is doing or to open a 127.0.0.1:6789/tab/... URL.",
+  '- mcp__decky__preview_hide(): clear the active card.',
   '',
   'IMPORTANT — Cards as the default surface for content:',
-  'Whenever your response is STRUCTURED CONTENT the user will want to read or keep visible (lists, tables, markdown, JSON, file contents, examples, summaries, plans), CALL preview_markdown or preview_json — the deck routes it to the user\'s focused card automatically. Then give a short one-line confirmation in the terminal ("listed in card", "shown in preview").',
+  'Whenever your response is STRUCTURED CONTENT the user will want to read or keep visible (lists, tables, markdown, JSON, file contents, examples, summaries, plans), CALL preview_markdown or preview_json — decky routes it to the user\'s focused card automatically. Then give a short one-line confirmation in the terminal ("listed in card", "shown in preview").',
   'Reserve raw terminal text for: short answers, confirmations, asking the user a question, status updates while you work.',
   '',
   'Examples:',
@@ -65,12 +65,12 @@ const DECK_SESSION_PROMPT = [
   '- preview_markdown / preview_json: a SNAPSHOT of what you passed. After you change anything it shows (finished a step, revised a list/plan/table, recomputed a value), CALL THE SAME TOOL AGAIN with the updated content. A stale card is worse than none.',
   "- Showing something you'll keep revising (a running plan/checklist/status table)? Write it to a real file and preview_show(path) so your edits auto-refresh it.",
   '',
-  "SHARED CARD LIBRARY — the cards you create are real .md files in this project's `.deck/cards/` (the env var `$DECK_CARDS_DIR` holds the absolute path), SHARED across all sessions of this workspace. A doc one session produced is often useful to another.",
+  "SHARED CARD LIBRARY — the cards you create are real .md files in this project's `.decky/cards/` (the env var `$DECKY_CARDS_DIR` holds the absolute path), SHARED across all sessions of this workspace. A doc one session produced is often useful to another.",
   '- Use SEMANTIC `card` ids so files are findable, and "/" for subfolders: card:"saude/carol-agua", card:"pr/42-resumo". Avoid generic ids.',
-  '- BEFORE generating a doc from scratch, check what already exists: Glob `$DECK_CARDS_DIR/**/*.md` (run `echo "$DECK_CARDS_DIR"` if you need the literal path), then Read/Grep the relevant ones and build on them instead of duplicating.',
+  '- BEFORE generating a doc from scratch, check what already exists: Glob `$DECKY_CARDS_DIR/**/*.md` (run `echo "$DECKY_CARDS_DIR"` if you need the literal path), then Read/Grep the relevant ones and build on them instead of duplicating.',
   '- To revise an existing card, reuse the same `card` id (overwrites the file) or just edit the .md directly (the card live-updates via file-watch).',
   '',
-  'PINNED CONTEXT — `$DECK_CARDS_DIR/PINNED.md` lists cards the user pinned. Pinned cards are shown in EVERY session and are meant as shared, always-relevant context. At the start of a task, read PINNED.md and the files it points to.'
+  'PINNED CONTEXT — `$DECKY_CARDS_DIR/PINNED.md` lists cards the user pinned. Pinned cards are shown in EVERY session and are meant as shared, always-relevant context. At the start of a task, read PINNED.md and the files it points to.'
 ].join('\n')
 
 interface WorkspaceState {
@@ -131,14 +131,56 @@ function projectFromCwd(cwd: string): string {
 // Placeholder session name (animal + gender-neutral adjective, so it reads right with any
 // animal) shown until the bot titles the session via session_set_title / aiTitle.
 const SESSION_ANIMALS = [
-  'lontra', 'tatu', 'coruja', 'raposa', 'lobo', 'gato', 'pardal', 'onça', 'jaguar', 'lince',
-  'tucano', 'golfinho', 'polvo', 'texugo', 'furão', 'esquilo', 'castor', 'lebre', 'falcão',
-  'gavião', 'garça', 'sabiá', 'quati', 'capivara'
+  'lontra',
+  'tatu',
+  'coruja',
+  'raposa',
+  'lobo',
+  'gato',
+  'pardal',
+  'onça',
+  'jaguar',
+  'lince',
+  'tucano',
+  'golfinho',
+  'polvo',
+  'texugo',
+  'furão',
+  'esquilo',
+  'castor',
+  'lebre',
+  'falcão',
+  'gavião',
+  'garça',
+  'sabiá',
+  'quati',
+  'capivara'
 ]
 const SESSION_ADJS = [
-  'veloz', 'ágil', 'feroz', 'audaz', 'voraz', 'tenaz', 'fugaz', 'sutil', 'sagaz', 'vivaz',
-  'gentil', 'hábil', 'nobre', 'livre', 'célere', 'errante', 'elegante', 'brilhante',
-  'vigilante', 'radiante', 'valente', 'ardente', 'prudente', 'silente'
+  'veloz',
+  'ágil',
+  'feroz',
+  'audaz',
+  'voraz',
+  'tenaz',
+  'fugaz',
+  'sutil',
+  'sagaz',
+  'vivaz',
+  'gentil',
+  'hábil',
+  'nobre',
+  'livre',
+  'célere',
+  'errante',
+  'elegante',
+  'brilhante',
+  'vigilante',
+  'radiante',
+  'valente',
+  'ardente',
+  'prudente',
+  'silente'
 ]
 function randomSessionName(): string {
   const a = SESSION_ANIMALS[Math.floor(Math.random() * SESSION_ANIMALS.length)]
@@ -217,7 +259,7 @@ function App(): React.JSX.Element {
   const [claudeBin, setClaudeBin] = useState<string | null>(null)
   const [startupCwd, setStartupCwd] = useState<string | null>(null)
   const [workspace, setWorkspace] = useState<string | null>(null)
-  // Registry of folders opened as workspaces (global, ~/.deck/state.json) — drives the switcher.
+  // Registry of folders opened as workspaces (global, ~/.decky/state.json) — drives the switcher.
   const [workspaces, setWorkspaces] = useState<string[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeId, setActiveId] = useState<string | undefined>(undefined)
@@ -244,7 +286,7 @@ function App(): React.JSX.Element {
   const [activity, setActivity] = useState<Record<string, { status: string; at: number }>>({})
   const [aiTitles, setAiTitles] = useState<Record<string, string>>({})
   const [now, setNow] = useState(Date.now())
-  // Keyboard bindings: stored overrides (global, ~/.deck/state.json).
+  // Keyboard bindings: stored overrides (global, ~/.decky/state.json).
   const [keymapOverrides, setKeymapOverrides] = useState<Keymap>({})
   // Command palette (Cmd/Ctrl+P) + which system panels are open as center tabs.
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -349,7 +391,7 @@ function App(): React.JSX.Element {
         }
       }
 
-      // Materialize inline markdown into a real file (main owns the path, in <workspace>/.deck) →
+      // Materialize inline markdown into a real file (main owns the path, in <workspace>/.decky) →
       // editable, live-watched, discoverable by other sessions. target may contain "/".
       if (source.type === 'markdown' && !source.path && ws) {
         void window.deck.cards.write(ws, target!, source.content).then((filePath) => {
@@ -367,7 +409,7 @@ function App(): React.JSX.Element {
       setTitles((prev) => ({ ...prev, [id]: title }))
     })
     const unsubAdd = window.deck.sessions.onAdd(({ cwd }) => {
-      // Open Folder semantics: just switch workspace — its state (~/.deck) loads (or resurrects).
+      // Open Folder semantics: just switch workspace — its state (~/.decky) loads (or resurrects).
       setWorkspace(cwd)
     })
     const unsubConflict = window.deck.sessions.onUuidConflict(({ id }) => {
@@ -375,7 +417,7 @@ function App(): React.JSX.Element {
       // permanently lose the conversation. A conflict on restart is usually a stale lock
       // from the just-killed claude; the session id stays stable so the conversation can
       // resume once the lock clears (reopen the tab if it shows "[process exited]").
-      console.warn(`[deck] claude session ${id} reported a UUID conflict (lock not yet released)`)
+      console.warn(`[decky] claude session ${id} reported a UUID conflict (lock not yet released)`)
     })
     const unsubNewSession = window.deck.app.onMenuNewSession(() => {
       const { workspace: ws, startupCwd: scwd } = stateRef.current
@@ -442,7 +484,7 @@ function App(): React.JSX.Element {
     setWorkspace(startupCwd)
   }, [lastWorkspaceResolved, workspace, startupCwd])
 
-  // Load the workspace's persisted state (~/.deck/workspaces/<slug>/workspace.json) on switch.
+  // Load the workspace's persisted state (~/.decky/workspaces/<slug>/workspace.json) on switch.
   useEffect(() => {
     if (!workspace) return
     const prevWs = loadedWorkspaceRef.current
@@ -553,7 +595,7 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     const workspaceName = workspace ? projectFromCwd(workspace) : ''
-    document.title = workspaceName ? `${workspaceName} — deck` : 'deck'
+    document.title = workspaceName ? `${workspaceName} — decky` : 'decky'
   }, [workspace])
 
   // Register every opened workspace in the switcher list, and persist the registry.
@@ -737,7 +779,7 @@ function App(): React.JSX.Element {
 
   const activeSessionTitle =
     sessionsWithTitles.find((s) => s.id === activeId)?.label ??
-    (workspace ? projectFromCwd(workspace) : 'deck')
+    (workspace ? projectFromCwd(workspace) : 'decky')
 
   const cardPreviews: Record<string, PreviewSource> = activeId
     ? (previewsByCard[activeId] ?? {})
@@ -799,7 +841,7 @@ function App(): React.JSX.Element {
     setWorkspace(ws)
   }
 
-  // Close = remove from the switcher (does NOT delete the on-disk .deck). If it's the active
+  // Close = remove from the switcher (does NOT delete the on-disk .decky). If it's the active
   // one, fall back to another workspace (or the empty state).
   const closeWorkspace = (ws: string): void => {
     setExpandedWorkspaces((e) => e.filter((w) => w !== ws))
@@ -831,9 +873,9 @@ function App(): React.JSX.Element {
           '--session-id',
           s.claudeSessionId,
           '--append-system-prompt',
-          DECK_SESSION_PROMPT
+          DECKY_SESSION_PROMPT
         ]
-      : [claudeBin!, '--append-system-prompt', DECK_SESSION_PROMPT]
+      : [claudeBin!, '--append-system-prompt', DECKY_SESSION_PROMPT]
   }
 
   const openPanel = (pid: PanelId): void => {
@@ -1033,10 +1075,10 @@ function App(): React.JSX.Element {
 
           <section className="panel panel-preview">
             <div className="panel-header">
-              <span>deck</span>
+              <span>decky</span>
             </div>
             <div className="panel-body panel-body-flush">
-              {DECK_LAYOUT === 'tabs' ? (
+              {DECKY_LAYOUT === 'tabs' ? (
                 <DeckTabs
                   focusedId={focusedCardId}
                   onFocusChange={setFocusedCard}

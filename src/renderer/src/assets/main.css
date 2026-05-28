@@ -820,15 +820,17 @@ code {
   color: var(--text-3);
 }
 
-/* Workspace list atop the sessions panel — all workspaces always visible, stacked. */
-.wsbar {
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
+/* Workspace tree below the terminal: collapsible folders → their sessions. */
+.wstree {
+  flex: 0 1 auto;
+  max-height: 50%;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  padding-bottom: 4px;
 }
-.wsbar-title {
+.wstree-title {
   padding: 8px 12px 4px;
   color: var(--text-3);
   font-family: var(--mono);
@@ -837,52 +839,162 @@ code {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.wsbar-list {
-  display: flex;
-  flex-direction: column;
-  max-height: 32vh;
-  overflow-y: auto;
-  padding-bottom: 4px;
-}
-.wsbar-item {
+.wstree-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 12px;
+  border-left: 2px solid transparent;
+}
+.wstree-row:hover {
+  background: var(--bg-2);
+}
+.wstree-row-active {
+  border-left-color: var(--accent);
+  background: var(--bg-1);
+}
+.wstree-caret {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 2px 6px 8px;
   background: transparent;
   border: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.wstree-name {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-1);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wstree-children {
+  display: flex;
+  flex-direction: column;
+}
+.wstree-session {
+  display: flex;
+  align-items: center;
   border-left: 2px solid transparent;
+}
+.wstree-session:hover {
+  background: var(--bg-2);
+}
+.wstree-session-active {
+  border-left-color: var(--accent);
+  background: var(--bg-1);
+}
+.wstree-session-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 4px 5px 26px;
+  background: transparent;
+  border: none;
   color: var(--text-2);
   font-family: var(--mono);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
-.wsbar-item:hover {
-  background: var(--bg-2);
+.wstree-session-active .wstree-session-btn {
   color: var(--text-1);
 }
-.wsbar-item-active {
-  color: var(--text-1);
-  font-weight: 600;
-  border-left-color: var(--accent);
-  background: var(--bg-1);
-}
-.wsbar-check {
-  display: inline-flex;
-  width: 14px;
-  color: var(--accent);
-  flex-shrink: 0;
-}
-.wsbar-item-name {
+.wstree-session-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wsbar-add {
-  color: var(--accent);
+.wstree-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+  flex-shrink: 0;
+}
+.wstree-dot-on {
+  background: var(--accent);
+  animation: deck-dot-pulse 1s ease-in-out infinite;
+}
+@keyframes deck-dot-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.wstree-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 26px;
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.wstree-new:hover {
+  color: var(--text-1);
+}
+.wstree-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
   margin-top: 2px;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.wstree-x {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+}
+.wstree-row:hover .wstree-x,
+.wstree-session:hover .wstree-x {
+  opacity: 1;
+}
+.wstree-x:hover {
+  color: var(--red, #f48771);
+}
+
+/* Hosts the active workspace's session terminals (active visible, rest mounted+hidden). */
+.termhost {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.termhost-body {
+  display: none;
+  min-height: 0;
+}
+.termhost-body-active {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .sstack-body {

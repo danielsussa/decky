@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import ResizableSplit from './components/ResizableSplit'
-import Terminal from './components/Terminal'
 import Preview from './components/Preview'
 import DeckGrid from './components/DeckGrid'
 import DeckTabs from './components/DeckTabs'
-import SessionStack, { type Session } from './components/SessionStack'
-import WorkspaceBar from './components/WorkspaceBar'
+import WorkspaceTree, { type TreeSession } from './components/WorkspaceTree'
+import TerminalHost from './components/TerminalHost'
+import type { Session } from './types'
 import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
 import type { PreviewSource } from '../../shared/preview'
@@ -206,6 +206,10 @@ function App(): React.JSX.Element {
   // LRU of sessions that currently have a live pty (most-recent at the end). Active is
   // always live; others stay warm until evicted past MAX_LIVE_SESSIONS.
   const [liveIds, setLiveIds] = useState<string[]>([])
+  // Which workspaces are expanded in the tree, and a display-only cache of the session
+  // lists of NON-active workspaces (read lazily from their workspace.json).
+  const [expandedWorkspaces, setExpandedWorkspaces] = useState<string[]>([])
+  const [wsSessionsCache, setWsSessionsCache] = useState<Record<string, TreeSession[]>>({})
   // Cards are created on-demand by the session's bot (via preview_*); a session starts empty.
   const [cardsBySession, setCardsBySession] = useState<Record<string, string[]>>({})
   const [focusedCardBySession, setFocusedCardBySession] = useState<Record<string, string | null>>(
@@ -229,6 +233,10 @@ function App(): React.JSX.Element {
   const [openPanels, setOpenPanels] = useState<PanelId[]>([])
 
   const loadedWorkspaceRef = useRef<string | null>(null)
+  // When selecting a session (or "nova sessão") in a workspace that isn't active yet, we
+  // switch workspace first; these tell the load effect what to do once its sessions land.
+  const pendingActiveRef = useRef<string | null>(null)
+  const pendingNewRef = useRef(false)
   const userInputAtRef = useRef<Record<string, number>>({})
   // Latest nav state for the global keyboard shortcuts (Ctrl+Arrows). Assigned
   // each render below; the listener (registered once) reads through this ref.
@@ -434,6 +442,16 @@ function App(): React.JSX.Element {
         pinned: serializePreviews({ p: pinned }).p
       })
     }
+    // Drop the previous workspace's cached session list so the tree re-reads it fresh next expand.
+    if (prevWs) {
+      const stale = prevWs
+      setWsSessionsCache((c) => {
+        if (!(stale in c)) return c
+        const n = { ...c }
+        delete n[stale]
+        return n
+      })
+    }
 
     let cancelled = false
     setWsLoaded(false)
@@ -441,13 +459,24 @@ function App(): React.JSX.Element {
       const data = await window.deck.workspace.read<WorkspaceState>(workspace)
       if (cancelled) return
       if (data && Array.isArray(data.sessions) && data.sessions.length > 0) {
-        const sess = migrateSessions(data.sessions)
+        let sess = migrateSessions(data.sessions)
         const previews = await window.deck.preview.rehydrate(data.previews ?? {})
         if (cancelled) return
-        setSessions(sess)
-        setActiveId(
+        let initial =
           data.activeId && sess.some((s) => s.id === data.activeId) ? data.activeId : sess[0]?.id
-        )
+        // Honor a session picked in the tree before this workspace was active.
+        if (pendingActiveRef.current && sess.some((s) => s.id === pendingActiveRef.current)) {
+          initial = pendingActiveRef.current
+        }
+        if (pendingNewRef.current) {
+          const def = defaultClaudeSession(workspace)
+          sess = [...sess, def]
+          initial = def.id
+        }
+        pendingActiveRef.current = null
+        pendingNewRef.current = false
+        setSessions(sess)
+        setActiveId(initial)
         setCardsBySession(data.cardsBySession ?? {})
         setFocusedCardBySession(data.focusedCardBySession ?? {})
         setPreviewsByCard(previews)
@@ -458,6 +487,8 @@ function App(): React.JSX.Element {
         if (!cancelled) setPinned(pinnedRe)
       } else {
         const def = defaultClaudeSession(workspace)
+        pendingActiveRef.current = null
+        pendingNewRef.current = false
         setSessions([def])
         setActiveId(def.id)
         setCardsBySession({})
@@ -515,6 +546,27 @@ function App(): React.JSX.Element {
   useEffect(() => {
     if (workspaces.length) void window.deck.state.set('workspaces', workspaces)
   }, [workspaces])
+
+  // Auto-expand the active workspace so its sessions show in the tree.
+  useEffect(() => {
+    if (!workspace) return
+    setExpandedWorkspaces((e) => (e.includes(workspace) ? e : [...e, workspace]))
+  }, [workspace])
+
+  // Lazily read the session lists of expanded NON-active workspaces (display-only labels).
+  useEffect(() => {
+    for (const ws of expandedWorkspaces) {
+      if (ws === workspace) continue // active workspace uses live `sessions`
+      void window.deck.workspace.read<WorkspaceState>(ws).then((data) => {
+        const list: TreeSession[] = (data?.sessions ?? []).map((s) => ({
+          id: s.id,
+          label: data?.titles?.[s.id] || s.label,
+          kind: s.kind
+        }))
+        setWsSessionsCache((c) => (c[ws] ? c : { ...c, [ws]: list }))
+      })
+    }
+  }, [expandedWorkspaces, workspace])
 
   // Promote the active session to most-recently-used; evict the LRU past the cap.
   useEffect(() => {
@@ -655,6 +707,20 @@ function App(): React.JSX.Element {
     sessionActivity[id] = { status: a.status, active: now - a.at < 1500 }
   }
 
+  // Sessions shown in the tree: the active workspace from live state, others from the cache.
+  const treeSessionsByWorkspace: Record<string, TreeSession[]> = { ...wsSessionsCache }
+  if (workspace) {
+    treeSessionsByWorkspace[workspace] = sessionsWithTitles.map((s) => ({
+      id: s.id,
+      label: s.label,
+      kind: s.kind
+    }))
+  }
+
+  const activeSessionTitle =
+    sessionsWithTitles.find((s) => s.id === activeId)?.label ??
+    (workspace ? projectFromCwd(workspace) : 'deck')
+
   const cardPreviews: Record<string, PreviewSource> = activeId
     ? (previewsByCard[activeId] ?? {})
     : {}
@@ -690,6 +756,66 @@ function App(): React.JSX.Element {
   const addFolder = async (): Promise<void> => {
     const p = await window.deck.app.pickFolder()
     if (p) setWorkspace(p)
+  }
+
+  const toggleExpand = (ws: string): void =>
+    setExpandedWorkspaces((e) => (e.includes(ws) ? e.filter((w) => w !== ws) : [...e, ws]))
+
+  // Selecting a session in a non-active workspace switches first; the load effect then
+  // activates the pending session once that workspace's sessions land.
+  const selectSession = (ws: string, sid: string): void => {
+    if (ws === workspace) {
+      setActiveId(sid)
+      return
+    }
+    pendingActiveRef.current = sid
+    setWorkspace(ws)
+  }
+
+  const newSessionIn = (ws: string): void => {
+    if (ws === workspace) {
+      newClaudeSession()
+      return
+    }
+    pendingNewRef.current = true
+    setWorkspace(ws)
+  }
+
+  // Close = remove from the switcher (does NOT delete the on-disk .deck). If it's the active
+  // one, fall back to another workspace (or the empty state).
+  const closeWorkspace = (ws: string): void => {
+    setExpandedWorkspaces((e) => e.filter((w) => w !== ws))
+    setWsSessionsCache((c) => {
+      if (!(ws in c)) return c
+      const n = { ...c }
+      delete n[ws]
+      return n
+    })
+    setWorkspaces((prev) => prev.filter((w) => w !== ws))
+    if (ws === workspace) {
+      const remaining = workspaces.filter((w) => w !== ws)
+      if (remaining.length) {
+        setWorkspace(remaining[0])
+      } else {
+        loadedWorkspaceRef.current = null
+        setWorkspace(null)
+        setSessions([])
+        setActiveId(undefined)
+      }
+    }
+  }
+
+  const commandFor = (s: Session): string[] | undefined => {
+    if (s.kind !== 'claude') return undefined
+    return s.claudeSessionId
+      ? [
+          claudeBin!,
+          '--session-id',
+          s.claudeSessionId,
+          '--append-system-prompt',
+          DECK_SESSION_PROMPT
+        ]
+      : [claudeBin!, '--append-system-prompt', DECK_SESSION_PROMPT]
   }
 
   const openPanel = (pid: PanelId): void => {
@@ -758,12 +884,6 @@ function App(): React.JSX.Element {
       }
     }
   }
-
-  const footer = (
-    <button type="button" className="sstack-add" onClick={newClaudeSession}>
-      + nova sessão
-    </button>
-  )
 
   // Reorder cards from a drag-drop: split the new sequence back into pinned
   // (workspace-global, rebuilt to preserve key order) and the active session's own.
@@ -861,76 +981,36 @@ function App(): React.JSX.Element {
           storageKey="deck-layout-2col-v0"
         >
           <section className="panel panel-sessions">
-            <WorkspaceBar
-              current={workspace}
-              workspaces={workspaces}
-              onSwitch={setWorkspace}
-              onAddFolder={() => void addFolder()}
-              nameOf={projectFromCwd}
-            />
+            <div className="panel-header">
+              <span>{activeSessionTitle}</span>
+            </div>
             <div className="panel-body panel-body-flush">
-              <SessionStack
+              <TerminalHost
                 sessions={sessionsWithTitles}
                 activeId={activeId}
-                onActiveChange={setActiveId}
-                onClose={handleClose}
-                onReorder={(orderedIds) => {
-                  setSessions((prev) => {
-                    const byId = new Map(prev.map((s) => [s.id, s]))
-                    const next = orderedIds
-                      .map((id) => byId.get(id))
-                      .filter((s): s is Session => !!s)
-                    prev.forEach((s) => {
-                      if (!orderedIds.includes(s.id)) next.push(s)
-                    })
-                    return next
-                  })
-                }}
-                activity={sessionActivity}
-                footer={footer}
-                renderBody={(s, { isActive }) => {
-                  if (s.kind === 'claude' && !claudeBin) {
-                    return (
-                      <div className="panel-placeholder">
-                        <p className="muted">resolvendo claude…</p>
-                      </div>
-                    )
-                  }
-                  // Suspended (LRU-evicted) sessions don't mount a Terminal → no pty. Active is
-                  // always treated as live so it mounts immediately (before the LRU effect runs).
-                  if (!isActive && !liveIds.includes(s.id)) {
-                    return (
-                      <div className="panel-placeholder">
-                        <p className="muted">sessão suspensa — clique pra retomar</p>
-                      </div>
-                    )
-                  }
-                  const cmd =
-                    s.kind === 'claude'
-                      ? s.claudeSessionId
-                        ? [
-                            claudeBin!,
-                            '--session-id',
-                            s.claudeSessionId,
-                            '--append-system-prompt',
-                            DECK_SESSION_PROMPT
-                          ]
-                        : [claudeBin!, '--append-system-prompt', DECK_SESSION_PROMPT]
-                      : undefined
-                  return (
-                    <Terminal
-                      id={s.id}
-                      cwd={s.cwd}
-                      command={cmd}
-                      visible={isActive}
-                      onUserInput={() => {
-                        userInputAtRef.current[s.id] = Date.now()
-                      }}
-                    />
-                  )
+                liveIds={liveIds}
+                claudeBin={claudeBin}
+                commandFor={commandFor}
+                onUserInput={(id) => {
+                  userInputAtRef.current[id] = Date.now()
                 }}
               />
             </div>
+            <WorkspaceTree
+              workspaces={workspaces}
+              activeWorkspace={workspace}
+              activeSessionId={activeId}
+              expanded={expandedWorkspaces}
+              sessionsByWorkspace={treeSessionsByWorkspace}
+              activity={sessionActivity}
+              nameOf={projectFromCwd}
+              onToggleExpand={toggleExpand}
+              onSelectSession={selectSession}
+              onNewSession={newSessionIn}
+              onCloseSession={handleClose}
+              onCloseWorkspace={closeWorkspace}
+              onAddFolder={() => void addFolder()}
+            />
           </section>
 
           <section className="panel panel-preview">

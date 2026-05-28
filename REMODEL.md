@@ -79,6 +79,18 @@ Baixo risco; destrava dogfoodar as fases seguintes dentro do dev isolado.
 
 ---
 
+## Follow-up — painel esquerdo vira tree (workspace → sessões)
+
+- [x] `WorkspaceTree` (novo): tree colapsável de workspaces; cada um expande pras sessões;
+  selecionar sessão troca de workspace + ativa; "nova sessão" por workspace; **fechar workspace**
+  (tira do switcher, não apaga o `.deck`); fechar sessão (do workspace ativo).
+- [x] `TerminalHost` (novo): renderiza só os terminais do workspace ativo (ativo visível, vivos
+  ocultos montados pra preservar estado). `SessionStack` + `WorkspaceBar` aposentados; tipo `Session` → `types.ts`.
+- [x] sessões de workspaces inativos lidas lazy do `workspace.json` deles (display-only).
+- [ ] **pendências/limitações** (validar no GUI): drag-reorder de sessões caiu; fechar sessão só no
+  workspace ativo (nos outros, clicar troca primeiro); CSS `.sstack-*` das tabs antigas ficou morto
+  (não removido pq `.sstack-add-btn` ainda é usado pelo MePreview) — candidato a limpeza.
+
 ## Estado: todas as fases com código pronto ✅ — falta validação no GUI (você)
 
 Validar com `npm run dev` (deck-dev isolado) + `npm run build:mac` pro `deck.app`:

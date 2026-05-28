@@ -38,9 +38,11 @@ async function readStdin() {
 }
 
 async function post(p, body) {
+  const headers = { 'content-type': 'application/json' }
+  if (process.env.DECK_SESSION_ID) headers['x-deck-session-id'] = process.env.DECK_SESSION_ID
   const res = await fetch(BASE + p, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify(body)
   })
   if (!res.ok) {

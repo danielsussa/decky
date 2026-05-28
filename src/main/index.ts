@@ -7,7 +7,7 @@ import { registerPtyHandlers, killAllPtys } from './pty'
 import {
   startPreviewServer,
   stopPreviewServer,
-  getPreviewSource,
+  getPreviewSources,
   getSessionTitles
 } from './preview-server'
 import { ensureDeckMcpRegistered } from './mcp-installer'
@@ -91,7 +91,7 @@ app.whenReady().then(() => {
   registerStateHandlers()
   startPreviewServer(() => mainWindow)
 
-  ipcMain.handle('preview:get-current', () => getPreviewSource())
+  ipcMain.handle('preview:get-all', () => getPreviewSources())
   ipcMain.handle('claude:get-bin', () => resolveClaudeBin())
   ipcMain.handle('sessions:get-titles', () => getSessionTitles())
   ipcMain.handle('app:get-startup-cwd', () => process.cwd())

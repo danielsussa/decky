@@ -19,8 +19,10 @@ export interface DeckAPI {
     onExit: (callback: (msg: PtyExitMsg) => void) => () => void
   }
   preview: {
-    getCurrent: () => Promise<PreviewSource>
-    onSourceChange: (callback: (source: PreviewSource) => void) => () => void
+    getAll: () => Promise<Record<string, PreviewSource>>
+    onSourceChange: (
+      callback: (msg: { sessionId: string; source: PreviewSource }) => void
+    ) => () => void
   }
   claude: {
     getBin: () => Promise<string>

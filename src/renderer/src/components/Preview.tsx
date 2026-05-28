@@ -1,17 +1,13 @@
-import { useEffect, useState } from 'react'
 import MePreview from './MePreview'
 import MarkdownPreview from './MarkdownPreview'
 import JsonPreview from './JsonPreview'
 import type { PreviewSource } from '../../../shared/preview'
 
-export default function Preview(): React.JSX.Element {
-  const [source, setSource] = useState<PreviewSource>({ type: 'none' })
+interface PreviewProps {
+  source: PreviewSource
+}
 
-  useEffect(() => {
-    void window.deck.preview.getCurrent().then(setSource)
-    return window.deck.preview.onSourceChange(setSource)
-  }, [])
-
+export default function Preview({ source }: PreviewProps): React.JSX.Element {
   if (source.type === 'me') return <MePreview url={source.url} />
   if (source.type === 'markdown')
     return <MarkdownPreview content={source.content} title={source.title} />

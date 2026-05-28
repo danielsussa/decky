@@ -3,14 +3,23 @@ import ResizableSplit from './components/ResizableSplit'
 import Terminal from './components/Terminal'
 import Preview from './components/Preview'
 import SessionStack, { type Session } from './components/SessionStack'
+import type { PreviewSource } from '../../shared/preview'
 
 const HOME = '/Users/danielkanczuk'
 
-const DECK_SESSION_PROMPT =
-  'You are running inside the deck IDE — a terminal session paired with an MCP server named "deck" that exposes UI tools (mcp__deck__session_set_title, mcp__deck__preview_show, etc). ' +
-  'At the start of any NEW conversation, after understanding the user\'s first message, CALL mcp__deck__session_set_title with 1-3 short words describing the task (e.g. "fixing auth bug", "review PR 42") BEFORE doing other work. ' +
-  'It is session bootstrap — do not ask permission. ' +
-  'Skip the rename in continued conversations unless the focus shifts noticeably.'
+const DECK_SESSION_PROMPT = [
+  'You are running INSIDE the deck IDE: a 3-panel UI (sessions left, preview center, sidebar right) paired with an MCP server named "deck".',
+  '',
+  'Available deck tools (PREFER these over generic alternatives whenever the user wants to *see* or *organize* something):',
+  '- mcp__deck__session_set_title(title): label this tab. CALL this immediately at the start of any NEW conversation with 1-3 short words (e.g. "fixing auth bug"). Skip in continued conversations unless focus shifts.',
+  '- mcp__deck__preview_show(path): render a .md/.json file in the center preview panel. USE THIS — NOT `Read` or `cat` — when the user asks to *show/view/open* a file. Read brings content into your context; preview_show actually displays it to them.',
+  '- mcp__deck__preview_markdown(content, title?): render inline markdown content.',
+  '- mcp__deck__preview_json(value): render a JSON tree (better than cat-ing JSON to terminal).',
+  '- mcp__deck__preview_me(url?): route the center preview to the me browser daemon\'s Live View (embedded iframe). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see what `me` (browser automation) is doing or to open a 127.0.0.1:6789/tab/... URL. The deck embeds it; external browser is the wrong path.',
+  '- mcp__deck__preview_hide(): clear the preview panel.',
+  '',
+  'Rule of thumb: if the user said "show" / "mostra" / "abre no preview" / "mostra no painel" — reach for a preview_* tool first. `open`, `Read`, `cat` are fallbacks only when the deck tools are not applicable.'
+].join('\n')
 
 function freshClaudeId(): string {
   return crypto.randomUUID()
@@ -36,12 +45,6 @@ function isInWorkspace(cwd: string, workspace: string | null): boolean {
   return cwd === workspace || cwd.startsWith(workspace + '/')
 }
 
-function expandTilde(p: string): string {
-  if (p === '~') return HOME
-  if (p.startsWith('~/')) return HOME + p.slice(1)
-  return p
-}
-
 function projectFromCwd(cwd: string): string {
   if (cwd === HOME) return '~'
   if (cwd.startsWith(HOME + '/')) {
@@ -59,19 +62,20 @@ function App(): React.JSX.Element {
   const [workspace, setWorkspace] = useState<string | null>(null)
   const [stateLoaded, setStateLoaded] = useState(false)
   const [titles, setTitles] = useState<Record<string, string>>({})
-
-  const [adding, setAdding] = useState(false)
-  const [newKind, setNewKind] = useState<'claude' | 'shell'>('claude')
-  const [newCwd, setNewCwd] = useState('')
+  const [previews, setPreviews] = useState<Record<string, PreviewSource>>({})
 
   // Live state ref for menu callbacks (which are registered once on mount).
-  const stateRef = useRef({ sessions, activeId })
-  stateRef.current = { sessions, activeId }
+  const stateRef = useRef({ sessions, activeId, workspace, startupCwd })
+  stateRef.current = { sessions, activeId, workspace, startupCwd }
 
   useEffect(() => {
     void window.deck.claude.getBin().then(setClaudeBin)
     void window.deck.app.getStartupCwd().then(setStartupCwd)
     void window.deck.sessions.getTitles().then(setTitles)
+    void window.deck.preview.getAll().then(setPreviews)
+    const unsubPreview = window.deck.preview.onSourceChange(({ sessionId, source }) => {
+      setPreviews((prev) => ({ ...prev, [sessionId]: source }))
+    })
     // Load persisted state from main process file store (survives Vite port bumps).
     void Promise.all([
       window.deck.state.get<Session[]>(SESSIONS_KEY),
@@ -129,7 +133,22 @@ function App(): React.JSX.Element {
       )
     })
     const unsubNewSession = window.deck.app.onMenuNewSession(() => {
-      setAdding(true)
+      const { workspace: ws, startupCwd: scwd } = stateRef.current
+      const cwd = ws || scwd
+      if (!cwd) return
+      const id = `claude-${Date.now().toString(36)}`
+      setSessions((prev) => [
+        ...prev,
+        {
+          id,
+          label: 'claude',
+          project: projectFromCwd(cwd),
+          cwd,
+          kind: 'claude',
+          claudeSessionId: freshClaudeId()
+        }
+      ])
+      setActiveId(id)
     })
     const unsubCloseTab = window.deck.app.onMenuCloseTab(() => {
       const { sessions: prev, activeId: cur } = stateRef.current
@@ -147,6 +166,7 @@ function App(): React.JSX.Element {
       unsubConflict()
       unsubNewSession()
       unsubCloseTab()
+      unsubPreview()
     }
   }, [])
 
@@ -204,6 +224,11 @@ function App(): React.JSX.Element {
     [visibleSessions, titles]
   )
 
+  const activePreview: PreviewSource = useMemo(() => {
+    if (!activeId) return previews.global ?? { type: 'none' }
+    return previews[activeId] ?? previews.global ?? { type: 'none' }
+  }, [activeId, previews])
+
   const handleClose = (id: string): void => {
     setSessions((prev) => {
       const idx = prev.findIndex((s) => s.id === id)
@@ -217,66 +242,24 @@ function App(): React.JSX.Element {
     })
   }
 
-  const cancelAdd = (): void => {
-    setAdding(false)
-    setNewCwd('')
-    setNewKind('claude')
-  }
-
-  const createSession = (): void => {
-    const cwd = expandTilde(newCwd.trim() || '~')
-    const id = `${newKind}-${Date.now().toString(36)}`
-    const project = projectFromCwd(cwd)
+  const newClaudeSession = (): void => {
+    const cwd = workspace || startupCwd
+    if (!cwd) return
+    const id = `claude-${Date.now().toString(36)}`
     const session: Session = {
       id,
-      label: newKind,
-      project,
+      label: 'claude',
+      project: projectFromCwd(cwd),
       cwd,
-      kind: newKind,
-      ...(newKind === 'claude' ? { claudeSessionId: freshClaudeId() } : {})
+      kind: 'claude',
+      claudeSessionId: freshClaudeId()
     }
     setSessions((prev) => [...prev, session])
     setActiveId(id)
-    cancelAdd()
   }
 
-  const footer = adding ? (
-    <div className="sstack-add-form">
-      <div className="sstack-add-kind-row">
-        {(['claude', 'shell'] as const).map((k) => (
-          <button
-            key={k}
-            type="button"
-            className={`sstack-add-kind ${newKind === k ? 'active' : ''}`}
-            onClick={() => setNewKind(k)}
-          >
-            {k}
-          </button>
-        ))}
-      </div>
-      <input
-        className="sstack-add-input"
-        placeholder="path do projeto (default ~)"
-        value={newCwd}
-        onChange={(e) => setNewCwd(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') createSession()
-          if (e.key === 'Escape') cancelAdd()
-        }}
-        spellCheck={false}
-        autoFocus
-      />
-      <div className="sstack-add-actions">
-        <button type="button" className="sstack-add-btn primary" onClick={createSession}>
-          criar
-        </button>
-        <button type="button" className="sstack-add-btn" onClick={cancelAdd}>
-          cancelar
-        </button>
-      </div>
-    </div>
-  ) : (
-    <button type="button" className="sstack-add" onClick={() => setAdding(true)}>
+  const footer = (
+    <button type="button" className="sstack-add" onClick={newClaudeSession}>
       + nova sessão
     </button>
   )
@@ -289,7 +272,7 @@ function App(): React.JSX.Element {
           minSizes={[15, 20, 12]}
           storageKey="deck-layout-v0"
         >
-          <section className="panel panel-terminal">
+          <section className="panel panel-sessions">
             <div className="panel-body panel-body-flush">
               <SessionStack
                 sessions={sessionsWithTitles}
@@ -330,16 +313,14 @@ function App(): React.JSX.Element {
               <span>preview</span>
             </div>
             <div className="panel-body panel-body-flush">
-              <Preview />
+              <Preview source={activePreview} />
             </div>
           </section>
 
-          <section className="panel panel-side">
-            <div className="panel-header">pendências</div>
+          <section className="panel panel-sidebar">
+            <div className="panel-header">sidebar</div>
             <div className="panel-body panel-placeholder">
-              <p>
-                parser de <code>pendencias.md</code> em breve.
-              </p>
+              <p>vai abrigar pendências, notes, etc.</p>
               <p className="muted">próximo PR.</p>
             </div>
           </section>

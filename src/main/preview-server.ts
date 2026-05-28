@@ -7,22 +7,33 @@ import type { PreviewSource, PreviewSourceWire } from '../shared/preview'
 const PORT = Number(process.env.DECK_PREVIEW_PORT) || 6790
 const HOST = '127.0.0.1'
 
-let current: PreviewSource = { type: 'none' }
+const GLOBAL_KEY = 'global'
+const previews = new Map<string, PreviewSource>()
 const sessionTitles = new Map<string, string>()
 let server: Server | null = null
 
-export function getPreviewSource(): PreviewSource {
-  return current
+export function getPreviewSources(): Record<string, PreviewSource> {
+  return Object.fromEntries(previews)
 }
 
 export function getSessionTitles(): Record<string, string> {
   return Object.fromEntries(sessionTitles)
 }
 
-function broadcastPreview(getWindow: () => BrowserWindow | null): void {
+function broadcastPreview(
+  getWindow: () => BrowserWindow | null,
+  sessionId: string,
+  source: PreviewSource
+): void {
   const win = getWindow()
   if (!win || win.isDestroyed()) return
-  win.webContents.send('preview:source', current)
+  win.webContents.send('preview:source-changed', { sessionId, source })
+}
+
+function sessionIdFrom(req: IncomingMessage): string {
+  const raw = req.headers['x-deck-session-id']
+  const id = Array.isArray(raw) ? raw[0] : raw
+  return id && id.length > 0 ? id : GLOBAL_KEY
 }
 
 function broadcastSessionTitle(
@@ -75,7 +86,7 @@ async function handleRequest(
   // CORS for local dev convenience (only loopback can reach this anyway).
   res.setHeader('access-control-allow-origin', '*')
   res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS')
-  res.setHeader('access-control-allow-headers', 'content-type')
+  res.setHeader('access-control-allow-headers', 'content-type, x-deck-session-id')
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204)
@@ -84,9 +95,15 @@ async function handleRequest(
   }
 
   const url = req.url || '/'
+  const sessionId = sessionIdFrom(req)
 
   if (req.method === 'GET' && url === '/preview') {
-    sendJson(res, 200, current)
+    sendJson(res, 200, previews.get(sessionId) ?? { type: 'none' })
+    return
+  }
+
+  if (req.method === 'GET' && url === '/preview/all') {
+    sendJson(res, 200, Object.fromEntries(previews))
     return
   }
 
@@ -94,9 +111,10 @@ async function handleRequest(
     try {
       const raw = await readBody(req)
       const wire = JSON.parse(raw) as PreviewSourceWire
-      current = await normalize(wire)
-      broadcastPreview(getWindow)
-      sendJson(res, 200, current)
+      const source = await normalize(wire)
+      previews.set(sessionId, source)
+      broadcastPreview(getWindow, sessionId, source)
+      sendJson(res, 200, source)
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
     }
@@ -104,9 +122,10 @@ async function handleRequest(
   }
 
   if (req.method === 'POST' && url === '/preview/clear') {
-    current = { type: 'none' }
-    broadcastPreview(getWindow)
-    sendJson(res, 200, current)
+    const cleared: PreviewSource = { type: 'none' }
+    previews.set(sessionId, cleared)
+    broadcastPreview(getWindow, sessionId, cleared)
+    sendJson(res, 200, cleared)
     return
   }
 

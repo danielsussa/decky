@@ -28,11 +28,16 @@ const deckApi = {
     }
   },
   preview: {
-    getCurrent: (): Promise<PreviewSource> => ipcRenderer.invoke('preview:get-current'),
-    onSourceChange: (callback: (source: PreviewSource) => void): (() => void) => {
-      const listener = (_: unknown, source: PreviewSource): void => callback(source)
-      ipcRenderer.on('preview:source', listener)
-      return () => ipcRenderer.removeListener('preview:source', listener)
+    getAll: (): Promise<Record<string, PreviewSource>> => ipcRenderer.invoke('preview:get-all'),
+    onSourceChange: (
+      callback: (msg: { sessionId: string; source: PreviewSource }) => void
+    ): (() => void) => {
+      const listener = (
+        _: unknown,
+        msg: { sessionId: string; source: PreviewSource }
+      ): void => callback(msg)
+      ipcRenderer.on('preview:source-changed', listener)
+      return () => ipcRenderer.removeListener('preview:source-changed', listener)
     }
   },
   claude: {

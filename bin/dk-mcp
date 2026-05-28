@@ -48,13 +48,14 @@ const TOOLS = [
   {
     name: 'preview_me',
     description:
-      'Switch the deck preview to the me browser daemon live view. Use when starting browser automation work so the user can see what is happening.',
+      'Route the deck preview panel to the me browser daemon\'s Live View (embedded). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see the browser automation, or when you produce a 127.0.0.1:6789/tab/<name> URL. The deck embeds the Live View inline; spawning an external browser is the wrong path. Pass the specific tab URL via `url` when you have one (e.g. http://127.0.0.1:6789/tab/<session-name>), otherwise omit to show the default index.',
     inputSchema: {
       type: 'object',
       properties: {
         url: {
           type: 'string',
-          description: 'Optional override URL (default http://127.0.0.1:6789).'
+          description:
+            'Optional URL to embed (default http://127.0.0.1:6789 — index of tabs). Use the specific tab URL when you have one.'
         }
       }
     }
@@ -79,9 +80,11 @@ const TOOLS = [
 ]
 
 async function post(path, body) {
+  const headers = { 'content-type': 'application/json' }
+  if (process.env.DECK_SESSION_ID) headers['x-deck-session-id'] = process.env.DECK_SESSION_ID
   const res = await fetch(BASE + path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify(body)
   })
   if (!res.ok) {

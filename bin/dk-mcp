@@ -7,6 +7,13 @@
 
 const BASE = process.env.DECK_URL || 'http://127.0.0.1:6790'
 
+// Cards (tabs) in the center panel are created on demand by you, the session bot.
+// A session starts with NO cards. Each preview_* call lands in a card.
+const CARD_DESC =
+  'Optional card/tab id. Omit to use the focused card (or create the first one). ' +
+  'Pass a short stable id (e.g. "plano", "resultado") to target or create a specific tab — ' +
+  'use distinct ids when you want MULTIPLE tabs open at once. Reuse the same id to update that tab.'
+
 const TOOLS = [
   {
     name: 'preview_show',
@@ -15,7 +22,8 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absolute path to the file to render.' }
+        path: { type: 'string', description: 'Absolute path to the file to render.' },
+        card: { type: 'string', description: CARD_DESC }
       },
       required: ['path']
     }
@@ -23,12 +31,13 @@ const TOOLS = [
   {
     name: 'preview_markdown',
     description:
-      'Render markdown content (inline string) in the deck preview panel. Use when you want to show formatted text the user did not request to read from a file.',
+      'Render markdown content (inline string) in a deck card. Use when you want to show formatted text the user did not request to read from a file.',
     inputSchema: {
       type: 'object',
       properties: {
         content: { type: 'string', description: 'Markdown content.' },
-        title: { type: 'string', description: 'Optional header title.' }
+        title: { type: 'string', description: 'Optional header title.' },
+        card: { type: 'string', description: CARD_DESC }
       },
       required: ['content']
     }
@@ -36,11 +45,12 @@ const TOOLS = [
   {
     name: 'preview_json',
     description:
-      'Render a JSON value as a collapsible tree in the deck preview panel. Use instead of printing large JSON to the terminal.',
+      'Render a JSON value as a collapsible tree in a deck card. Use instead of printing large JSON to the terminal.',
     inputSchema: {
       type: 'object',
       properties: {
-        value: { description: 'Any JSON-serializable value.' }
+        value: { description: 'Any JSON-serializable value.' },
+        card: { type: 'string', description: CARD_DESC }
       },
       required: ['value']
     }
@@ -48,7 +58,7 @@ const TOOLS = [
   {
     name: 'preview_me',
     description:
-      'Route the deck preview panel to the me browser daemon\'s Live View (embedded). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see the browser automation, or when you produce a 127.0.0.1:6789/tab/<name> URL. The deck embeds the Live View inline; spawning an external browser is the wrong path. Pass the specific tab URL via `url` when you have one (e.g. http://127.0.0.1:6789/tab/<session-name>), otherwise omit to show the default index.',
+      'Route a deck card to the me browser daemon\'s Live View (embedded). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see the browser automation, or when you produce a 127.0.0.1:6789/tab/<name> URL. The deck embeds the Live View inline; spawning an external browser is the wrong path.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -56,7 +66,8 @@ const TOOLS = [
           type: 'string',
           description:
             'Optional URL to embed (default http://127.0.0.1:6789 — index of tabs). Use the specific tab URL when you have one.'
-        }
+        },
+        card: { type: 'string', description: CARD_DESC }
       }
     }
   },
@@ -79,9 +90,10 @@ const TOOLS = [
   }
 ]
 
-async function post(path, body) {
+async function post(path, body, cardId) {
   const headers = { 'content-type': 'application/json' }
   if (process.env.DECK_SESSION_ID) headers['x-deck-session-id'] = process.env.DECK_SESSION_ID
+  if (cardId) headers['x-deck-card-id'] = String(cardId)
   const res = await fetch(BASE + path, {
     method: 'POST',
     headers,
@@ -101,14 +113,14 @@ async function handleCall(name, args) {
     if (typeof a.path !== 'string') throw new Error('preview_show: path required')
     const ext = a.path.split('.').pop()?.toLowerCase()
     if (ext === 'md' || ext === 'markdown') {
-      await post('/preview', { type: 'markdown', path: a.path })
+      await post('/preview', { type: 'markdown', path: a.path }, a.card)
       return `markdown rendered: ${a.path}`
     }
     if (ext === 'json') {
       const fs = require('node:fs/promises')
       const text = await fs.readFile(a.path, 'utf-8')
       const value = JSON.parse(text)
-      await post('/preview', { type: 'json', value })
+      await post('/preview', { type: 'json', value }, a.card)
       return `json rendered: ${a.path}`
     }
     throw new Error(
@@ -118,23 +130,23 @@ async function handleCall(name, args) {
 
   if (name === 'preview_markdown') {
     if (typeof a.content !== 'string') throw new Error('preview_markdown: content required')
-    await post('/preview', { type: 'markdown', content: a.content, title: a.title })
-    return 'markdown rendered in deck preview'
+    await post('/preview', { type: 'markdown', content: a.content, title: a.title }, a.card)
+    return 'markdown rendered in deck card'
   }
 
   if (name === 'preview_json') {
     if (!('value' in a)) throw new Error('preview_json: value required')
-    await post('/preview', { type: 'json', value: a.value })
-    return 'json rendered in deck preview'
+    await post('/preview', { type: 'json', value: a.value }, a.card)
+    return 'json rendered in deck card'
   }
 
   if (name === 'preview_me') {
-    await post('/preview', { type: 'me', ...(a.url ? { url: a.url } : {}) })
+    await post('/preview', { type: 'me', ...(a.url ? { url: a.url } : {}) }, a.card)
     return 'switched to me live view'
   }
 
   if (name === 'preview_hide') {
-    await post('/preview/clear', {})
+    await post('/preview/clear', {}, a.card)
     return 'preview cleared'
   }
 

@@ -20,14 +20,53 @@ export function getSessionTitles(): Record<string, string> {
   return Object.fromEntries(sessionTitles)
 }
 
+/** Re-read markdown sources that were persisted as just a path (no content). */
+export async function rehydratePreviews(
+  byCard: Record<string, Record<string, PreviewSource>>
+): Promise<Record<string, Record<string, PreviewSource>>> {
+  const out: Record<string, Record<string, PreviewSource>> = {}
+  for (const [sessionId, cards] of Object.entries(byCard ?? {})) {
+    out[sessionId] = {}
+    for (const [cardId, source] of Object.entries(cards)) {
+      if (source.type === 'markdown' && source.path && !source.content) {
+        try {
+          const content = await readFile(source.path, 'utf-8')
+          out[sessionId][cardId] = {
+            type: 'markdown',
+            content,
+            title: source.title ?? basename(source.path),
+            path: source.path
+          }
+        } catch {
+          out[sessionId][cardId] = {
+            type: 'markdown',
+            content: `*(arquivo não encontrado: ${source.path})*`,
+            path: source.path
+          }
+        }
+      } else {
+        out[sessionId][cardId] = source
+      }
+    }
+  }
+  return out
+}
+
 function broadcastPreview(
   getWindow: () => BrowserWindow | null,
   sessionId: string,
+  cardId: string | null,
   source: PreviewSource
 ): void {
   const win = getWindow()
   if (!win || win.isDestroyed()) return
-  win.webContents.send('preview:source-changed', { sessionId, source })
+  win.webContents.send('preview:source-changed', { sessionId, cardId, source })
+}
+
+function cardIdFrom(req: IncomingMessage): string | null {
+  const raw = req.headers['x-deck-card-id']
+  const id = Array.isArray(raw) ? raw[0] : raw
+  return id && id.length > 0 ? id : null
 }
 
 function sessionIdFrom(req: IncomingMessage): string {
@@ -56,7 +95,8 @@ async function normalize(wire: PreviewSourceWire): Promise<PreviewSource> {
       return {
         type: 'markdown',
         content,
-        title: wire.title ?? basename(wire.path)
+        title: wire.title ?? basename(wire.path),
+        path: wire.path
       }
     }
     throw new Error('markdown source requires content or path')
@@ -86,7 +126,7 @@ async function handleRequest(
   // CORS for local dev convenience (only loopback can reach this anyway).
   res.setHeader('access-control-allow-origin', '*')
   res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS')
-  res.setHeader('access-control-allow-headers', 'content-type, x-deck-session-id')
+  res.setHeader('access-control-allow-headers', 'content-type, x-deck-session-id, x-deck-card-id')
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204)
@@ -96,6 +136,7 @@ async function handleRequest(
 
   const url = req.url || '/'
   const sessionId = sessionIdFrom(req)
+  const cardId = cardIdFrom(req)
 
   if (req.method === 'GET' && url === '/preview') {
     sendJson(res, 200, previews.get(sessionId) ?? { type: 'none' })
@@ -113,7 +154,7 @@ async function handleRequest(
       const wire = JSON.parse(raw) as PreviewSourceWire
       const source = await normalize(wire)
       previews.set(sessionId, source)
-      broadcastPreview(getWindow, sessionId, source)
+      broadcastPreview(getWindow, sessionId, cardId, source)
       sendJson(res, 200, source)
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
@@ -124,7 +165,7 @@ async function handleRequest(
   if (req.method === 'POST' && url === '/preview/clear') {
     const cleared: PreviewSource = { type: 'none' }
     previews.set(sessionId, cleared)
-    broadcastPreview(getWindow, sessionId, cleared)
+    broadcastPreview(getWindow, sessionId, cardId, cleared)
     sendJson(res, 200, cleared)
     return
   }

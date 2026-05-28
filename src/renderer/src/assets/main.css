@@ -195,6 +195,190 @@ code {
   display: block;
 }
 
+/* === DeckTabs === */
+
+.deck-tabs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--bg-0);
+}
+
+.deck-tabs-bar {
+  display: flex;
+  align-items: stretch;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.deck-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 8px 12px 8px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.deck-tab:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+
+.deck-tab-active {
+  color: var(--text-1);
+  background: var(--bg-0);
+  border-bottom-color: var(--accent);
+}
+
+.deck-tab-close {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1;
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms, color 120ms, background 120ms;
+}
+
+.deck-tab:hover .deck-tab-close,
+.deck-tab-active .deck-tab-close {
+  opacity: 1;
+}
+
+.deck-tab-close:hover {
+  color: var(--text-1);
+  background: var(--bg-2);
+}
+
+.deck-tabs-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* === DeckGrid (gridstack) === */
+
+.deck-grid-root {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  overflow: auto;
+  background: var(--bg-0);
+}
+
+.grid-stack {
+  min-height: 100%;
+  background: transparent;
+}
+
+.deck-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex !important;
+  flex-direction: column;
+  overflow: hidden;
+  transition: border-color 120ms, box-shadow 120ms;
+}
+
+.deck-card-focused {
+  border-color: var(--accent);
+}
+
+.deck-card-focused .deck-card-icon:first-of-type {
+  color: var(--accent);
+  background: var(--bg-2);
+}
+
+.deck-fullscreen-wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.deck-card-fullscreen {
+  flex: 1;
+  border-radius: 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.deck-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-0);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-2);
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
+  min-height: 28px;
+}
+
+.deck-card-icon {
+  background: transparent;
+  border: none;
+  padding: 2px;
+  color: var(--text-3);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: color 120ms, background 120ms;
+}
+
+.deck-card-header .deck-card-icon:first-of-type {
+  margin-left: auto;
+}
+
+.deck-card-icon:hover {
+  color: var(--accent);
+  background: var(--bg-2);
+}
+
+.deck-card-title {
+  font-weight: 600;
+}
+
+.deck-card-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* gridstack handles: invisible but still clickable for resize */
+.grid-stack-item > .ui-resizable-handle {
+  background-image: none;
+  opacity: 0;
+}
+
+.grid-stack > .grid-stack-placeholder > .placeholder-content {
+  background: rgba(138, 92, 246, 0.15);
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+}
+
 /* === preview shell === */
 
 .preview-empty {
@@ -221,13 +405,30 @@ code {
   width: 100%;
 }
 
-.preview-toolbar {
+.me-preview-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 5px 8px;
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.me-tab-select {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-1);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  outline: none;
+  cursor: pointer;
+}
+
+.me-tab-select:focus {
+  border-color: var(--accent);
 }
 
 /* === markdown === */
@@ -548,7 +749,7 @@ code {
 }
 
 .sstack-close {
-  margin-left: 6px;
+  margin-left: auto;
   background: transparent;
   border: none;
   color: var(--text-3);

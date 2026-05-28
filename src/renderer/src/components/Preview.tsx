@@ -9,8 +9,7 @@ interface PreviewProps {
 
 export default function Preview({ source }: PreviewProps): React.JSX.Element {
   if (source.type === 'me') return <MePreview url={source.url} />
-  if (source.type === 'markdown')
-    return <MarkdownPreview content={source.content} title={source.title} />
+  if (source.type === 'markdown') return <MarkdownPreview content={source.content} />
   if (source.type === 'json') return <JsonPreview value={source.value} />
 
   return (

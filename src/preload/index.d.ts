@@ -20,9 +20,22 @@ export interface DeckAPI {
   }
   preview: {
     getAll: () => Promise<Record<string, PreviewSource>>
+    rehydrate: (
+      byCard: Record<string, Record<string, PreviewSource>>
+    ) => Promise<Record<string, Record<string, PreviewSource>>>
     onSourceChange: (
-      callback: (msg: { sessionId: string; source: PreviewSource }) => void
+      callback: (msg: { sessionId: string; cardId: string | null; source: PreviewSource }) => void
     ) => () => void
+  }
+  workspace: {
+    read: <T = unknown>(cwd: string) => Promise<T | null>
+    write: (cwd: string, state: unknown) => Promise<true>
+  }
+  file: {
+    watch: (path: string) => Promise<true>
+    unwatch: (path: string) => Promise<true>
+    readText: (path: string) => Promise<string | null>
+    onChanged: (callback: (msg: { path: string }) => void) => () => void
   }
   claude: {
     getBin: () => Promise<string>

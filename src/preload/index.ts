@@ -29,15 +29,36 @@ const deckApi = {
   },
   preview: {
     getAll: (): Promise<Record<string, PreviewSource>> => ipcRenderer.invoke('preview:get-all'),
+    rehydrate: (
+      byCard: Record<string, Record<string, PreviewSource>>
+    ): Promise<Record<string, Record<string, PreviewSource>>> =>
+      ipcRenderer.invoke('preview:rehydrate', byCard),
     onSourceChange: (
-      callback: (msg: { sessionId: string; source: PreviewSource }) => void
+      callback: (msg: { sessionId: string; cardId: string | null; source: PreviewSource }) => void
     ): (() => void) => {
       const listener = (
         _: unknown,
-        msg: { sessionId: string; source: PreviewSource }
+        msg: { sessionId: string; cardId: string | null; source: PreviewSource }
       ): void => callback(msg)
       ipcRenderer.on('preview:source-changed', listener)
       return () => ipcRenderer.removeListener('preview:source-changed', listener)
+    }
+  },
+  workspace: {
+    read: <T = unknown,>(cwd: string): Promise<T | null> =>
+      ipcRenderer.invoke('workspace:read', cwd),
+    write: (cwd: string, state: unknown): Promise<true> =>
+      ipcRenderer.invoke('workspace:write', cwd, state)
+  },
+  file: {
+    watch: (path: string): Promise<true> => ipcRenderer.invoke('file:watch', path),
+    unwatch: (path: string): Promise<true> => ipcRenderer.invoke('file:unwatch', path),
+    readText: (path: string): Promise<string | null> =>
+      ipcRenderer.invoke('file:read-text', path),
+    onChanged: (callback: (msg: { path: string }) => void): (() => void) => {
+      const listener = (_: unknown, msg: { path: string }): void => callback(msg)
+      ipcRenderer.on('file:changed', listener)
+      return () => ipcRenderer.removeListener('file:changed', listener)
     }
   },
   claude: {

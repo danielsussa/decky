@@ -8,8 +8,11 @@ import {
   startPreviewServer,
   stopPreviewServer,
   getPreviewSources,
-  getSessionTitles
+  getSessionTitles,
+  rehydratePreviews
 } from './preview-server'
+import { registerWorkspaceHandlers } from './workspace-store'
+import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from './mcp-installer'
 import { ensureDeckInstruction } from './claude-md-installer'
 import { resolveClaudeBin } from './claude-bin'
@@ -89,9 +92,12 @@ app.whenReady().then(() => {
 
   registerPtyHandlers(() => mainWindow)
   registerStateHandlers()
+  registerWorkspaceHandlers()
+  registerFileWatchHandlers(() => mainWindow)
   startPreviewServer(() => mainWindow)
 
   ipcMain.handle('preview:get-all', () => getPreviewSources())
+  ipcMain.handle('preview:rehydrate', (_e, byCard) => rehydratePreviews(byCard))
   ipcMain.handle('claude:get-bin', () => resolveClaudeBin())
   ipcMain.handle('sessions:get-titles', () => getSessionTitles())
   ipcMain.handle('app:get-startup-cwd', () => process.cwd())

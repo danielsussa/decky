@@ -7,7 +7,8 @@ import { homedir } from 'node:os'
 // Claude Code writes an auto-generated `ai-title` into the session .jsonl. Read the
 // latest one — it's a stable, persisted name for the session (survives restarts).
 export async function readAiTitle(cwd: string, uuid: string): Promise<string | null> {
-  const encoded = cwd.replace(/\//g, '-')
+  // claude encodes cwd by replacing every non-alphanumeric char with '-' (not just '/').
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-')
   const p = join(homedir(), '.claude', 'projects', encoded, `${uuid}.jsonl`)
   try {
     const text = await readFile(p, 'utf-8')

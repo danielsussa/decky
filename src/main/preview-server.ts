@@ -105,6 +105,16 @@ async function normalize(wire: PreviewSourceWire): Promise<PreviewSource> {
     }
     throw new Error('markdown source requires content or path')
   }
+  if (wire.type === 'diff') {
+    if (wire.content != null) {
+      return { type: 'diff', content: wire.content, title: wire.title }
+    }
+    if (wire.path) {
+      const content = await readFile(wire.path, 'utf-8')
+      return { type: 'diff', content, title: wire.title ?? basename(wire.path), path: wire.path }
+    }
+    throw new Error('diff source requires content or path')
+  }
   if (wire.type === 'web' && !wire.url) {
     throw new Error('web source requires a url')
   }

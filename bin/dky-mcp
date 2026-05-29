@@ -45,6 +45,23 @@ const TOOLS = [
     }
   },
   {
+    name: 'preview_diff',
+    description:
+      'Render a unified diff (the raw output of `git diff`, `git show`, or `diff -u`) in a STRUCTURED diff card: per-file headers with +/- counts, a line-number gutter, and green/red +/- lines. ALWAYS use this — never preview_markdown with a ```diff fence — when showing code changes to the user; the structured view is far more readable than a markdown code block. Pass the raw diff text verbatim (do not reformat it).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description: 'Raw unified diff text (e.g. the stdout of `git diff`). Pass it verbatim.'
+        },
+        title: { type: 'string', description: 'Optional header title (e.g. "git diff — feature X").' },
+        card: { type: 'string', description: CARD_DESC }
+      },
+      required: ['content']
+    }
+  },
+  {
     name: 'preview_json',
     description:
       'Render a JSON value as a collapsible tree in a decky card. Use instead of printing large JSON to the terminal.',
@@ -125,9 +142,19 @@ async function handleCall(name, args) {
       await post('/preview', { type: 'json', value }, a.card)
       return `json rendered: ${a.path}`
     }
+    if (ext === 'diff' || ext === 'patch') {
+      await post('/preview', { type: 'diff', path: a.path }, a.card)
+      return `diff rendered: ${a.path}`
+    }
     throw new Error(
-      `unsupported file extension: .${ext}. Use preview_markdown/preview_json for inline content.`
+      `unsupported file extension: .${ext}. Use preview_markdown/preview_json/preview_diff for inline content.`
     )
+  }
+
+  if (name === 'preview_diff') {
+    if (typeof a.content !== 'string') throw new Error('preview_diff: content required')
+    await post('/preview', { type: 'diff', content: a.content, title: a.title }, a.card)
+    return 'diff rendered in decky card'
   }
 
   if (name === 'preview_markdown') {

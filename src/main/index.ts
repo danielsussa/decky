@@ -20,6 +20,7 @@ import { ensureDeckMcpRegistered } from './mcp-installer'
 import { ensureDeckInstruction } from './claude-md-installer'
 import { resolveClaudeBin, readAiTitle } from './claude-bin'
 import { registerStateHandlers } from './state-store'
+import { registerDevRebuildHandlers } from './dev-rebuild'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -130,6 +131,7 @@ app.whenReady().then(async () => {
   registerWorkspaceHandlers()
   registerCardsHandlers()
   registerFileWatchHandlers(() => mainWindow)
+  registerDevRebuildHandlers(() => mainWindow)
   startPreviewServer(() => mainWindow)
 
   ipcMain.handle('dialog:pick-folder', async () => {
@@ -185,9 +187,27 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
+// Block the actual exit until the renderer flushes the current workspace state — otherwise
+// the debounced save (400ms) drops the tail and a just-created session is lost on quit.
+let didFlush = false
+app.on('before-quit', (e) => {
+  if (didFlush) return // second pass (after flush) — let the quit proceed
+  didFlush = true
   killAllPtys()
   stopPreviewServer()
+  const win = mainWindow
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
+  e.preventDefault()
+  let settled = false
+  const finish = (): void => {
+    if (settled) return
+    settled = true
+    ipcMain.removeListener('app:flush-done', finish)
+    app.quit() // re-quit; didFlush is now true so this pass falls through
+  }
+  ipcMain.once('app:flush-done', finish)
+  win.webContents.send('app:flush')
+  setTimeout(finish, 1500) // safety: never hang quit if the renderer can't ack
 })
 
 process.on('SIGTERM', () => app.quit())

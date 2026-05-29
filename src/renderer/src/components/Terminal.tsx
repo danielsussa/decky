@@ -3,6 +3,23 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
+import { themeForWorkspace, xtermTheme } from '../../../shared/themes'
+
+// xterm's onData carries genuine keystrokes AND automatic terminal→app reports the TUI
+// solicits: cursor-position/DA/DSR replies, focus in/out, and mouse tracking (motion reports
+// while the pointer is over the focused terminal). Counting those as "the user typing" kept the
+// echo-guard in App.tsx permanently armed on the active session, so the bot's output never
+// registered and the working dot never pulsed. Treat data as input only when a real typed
+// character survives stripping the escape sequences.
+function isUserTyping(data: string): boolean {
+  const stripped = data
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '') // OSC
+    .replace(/\x1b[P^_X][\s\S]*?\x1b\\/g, '') // DCS / PM / APC / SOS
+    .replace(/\x1b\[[\d;?<>=!"' ]*[\x40-\x7e]/g, '') // CSI: mouse, CPR, DA, DSR, focus, arrows…
+    .replace(/\x1bO./g, '') // SS3: F-keys / keypad
+    .replace(/\x1b[\x20-\x7e]/g, '') // stray ESC + char
+  return /[\x20-\x7e]/.test(stripped) || /[\r\n\t\x08\x7f]/.test(stripped)
+}
 
 interface TerminalProps {
   id: string
@@ -43,29 +60,8 @@ export default function Terminal({
       cursorBlink: true,
       allowTransparency: false,
       scrollback: 10000,
-      theme: {
-        background: '#1e2330',
-        foreground: '#d7dee9',
-        cursor: '#8a5cf6',
-        cursorAccent: '#1e2330',
-        selectionBackground: '#3b4a6e',
-        black: '#1e2330',
-        red: '#f48771',
-        green: '#b5cea8',
-        yellow: '#dcdcaa',
-        blue: '#9cdcfe',
-        magenta: '#c586c0',
-        cyan: '#4ec9b0',
-        white: '#d4d4d4',
-        brightBlack: '#6e6e6e',
-        brightRed: '#f48771',
-        brightGreen: '#b5cea8',
-        brightYellow: '#dcdcaa',
-        brightBlue: '#9cdcfe',
-        brightMagenta: '#c586c0',
-        brightCyan: '#4ec9b0',
-        brightWhite: '#ffffff'
-      }
+      // Surface (bg/fg/cursor) follows the session's workspace theme; ANSI palette stays fixed.
+      theme: xtermTheme(themeForWorkspace(cwd))
     })
 
     termRef.current = term
@@ -96,7 +92,7 @@ export default function Terminal({
       void window.deck.pty.create(id, { cols, rows, cwd, command }).then(() => {
         if (disposed) return
         term.onData((data) => {
-          onUserInputRef.current?.()
+          if (isUserTyping(data)) onUserInputRef.current?.()
           window.deck.pty.write(id, data)
         })
         term.onResize(({ cols, rows }) => window.deck.pty.resize(id, cols, rows))

@@ -56,6 +56,13 @@ export interface DeckAPI {
     pickFolder: () => Promise<string | null>
     onMenuNewSession: (callback: () => void) => () => void
     onMenuCloseTab: (callback: () => void) => () => void
+    onFlush: (callback: () => void) => () => void
+    flushDone: () => void
+  }
+  dev: {
+    getInfo: () => Promise<{ enabled: boolean; repo?: string; accel: string }>
+    rebuild: () => Promise<{ ok: boolean; error?: string }>
+    onOutput: (callback: (line: string) => void) => () => void
   }
   state: {
     get: <T = unknown>(key: string) => Promise<T | null>

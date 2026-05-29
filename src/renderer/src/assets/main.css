@@ -861,6 +861,15 @@ code {
   color: var(--text-3);
   cursor: pointer;
 }
+/* Per-workspace color identity: a small dot in the workspace's deterministic theme accent,
+   so you can tell workspaces apart in the list (chrome reflects only the active one). */
+.wstree-ws-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin: 0 2px 0 2px;
+}
 .wstree-name {
   flex: 1;
   min-width: 0;
@@ -1454,4 +1463,178 @@ code {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ---- diff preview ---- */
+.diff-preview {
+  height: 100%;
+  overflow: auto;
+  background: var(--bg-0);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diff-file {
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-file-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-file-path {
+  color: var(--text-1);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.diff-stat {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-stat-add {
+  color: #3fb950;
+}
+
+.diff-stat-del {
+  color: #f85149;
+}
+
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.diff-row > td {
+  padding: 0;
+  vertical-align: top;
+}
+
+.diff-ln {
+  width: 1%;
+  min-width: 40px;
+  padding: 0 8px;
+  text-align: right;
+  color: var(--text-3);
+  background: var(--bg-1);
+  user-select: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-sign {
+  width: 16px;
+  text-align: center;
+  color: var(--text-3);
+  user-select: none;
+}
+
+.diff-code {
+  width: 100%;
+  padding: 0 12px 0 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-1);
+}
+
+.diff-add .diff-code {
+  background: rgba(63, 185, 80, 0.14);
+}
+
+.diff-add .diff-sign {
+  color: #3fb950;
+}
+
+.diff-del .diff-code {
+  background: rgba(248, 81, 73, 0.14);
+}
+
+.diff-del .diff-sign {
+  color: #f85149;
+}
+
+.diff-hunk > td {
+  background: var(--bg-2);
+  color: var(--text-2);
+  padding: 2px 10px;
+}
+
+.diff-hunk-label {
+  color: var(--text-2);
+}
+
+/* Dev-only "rebuild & relaunch" affordance (packaged macOS app + ~/.decky/dev.json). */
+.dev-rebuild {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.dev-rebuild-btn {
+  pointer-events: auto;
+  font: 12px var(--mono);
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  opacity: 0.55;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transition:
+    opacity 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.dev-rebuild-btn:hover {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+.dev-rebuild-running {
+  opacity: 1;
+  border-color: var(--accent);
+  cursor: progress;
+}
+
+.dev-rebuild-error {
+  opacity: 1;
+  color: #f85149;
+  border-color: #f85149;
+}
+
+.dev-rebuild-log {
+  pointer-events: auto;
+  margin: 0;
+  max-width: 460px;
+  max-height: 240px;
+  overflow: auto;
+  font: 11px / 1.45 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-2);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
 }

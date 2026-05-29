@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import ResizableSplit from './components/ResizableSplit'
 import Preview from './components/Preview'
 import DeckGrid from './components/DeckGrid'
@@ -9,10 +9,13 @@ import type { Session } from './types'
 import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
 import type { PreviewSource } from '../../shared/preview'
+import { applyTheme, themeForWorkspace } from '../../shared/themes'
 import {
   ACTIONS,
+  accelLabel,
   eventToAccel,
   isMac,
+  matchesAccel,
   resolveKeymap,
   type ActionId,
   type Keymap
@@ -45,6 +48,7 @@ const DECKY_SESSION_PROMPT = [
   '- mcp__decky__preview_show(path): render a .md/.json file in a decky card. USE THIS — NOT `Read` or `cat` — when the user asks to *show/view/open* a file. Read brings content into your context; preview_show actually displays it to them.',
   '- mcp__decky__preview_markdown(content, title?): render inline markdown content in a decky card.',
   '- mcp__decky__preview_json(value): render a JSON tree in a decky card (better than cat-ing JSON to terminal).',
+  '- mcp__decky__preview_diff(content, title?): render a unified diff (raw `git diff`/`git show`/`diff -u` output) as a STRUCTURED diff card (per-file headers, +/- counts, line-number gutter, green/red lines). ALWAYS use this for code changes — never a ```diff markdown fence. Pass the diff text verbatim.',
   "- mcp__decky__preview_me(url?): route a decky card to the me browser daemon's Live View (embedded iframe). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see what `me` (browser automation) is doing or to open a 127.0.0.1:6789/tab/... URL.",
   '- mcp__decky__preview_hide(): clear the active card.',
   '',
@@ -55,6 +59,7 @@ const DECKY_SESSION_PROMPT = [
   'Examples:',
   '- "create a list of 10 names" → preview_markdown("# Names\\n- Ana\\n- Bruno\\n…") + short "listed in card" confirmation. NOT a one-line CSV in the terminal.',
   '- "show me the pendencies file" → preview_show(path) NOT Read.',
+  '- "what changed?" / showing a git diff → run `git diff`, pass its output to preview_diff(content). NOT a ```diff markdown block.',
   '- "give me a quick yes/no" → plain terminal answer (no card needed).',
   '',
   'Rule of thumb: if the answer would benefit from being formatted/scrollable/kept visible, it goes in a card. Plain conversation stays in the terminal.',
@@ -107,6 +112,14 @@ function deriveStatus(text: string): string | null {
   if (/esc to interrupt/i.test(clean)) return 'thinking'
   if (/\p{L}{4,}/u.test(clean)) return 'writing'
   return null
+}
+
+// Strong "the bot is actively processing" signals from claude's status line
+// ("✢ Composing… (3m 51s · ↓ 12.3k tokens)", "esc to interrupt"). While one of these is seen
+// recently, the session is working (purple dot) even if repaints have gaps > the idle window.
+function isWorkingSignal(text: string): boolean {
+  const clean = text.replace(ANSI_RE, '')
+  return /esc to interrupt|[↓↑]\s*[\d.,]+\s*k?\s*tokens|\b\d+m\s*\d+s\b|\(\s*\d+s\b/i.test(clean)
 }
 
 function slugify(s: string): string {
@@ -235,6 +248,16 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
       if (clean) return clean
     }
   }
+  if (source.type === 'diff') {
+    if (source.title) return source.title
+    const m = source.content.match(/^diff --git a\/.+? b\/(.+)$/m)
+    if (m) {
+      const base = m[1].split('/').pop() ?? m[1]
+      const count = (source.content.match(/^diff --git /gm) ?? []).length
+      return count > 1 ? `diff (${count} arquivos)` : `diff: ${base}`
+    }
+    return 'diff'
+  }
   return fallback
 }
 
@@ -284,7 +307,9 @@ function App(): React.JSX.Element {
   const [titles, setTitles] = useState<Record<string, string>>({})
   const [wsLoaded, setWsLoaded] = useState(false)
   const [lastWorkspaceResolved, setLastWorkspaceResolved] = useState(false)
-  const [activity, setActivity] = useState<Record<string, { status: string; at: number }>>({})
+  const [activity, setActivity] = useState<
+    Record<string, { status: string; at: number; workingAt: number }>
+  >({})
   // When you last "saw" each session (focused it / left it). Activity after this is unseen →
   // drives the green "done while you were away" dot until you return.
   const [seenAt, setSeenAt] = useState<Record<string, number>>({})
@@ -295,6 +320,15 @@ function App(): React.JSX.Element {
   // Command palette (Cmd/Ctrl+P) + which system panels are open as center tabs.
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [openPanels, setOpenPanels] = useState<PanelId[]>([])
+  // Dev-only rebuild button (packaged macOS app + ~/.decky/dev.json marker). See dev-rebuild.ts.
+  const [devInfo, setDevInfo] = useState<{ enabled: boolean; accel: string }>({
+    enabled: false,
+    accel: ''
+  })
+  const [rebuildState, setRebuildState] = useState<'idle' | 'running' | 'error'>('idle')
+  const [rebuildLog, setRebuildLog] = useState('')
+  const rebuildStateRef = useRef(rebuildState)
+  rebuildStateRef.current = rebuildState
 
   const loadedWorkspaceRef = useRef<string | null>(null)
   // When selecting a session (or "nova sessão") in a workspace that isn't active yet, we
@@ -331,7 +365,10 @@ function App(): React.JSX.Element {
     startupCwd,
     cardsBySession,
     focusedCardBySession,
-    pinned
+    previewsByCard,
+    titles,
+    pinned,
+    wsLoaded
   })
   stateRef.current = {
     sessions,
@@ -340,8 +377,40 @@ function App(): React.JSX.Element {
     startupCwd,
     cardsBySession,
     focusedCardBySession,
-    pinned
+    previewsByCard,
+    titles,
+    pinned,
+    wsLoaded
   }
+
+  const doRebuild = useCallback(async () => {
+    if (rebuildStateRef.current === 'running') return
+    setRebuildLog('')
+    setRebuildState('running')
+    const res = await window.deck.dev.rebuild()
+    // On success the app relaunches, so this component is torn down before we'd update state.
+    if (!res.ok) setRebuildState('error')
+  }, [])
+
+  // Dev rebuild: resolve availability + stream build output; bind the keyboard shortcut.
+  useEffect(() => {
+    void window.deck.dev.getInfo().then((info) => setDevInfo({ enabled: info.enabled, accel: info.accel }))
+    return window.deck.dev.onOutput((line) => {
+      setRebuildLog((prev) => (prev + line).slice(-6000))
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!devInfo.enabled || !devInfo.accel) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (!matchesAccel(e, devInfo.accel)) return
+      e.preventDefault()
+      e.stopPropagation()
+      void doRebuild()
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [devInfo.enabled, devInfo.accel, doRebuild])
 
   // Mount: resolve env + subscriptions.
   useEffect(() => {
@@ -363,9 +432,24 @@ function App(): React.JSX.Element {
       const t = Date.now()
       // ignore output that's just an echo of recent user typing
       if (t - (userInputAtRef.current[id] ?? 0) < 700) return
+      // ANY output means the session is doing something — the thinking spinner/timer
+      // ("Composing… 2m 43s"), tool output, streamed text. Bump the timestamp on every chunk so
+      // it stays "active" (pulsing) and only goes "done" (green) when output TRULY stops; the
+      // earlier version only counted deriveStatus-matched chunks, so a long think went stale →
+      // false green. Keep the status label when the chunk matches a known pattern.
       const status = deriveStatus(data)
-      if (!status) return
-      setActivity((prev) => ({ ...prev, [id]: { status, at: t } }))
+      const working = isWorkingSignal(data)
+      setActivity((prev) => {
+        const p = prev[id]
+        return {
+          ...prev,
+          [id]: {
+            status: status ?? p?.status ?? '',
+            at: t,
+            workingAt: working ? t : (p?.workingAt ?? 0)
+          }
+        }
+      })
     })
 
     const unsubPreview = window.deck.preview.onSourceChange(({ sessionId, cardId, source }) => {
@@ -450,6 +534,28 @@ function App(): React.JSX.Element {
       setSessions(next)
       setActiveId(replacement?.id)
     })
+    // The debounced save (400ms) loses the tail on quit — a session created moments before
+    // closing never reaches disk. On quit, main blocks the actual exit until we flush the
+    // CURRENT state (read from refs, not a stale closure) and ack via flushDone().
+    const unsubFlush = window.deck.app.onFlush(() => {
+      const s = stateRef.current
+      const ws = s.workspace
+      if (!ws || !s.wsLoaded || loadedWorkspaceRef.current !== ws) {
+        void window.deck.app.flushDone()
+        return
+      }
+      void window.deck.workspace
+        .write(ws, {
+          sessions: s.sessions,
+          activeId: s.activeId,
+          cardsBySession: s.cardsBySession,
+          focusedCardBySession: s.focusedCardBySession,
+          previews: serializePreviews(s.previewsByCard),
+          titles: pickTitles(s.sessions, s.titles),
+          pinned: serializePreviews({ p: s.pinned }).p
+        })
+        .finally(() => void window.deck.app.flushDone())
+    })
     return () => {
       unsubData()
       unsubPreview()
@@ -458,6 +564,7 @@ function App(): React.JSX.Element {
       unsubConflict()
       unsubNewSession()
       unsubCloseTab()
+      unsubFlush()
     }
   }, [])
 
@@ -473,12 +580,16 @@ function App(): React.JSX.Element {
     if (!wsLoaded) return
     let cancelled = false
     const fetchTitles = async (): Promise<void> => {
-      for (const s of sessions) {
-        if (s.kind !== 'claude' || !s.claudeSessionId) continue
-        const t = await window.deck.claude.aiTitle(s.cwd, s.claudeSessionId)
-        if (cancelled || !t) continue
-        setAiTitles((prev) => (prev[s.id] === t ? prev : { ...prev, [s.id]: t }))
-      }
+      // Parallel (was sequential → slow to fill with many sessions, showing the random
+      // placeholder for a while on launch).
+      await Promise.all(
+        sessions.map(async (s) => {
+          if (s.kind !== 'claude' || !s.claudeSessionId) return
+          const t = await window.deck.claude.aiTitle(s.cwd, s.claudeSessionId)
+          if (cancelled || !t) return
+          setAiTitles((prev) => (prev[s.id] === t ? prev : { ...prev, [s.id]: t }))
+        })
+      )
     }
     void fetchTitles()
     const iv = setInterval(fetchTitles, 12000)
@@ -611,6 +722,12 @@ function App(): React.JSX.Element {
     document.title = workspaceName || 'decky'
   }, [workspace])
 
+  // Each workspace gets a deterministic color identity (hash of its path → 1 of 7 themes), so
+  // the whole UI tints differently per workspace. Applied to :root; terminals tint themselves.
+  useEffect(() => {
+    applyTheme(themeForWorkspace(workspace))
+  }, [workspace])
+
   // Register every opened workspace in the switcher list, and persist the registry.
   useEffect(() => {
     if (!workspace) return
@@ -631,12 +748,21 @@ function App(): React.JSX.Element {
   useEffect(() => {
     for (const ws of workspaces) {
       if (ws === workspace) continue // active workspace uses live `sessions`
-      void window.deck.workspace.read<WorkspaceState>(ws).then((data) => {
-        const list: TreeSession[] = (data?.sessions ?? []).map((s) => ({
-          id: s.id,
-          label: data?.titles?.[s.id] || s.label,
-          kind: s.kind
-        }))
+      void window.deck.workspace.read<WorkspaceState>(ws).then(async (data) => {
+        const sess = data?.sessions ?? []
+        // Label fallback chain matches the active workspace: session_set_title (persisted
+        // `titles`) → claude's aiTitle (read from the .jsonl) → the random placeholder. Without
+        // the aiTitle step, sessions without an explicit title showed the random name until you
+        // opened them (which made them active and triggered the aiTitle fetch).
+        const list: TreeSession[] = await Promise.all(
+          sess.map(async (s) => {
+            let label = data?.titles?.[s.id]
+            if (!label && s.kind === 'claude' && s.claudeSessionId) {
+              label = (await window.deck.claude.aiTitle(s.cwd ?? ws, s.claudeSessionId)) ?? undefined
+            }
+            return { id: s.id, label: label || s.label, kind: s.kind }
+          })
+        )
         setWsSessionsCache((c) => (c[ws] ? c : { ...c, [ws]: list }))
       })
     }
@@ -850,6 +976,8 @@ function App(): React.JSX.Element {
       if (src.type === 'markdown' && src.path) lines.push(`- **${id}** — \`${src.path}\``)
       else if (src.type === 'markdown') lines.push(`- **${id}** — (markdown inline)`)
       else if (src.type === 'json') lines.push(`- **${id}** — (json)`)
+      else if (src.type === 'diff') lines.push(`- **${id}** — (diff)`)
+      else if (src.type === 'web') lines.push(`- **${id}** — (web: ${src.url})`)
       else if (src.type === 'me') lines.push(`- **${id}** — (live view: ${src.url ?? 'me'})`)
     }
     if (Object.keys(pinned).length === 0) lines.push('_(nenhum card fixado)_')
@@ -862,24 +990,31 @@ function App(): React.JSX.Element {
     return label !== s.label ? { ...s, label } : s
   })
 
-  // active = output flowing (pulsing dot). done = it produced output AFTER you last saw it and
-  // has since gone quiet (≥3s), and you're not viewing it → steady green "finished while away".
+  // Dot states: purple/pulsing while WORKING (recent output OR a recent "still processing"
+  // signal — the latter tolerates gaps in claude's status repaints so a long "Composing…/
+  // Actualizing… 3m51s" doesn't flip to green). Green = finished while you were away: produced
+  // output after you last saw it, then went quiet, and you're not viewing it.
   const DONE_IDLE_MS = 3000
+  const WORKING_GRACE_MS = 6000
   const sessionActivity: Record<string, { status: string; active: boolean; done: boolean }> = {}
   for (const [id, a] of Object.entries(activity)) {
     const idle = now - a.at
-    const active = idle < 1500
+    const working = idle < 1500 || now - a.workingAt < WORKING_GRACE_MS
     const unseen = a.at > (seenAt[id] ?? 0)
     sessionActivity[id] = {
       status: a.status,
-      active,
-      done: !active && unseen && id !== activeId && idle >= DONE_IDLE_MS
+      active: working,
+      done: !working && unseen && id !== activeId && idle >= DONE_IDLE_MS
     }
   }
 
   // Sessions shown in the tree: the active workspace from live state, others from the cache.
+  // Only use live `sessions` once they belong to the current `workspace`. On switch, `workspace`
+  // updates synchronously but `sessions` loads async — using them during that gap flashed the
+  // PREVIOUS workspace's session names under the new workspace's row for a frame. Until the load
+  // lands (loadedWorkspaceRef catches up), fall back to the cached list for the new workspace.
   const treeSessionsByWorkspace: Record<string, TreeSession[]> = { ...wsSessionsCache }
-  if (workspace) {
+  if (workspace && loadedWorkspaceRef.current === workspace) {
     treeSessionsByWorkspace[workspace] = sessionsWithTitles.map((s) => ({
       id: s.id,
       label: s.label,
@@ -934,6 +1069,16 @@ function App(): React.JSX.Element {
   const addFolder = async (): Promise<void> => {
     const p = await window.deck.app.pickFolder()
     if (p) setWorkspace(p)
+  }
+
+  // Open a blank browser card in the active session, focused (URL bar auto-focuses).
+  const openWebTab = (): void => {
+    if (!activeId) return
+    const aId = activeId
+    const id = `web-${Date.now().toString(36)}`
+    setCardsBySession((p) => ({ ...p, [aId]: [...(p[aId] ?? []), id] }))
+    setPreviewsByCard((p) => ({ ...p, [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url: '' } } }))
+    setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
   }
 
   const toggleExpand = (ws: string): void =>
@@ -1150,12 +1295,15 @@ function App(): React.JSX.Element {
     focusedCardId
   }
 
-  const paletteCommands: Command[] = PANELS.map((p) => ({
-    id: `panel:${p.id}`,
-    label: p.paletteLabel,
-    hint: 'painel',
-    run: () => openPanel(p.id)
-  }))
+  const paletteCommands: Command[] = [
+    { id: 'web:new', label: 'Nova aba de browser', hint: 'abre um webview', run: openWebTab },
+    ...PANELS.map((p) => ({
+      id: `panel:${p.id}`,
+      label: p.paletteLabel,
+      hint: 'painel',
+      run: () => openPanel(p.id)
+    }))
+  ]
 
   return (
     <div className="deck">
@@ -1225,6 +1373,25 @@ function App(): React.JSX.Element {
       </main>
       {paletteOpen && (
         <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
+      )}
+      {devInfo.enabled && (
+        <div className="dev-rebuild">
+          {(rebuildState === 'running' || rebuildState === 'error') && rebuildLog && (
+            <pre className="dev-rebuild-log">{rebuildLog}</pre>
+          )}
+          <button
+            className={`dev-rebuild-btn dev-rebuild-${rebuildState}`}
+            onClick={() => void doRebuild()}
+            disabled={rebuildState === 'running'}
+            title={`Rebuild & relaunch (${accelLabel(devInfo.accel)})`}
+          >
+            {rebuildState === 'running'
+              ? 'Rebuilding…'
+              : rebuildState === 'error'
+                ? 'Rebuild failed — retry'
+                : `⟳ Rebuild`}
+          </button>
+        </div>
       )}
     </div>
   )

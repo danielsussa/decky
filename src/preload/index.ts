@@ -104,6 +104,23 @@ const deckApi = {
       const listener = (): void => callback()
       ipcRenderer.on('menu:close-tab', listener)
       return () => ipcRenderer.removeListener('menu:close-tab', listener)
+    },
+    // Quit-time flush: main sends 'app:flush' and holds the exit until we reply 'app:flush-done'.
+    onFlush: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('app:flush', listener)
+      return () => ipcRenderer.removeListener('app:flush', listener)
+    },
+    flushDone: (): void => ipcRenderer.send('app:flush-done')
+  },
+  dev: {
+    getInfo: (): Promise<{ enabled: boolean; repo?: string; accel: string }> =>
+      ipcRenderer.invoke('dev:get-info'),
+    rebuild: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('dev:rebuild'),
+    onOutput: (callback: (line: string) => void): (() => void) => {
+      const listener = (_: unknown, line: string): void => callback(line)
+      ipcRenderer.on('dev:rebuild-output', listener)
+      return () => ipcRenderer.removeListener('dev:rebuild-output', listener)
     }
   },
   state: {

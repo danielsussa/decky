@@ -18,7 +18,10 @@ export default function CommandPalette({
 }: CommandPaletteProps): React.JSX.Element {
   const [q, setQ] = useState('')
   const [sel, setSel] = useState(0)
-  const filtered = commands.filter((c) => c.label.toLowerCase().includes(q.toLowerCase().trim()))
+  const needle = q.toLowerCase().trim()
+  const filtered = commands.filter((c) =>
+    `${c.label} ${c.hint ?? ''} ${c.id}`.toLowerCase().includes(needle)
+  )
 
   const run = (c: Command | undefined): void => {
     if (!c) return

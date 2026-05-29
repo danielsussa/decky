@@ -2,9 +2,10 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import os from 'os'
 
-// claude stores each session at ~/.claude/projects/<cwd-with-slashes-as-dashes>/<uuid>.jsonl
+// claude encodes the cwd by replacing every non-alphanumeric char with '-' (not just '/':
+// e.g. "garimpo.ai" → "garimpo-ai"), then stores ~/.claude/projects/<encoded>/<uuid>.jsonl.
 function transcriptPath(cwd: string, uuid: string): string {
-  const encoded = cwd.replace(/\//g, '-')
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-')
   return join(os.homedir(), '.claude', 'projects', encoded, `${uuid}.jsonl`)
 }
 

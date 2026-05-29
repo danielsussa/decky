@@ -7,12 +7,12 @@ import { join } from 'node:path'
 import { sanitizeTranscript } from './transcript-repair'
 import { workspaceCardsDir } from './paths'
 
-// claude stores each session at ~/.claude/projects/<cwd-with-slashes-as-dashes>/<uuid>.jsonl.
-// `--session-id <uuid>` CREATES a session and errors ("already in use") if it exists;
-// to continue an existing one you must use `--resume <uuid>`. So when the session file
-// already exists, rewrite --session-id → --resume.
+// claude stores each session at ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl, where the cwd is
+// encoded by replacing EVERY non-alphanumeric char with '-' (not just '/': e.g. "garimpo.ai" →
+// "garimpo-ai"). Getting this wrong means we don't find the file → spawn `--session-id` on an
+// existing session → claude errors "already in use" and exits. `--resume <uuid>` continues it.
 function claudeSessionExists(cwd: string, uuid: string): boolean {
-  const encoded = cwd.replace(/\//g, '-')
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-')
   return existsSync(join(os.homedir(), '.claude', 'projects', encoded, `${uuid}.jsonl`))
 }
 
@@ -80,7 +80,7 @@ let cachedPath: string | null = null
 // `node`/`npx tsx` the agent runs via Bash (e.g. bin/handoff). Resolve the
 // user's real login-shell PATH once and merge it in; fall back to prepending
 // the common install dirs if the login shell can't be queried.
-function loginShellPath(): string {
+export function loginShellPath(): string {
   if (cachedPath) return cachedPath
   const shell = process.env.SHELL || '/bin/zsh'
   const fallback = ['/opt/homebrew/bin', '/usr/local/bin', join(os.homedir(), '.local', 'bin')]

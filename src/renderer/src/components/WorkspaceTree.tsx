@@ -1,4 +1,5 @@
 import { ChevronRight, ChevronDown, FolderPlus, Plus, X } from 'lucide-react'
+import { themeForWorkspace } from '../../../shared/themes'
 
 export interface TreeSession {
   id: string
@@ -57,6 +58,11 @@ export default function WorkspaceTree({
               >
                 {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
               </button>
+              <span
+                className="wstree-ws-dot"
+                style={{ background: themeForWorkspace(ws).vars['--accent'] }}
+                aria-hidden="true"
+              />
               <button
                 type="button"
                 className="wstree-name"

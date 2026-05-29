@@ -30,11 +30,18 @@ function normalizeUrl(raw: string): string {
 
 export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element {
   const ref = useRef<WebviewEl | null>(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
   const [address, setAddress] = useState(url)
   const [current, setCurrent] = useState(url)
   const [canBack, setCanBack] = useState(false)
   const [canFwd, setCanFwd] = useState(false)
   const [loading, setLoading] = useState(true)
+
+  // Opened blank (e.g. a new Cmd+T tab) → focus the address bar so you can just type.
+  useEffect(() => {
+    if (!url) inputRef.current?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // When the bot/command points this card at a new URL, navigate there.
   useEffect(() => {
@@ -117,8 +124,10 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
           <RotateCw size={14} className={loading ? 'web-spin' : undefined} />
         </button>
         <input
+          ref={inputRef}
           className="web-url"
           value={address}
+          placeholder="digite uma URL e Enter…"
           spellCheck={false}
           onChange={(e) => setAddress(e.target.value)}
           onKeyDown={(e) => {

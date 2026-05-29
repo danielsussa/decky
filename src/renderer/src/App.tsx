@@ -650,15 +650,21 @@ function App(): React.JSX.Element {
     })
   }, [activeId, sessions])
 
-  // Drop only CLOSED sessions of the active workspace; keep sessions of OTHER workspaces alive
-  // (s.cwd !== workspace) so switching away doesn't stop them.
+  // Drop only sessions CLOSED in the workspace `sessions` currently represents; keep other
+  // workspaces' sessions alive. Key off loadedWorkspaceRef (the workspace `sessions` actually
+  // belongs to) — NOT `workspace`, which updates synchronously on switch while `sessions` lags
+  // the async load. Using `workspace` here mis-pruned (and killed) the session you switched
+  // back to during that gap. Deps are [sessions] only, so a transient workspace change alone
+  // can't trigger a prune.
   useEffect(() => {
+    const loadedWs = loadedWorkspaceRef.current
     setLiveSessions((prev) => {
       const activeIds = new Set(sessions.map((s) => s.id))
-      const next = prev.filter((s) => s.cwd !== workspace || activeIds.has(s.id))
+      const next = prev.filter((s) => s.cwd !== loadedWs || activeIds.has(s.id))
       return next.length === prev.length ? prev : next
     })
-  }, [sessions, workspace])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions])
 
   // Load global key bindings once on mount.
   useEffect(() => {

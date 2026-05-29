@@ -301,11 +301,19 @@ function App(): React.JSX.Element {
   // Latest nav state for the global keyboard shortcuts (Ctrl+Arrows). Assigned
   // each render below; the listener (registered once) reads through this ref.
   const navRef = useRef<{
-    sessionIds: string[]
+    // Flat session list across ALL workspaces (tree order), for Cmd+Arrow navigation.
+    navSessions: { ws: string; id: string }[]
+    activeWorkspace: string | null
     cardIds: string[]
     activeId?: string
     focusedCardId: string | null
-  }>({ sessionIds: [], cardIds: [], activeId: undefined, focusedCardId: null })
+  }>({
+    navSessions: [],
+    activeWorkspace: null,
+    cardIds: [],
+    activeId: undefined,
+    focusedCardId: null
+  })
   const keymapRef = useRef<Record<ActionId, string>>(resolveKeymap({}))
   const paletteOpenRef = useRef(false)
   // Set true while ShortcutsPanel records a chord, so the global nav handler
@@ -613,9 +621,10 @@ function App(): React.JSX.Element {
     setExpandedWorkspaces((e) => (e.includes(workspace) ? e : [...e, workspace]))
   }, [workspace])
 
-  // Lazily read the session lists of expanded NON-active workspaces (display-only labels).
+  // Read the session lists of ALL non-active workspaces (display-only labels) — also feeds
+  // cross-workspace Cmd+Arrow navigation, so it can't be gated on expand state.
   useEffect(() => {
-    for (const ws of expandedWorkspaces) {
+    for (const ws of workspaces) {
       if (ws === workspace) continue // active workspace uses live `sessions`
       void window.deck.workspace.read<WorkspaceState>(ws).then((data) => {
         const list: TreeSession[] = (data?.sessions ?? []).map((s) => ({
@@ -626,7 +635,7 @@ function App(): React.JSX.Element {
         setWsSessionsCache((c) => (c[ws] ? c : { ...c, [ws]: list }))
       })
     }
-  }, [expandedWorkspaces, workspace])
+  }, [workspaces, workspace])
 
   // Promote the active session to most-recently-used; evict the LRU past the cap.
   useEffect(() => {
@@ -668,6 +677,61 @@ function App(): React.JSX.Element {
       }
       // Let the palette / a recording shortcut field handle their own keys.
       if (captureLockRef.current || paletteOpenRef.current) return
+      // Cmd/Ctrl+N → nova sessão no workspace ativo; Cmd/Ctrl+K → deleta a sessão ativa.
+      // Handled here (capture phase, hot-reloadable) rather than via menu accelerators, which
+      // the focused xterm/<webview> can swallow and which only refresh on a main-process restart.
+      if (openMod && !e.altKey && (e.key === 'n' || e.key === 'N')) {
+        e.preventDefault()
+        e.stopPropagation()
+        const { workspace: ws, startupCwd: scwd } = stateRef.current
+        const cwd = ws || scwd
+        if (cwd) {
+          const def = defaultClaudeSession(cwd)
+          setSessions((prev) => [...prev, def])
+          setActiveId(def.id)
+        }
+        return
+      }
+      if (openMod && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        e.stopPropagation()
+        const { sessions: prev, activeId: cur } = stateRef.current
+        if (!cur) return
+        const idx = prev.findIndex((s) => s.id === cur)
+        if (idx === -1) return
+        const next = prev.filter((s) => s.id !== cur)
+        const replacement = next[idx] ?? next[idx - 1] ?? next[0]
+        setSessions(next)
+        setActiveId(replacement?.id)
+        return
+      }
+      // Typing a plain character while a preview card is focused (e.g. reading a markdown card)
+      // snaps focus back to the active terminal and delivers the keystroke to its session.
+      const t = e.target as HTMLElement | null
+      if (
+        t &&
+        e.key.length === 1 &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        t.closest('.panel-preview') &&
+        !t.closest('button') &&
+        t.tagName !== 'INPUT' &&
+        t.tagName !== 'TEXTAREA' &&
+        !t.isContentEditable
+      ) {
+        const aId = stateRef.current.activeId
+        const ta = document.querySelector(
+          '.termhost-body-active .xterm-helper-textarea'
+        ) as HTMLElement | null
+        if (aId && ta) {
+          ta.focus()
+          window.deck.pty.write(aId, e.key)
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+      }
       const accel = eventToAccel(e)
       if (!accel) return
       const km = keymapRef.current
@@ -677,11 +741,19 @@ function App(): React.JSX.Element {
       e.stopPropagation()
       const nav = navRef.current
       if (action === 'session.prev' || action === 'session.next') {
-        const ids = nav.sessionIds
-        if (ids.length < 2 || !nav.activeId) return
-        const i = ids.indexOf(nav.activeId)
+        // Navigate the flat cross-workspace list; switch workspace when crossing a boundary.
+        const list = nav.navSessions
+        if (list.length < 2 || !nav.activeId) return
+        const i = list.findIndex((x) => x.id === nav.activeId)
+        if (i === -1) return
         const d = action === 'session.prev' ? -1 : 1
-        setActiveId(ids[(i + d + ids.length) % ids.length])
+        const target = list[(i + d + list.length) % list.length]
+        if (target.ws === nav.activeWorkspace) {
+          setActiveId(target.id)
+        } else {
+          pendingActiveRef.current = target.id
+          setWorkspace(target.ws)
+        }
       } else {
         const ids = nav.cardIds
         if (!ids.length || !nav.activeId) return
@@ -1018,8 +1090,15 @@ function App(): React.JSX.Element {
   })
   const deckCards = [...panelCards, ...contentCards]
 
+  // Flat session list across all workspaces, in tree order (workspace registry × sessions).
+  const navSessions: { ws: string; id: string }[] = []
+  for (const ws of workspaces) {
+    for (const s of treeSessionsByWorkspace[ws] ?? []) navSessions.push({ ws, id: s.id })
+  }
+
   navRef.current = {
-    sessionIds: sessions.map((s) => s.id),
+    navSessions,
+    activeWorkspace: workspace,
     cardIds: deckCards.map((c) => c.id),
     activeId,
     focusedCardId

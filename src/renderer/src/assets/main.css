@@ -981,7 +981,9 @@ code {
 
 /* Hosts the active workspace's session terminals (active visible, rest mounted+hidden). */
 .termhost {
-  flex: 1;
+  /* Fill via height:100% (not flex:1) — the parent .panel-body-flush isn't a flex container,
+     so flex:1 would collapse and the xterm would fit to a short height, leaving dead space. */
+  height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;

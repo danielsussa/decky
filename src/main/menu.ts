@@ -45,8 +45,9 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
       label: 'File',
       submenu: [
         {
+          // Accelerator (Cmd+N) is handled in the renderer (capture-phase keydown) so it
+          // works over the focused terminal; keep the menu item clickable for discoverability.
           label: 'New Session',
-          accelerator: 'CmdOrCtrl+N',
           click: () => sendToRenderer('menu:new-session')
         },
         { type: 'separator' },
@@ -59,8 +60,8 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
         },
         { type: 'separator' },
         {
-          label: 'Close Tab',
-          accelerator: 'CmdOrCtrl+W',
+          // Accelerator (Cmd+K) handled in the renderer (see New Session above).
+          label: 'Close Session',
           click: () => sendToRenderer('menu:close-tab')
         },
         ...(!isMac

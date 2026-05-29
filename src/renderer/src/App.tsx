@@ -285,6 +285,9 @@ function App(): React.JSX.Element {
   const [wsLoaded, setWsLoaded] = useState(false)
   const [lastWorkspaceResolved, setLastWorkspaceResolved] = useState(false)
   const [activity, setActivity] = useState<Record<string, { status: string; at: number }>>({})
+  // When you last "saw" each session (focused it / left it). Activity after this is unseen →
+  // drives the green "done while you were away" dot until you return.
+  const [seenAt, setSeenAt] = useState<Record<string, number>>({})
   const [aiTitles, setAiTitles] = useState<Record<string, string>>({})
   const [now, setNow] = useState(Date.now())
   // Keyboard bindings: stored overrides (global, ~/.decky/state.json).
@@ -299,6 +302,7 @@ function App(): React.JSX.Element {
   const pendingActiveRef = useRef<string | null>(null)
   const pendingNewRef = useRef(false)
   const userInputAtRef = useRef<Record<string, number>>({})
+  const prevActiveIdRef = useRef<string | undefined>(undefined)
   // Latest nav state for the global keyboard shortcuts (Ctrl+Arrows). Assigned
   // each render below; the listener (registered once) reads through this ref.
   const navRef = useRef<{
@@ -604,7 +608,7 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     const workspaceName = workspace ? projectFromCwd(workspace) : ''
-    document.title = workspaceName ? `${workspaceName} — decky` : 'decky'
+    document.title = workspaceName || 'decky'
   }, [workspace])
 
   // Register every opened workspace in the switcher list, and persist the registry.
@@ -649,6 +653,20 @@ function App(): React.JSX.Element {
       return next
     })
   }, [activeId, sessions])
+
+  // Mark "seen up to now": the session you just left (you saw it until leaving) and the one you
+  // opened. Activity AFTER this counts as unseen → the green "done while away" dot.
+  useEffect(() => {
+    const prev = prevActiveIdRef.current
+    prevActiveIdRef.current = activeId
+    const t = Date.now()
+    setSeenAt((s) => {
+      const n = { ...s }
+      if (prev) n[prev] = t
+      if (activeId) n[activeId] = t
+      return n
+    })
+  }, [activeId])
 
   // Drop only sessions CLOSED in the workspace `sessions` currently represents; keep other
   // workspaces' sessions alive. Key off loadedWorkspaceRef (the workspace `sessions` actually
@@ -844,9 +862,19 @@ function App(): React.JSX.Element {
     return label !== s.label ? { ...s, label } : s
   })
 
-  const sessionActivity: Record<string, { status: string; active: boolean }> = {}
+  // active = output flowing (pulsing dot). done = it produced output AFTER you last saw it and
+  // has since gone quiet (≥3s), and you're not viewing it → steady green "finished while away".
+  const DONE_IDLE_MS = 3000
+  const sessionActivity: Record<string, { status: string; active: boolean; done: boolean }> = {}
   for (const [id, a] of Object.entries(activity)) {
-    sessionActivity[id] = { status: a.status, active: now - a.at < 1500 }
+    const idle = now - a.at
+    const active = idle < 1500
+    const unseen = a.at > (seenAt[id] ?? 0)
+    sessionActivity[id] = {
+      status: a.status,
+      active,
+      done: !active && unseen && id !== activeId && idle >= DONE_IDLE_MS
+    }
   }
 
   // Sessions shown in the tree: the active workspace from live state, others from the cache.

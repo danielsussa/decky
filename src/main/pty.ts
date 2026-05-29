@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import * as pty from 'node-pty'
 import os from 'os'
+import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { sanitizeTranscript } from './transcript-repair'
@@ -69,6 +70,34 @@ function normalizeForMatch(s: string): string {
 function defaultShell(): string {
   if (process.platform === 'win32') return 'powershell.exe'
   return process.env.SHELL || '/bin/zsh'
+}
+
+let cachedPath: string | null = null
+// macOS GUI apps (launched from Finder/Dock) inherit the minimal launchd PATH —
+// /usr/bin:/bin:/usr/sbin:/sbin — missing Homebrew/nvm/asdf dirs. The claude we
+// spawn then can't find `node`/`npx`, which silently breaks (a) the MCP servers
+// claude spawns with `command:"node"` (tools never register) and (b) any
+// `node`/`npx tsx` the agent runs via Bash (e.g. bin/handoff). Resolve the
+// user's real login-shell PATH once and merge it in; fall back to prepending
+// the common install dirs if the login shell can't be queried.
+function loginShellPath(): string {
+  if (cachedPath) return cachedPath
+  const shell = process.env.SHELL || '/bin/zsh'
+  const fallback = ['/opt/homebrew/bin', '/usr/local/bin', join(os.homedir(), '.local', 'bin')]
+  let resolved = ''
+  try {
+    resolved = execSync(`${shell} -lc 'echo $PATH'`, { encoding: 'utf-8', timeout: 3000 }).trim()
+  } catch {
+    // login shell unavailable — fall back to the common dirs below
+  }
+  // Order: login-shell PATH first (user's preferred toolchain wins), then the
+  // fallback dirs, then whatever the GUI process already had. Set dedups.
+  const parts = new Set<string>()
+  for (const p of resolved.split(':')) if (p) parts.add(p)
+  for (const p of fallback) parts.add(p)
+  for (const p of (process.env.PATH || '').split(':')) if (p) parts.add(p)
+  cachedPath = Array.from(parts).join(':')
+  return cachedPath
 }
 
 function settleDying(id: string): void {
@@ -174,6 +203,9 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
       cwd: args.cwd ?? os.homedir(),
       env: {
         ...(process.env as { [key: string]: string }),
+        // GUI launch gives us launchd's minimal PATH; restore the user's real
+        // PATH so claude (and the MCP servers + node/npx it spawns) find node.
+        PATH: loginShellPath(),
         DECKY_SESSION_ID: args.id,
         DECKY_URL: process.env.DECKY_URL || 'http://127.0.0.1:6790',
         // Where this workspace's shared card .md files live, so the bot can Glob/Read them.

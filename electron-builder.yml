@@ -9,6 +9,8 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+# Deep ad-hoc re-sign after signing so the packaged app/dmg launch (see build/afterSign.cjs).
+afterSign: build/afterSign.cjs
 asarUnpack:
   - resources/**
   # dk-mcp/dk are spawned by an EXTERNAL process (claude reads ~/.claude.json and

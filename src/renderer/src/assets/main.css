@@ -847,9 +847,10 @@ code {
 .wstree-row:hover {
   background: var(--bg-2);
 }
-.wstree-row-active {
-  border-left-color: var(--accent);
-  background: var(--bg-1);
+/* Selected workspace: just bold (no border/bg highlight — that's reserved for the session). */
+.wstree-row-active .wstree-name {
+  font-weight: 700;
+  color: var(--text-1);
 }
 .wstree-caret {
   display: inline-flex;
@@ -866,10 +867,10 @@ code {
   padding: 6px 4px;
   background: transparent;
   border: none;
-  color: var(--text-1);
+  color: var(--text-2);
   font-family: var(--mono);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 400;
   text-align: left;
   cursor: pointer;
   overflow: hidden;
@@ -925,6 +926,11 @@ code {
 .wstree-dot-on {
   background: var(--accent);
   animation: deck-dot-pulse 1s ease-in-out infinite;
+}
+/* Finished while you were away — steady green until you open the session. */
+.wstree-dot-done {
+  background: #3fb950;
+  animation: none;
 }
 @keyframes deck-dot-pulse {
   50% {

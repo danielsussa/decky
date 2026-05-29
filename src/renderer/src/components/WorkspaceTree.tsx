@@ -12,7 +12,7 @@ interface WorkspaceTreeProps {
   activeSessionId?: string
   expanded: string[]
   sessionsByWorkspace: Record<string, TreeSession[]>
-  activity: Record<string, { status: string; active: boolean }>
+  activity: Record<string, { status: string; active: boolean; done: boolean }>
   nameOf: (path: string) => string
   onToggleExpand: (ws: string) => void
   onSelectSession: (ws: string, sessionId: string) => void
@@ -95,7 +95,9 @@ export default function WorkspaceTree({
                         title={s.label}
                         onClick={() => onSelectSession(ws, s.id)}
                       >
-                        <span className={`wstree-dot ${act?.active ? 'wstree-dot-on' : ''}`} />
+                        <span
+                          className={`wstree-dot ${act?.active ? 'wstree-dot-on' : ''} ${act?.done ? 'wstree-dot-done' : ''}`}
+                        />
                         <span className="wstree-session-name">{s.label}</span>
                       </button>
                       {isActiveWs && (

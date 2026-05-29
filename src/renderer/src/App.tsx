@@ -263,9 +263,10 @@ function App(): React.JSX.Element {
   const [workspaces, setWorkspaces] = useState<string[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeId, setActiveId] = useState<string | undefined>(undefined)
-  // LRU of sessions that currently have a live pty (most-recent at the end). Active is
-  // always live; others stay warm until evicted past MAX_LIVE_SESSIONS.
-  const [liveIds, setLiveIds] = useState<string[]>([])
+  // GLOBAL pool of sessions with a live pty (most-recent at the end), ACROSS workspaces — so
+  // switching workspace doesn't kill the one you left. LRU-capped at MAX_LIVE_SESSIONS; each
+  // holds its own cwd/claudeSessionId so its terminal keeps running while hidden.
+  const [liveSessions, setLiveSessions] = useState<Session[]>([])
   // Which workspaces are expanded in the tree, and a display-only cache of the session
   // lists of NON-active workspaces (read lazily from their workspace.json).
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<string[]>([])
@@ -640,21 +641,24 @@ function App(): React.JSX.Element {
   // Promote the active session to most-recently-used; evict the LRU past the cap.
   useEffect(() => {
     if (!activeId) return
-    setLiveIds((prev) => {
-      const next = [...prev.filter((id) => id !== activeId), activeId]
+    setLiveSessions((prev) => {
+      const sess = sessions.find((s) => s.id === activeId) ?? prev.find((s) => s.id === activeId)
+      if (!sess) return prev
+      const next = [...prev.filter((s) => s.id !== activeId), sess]
       while (next.length > MAX_LIVE_SESSIONS) next.shift() // drop oldest (never the active, it's last)
       return next
     })
-  }, [activeId])
+  }, [activeId, sessions])
 
-  // Drop closed/replaced sessions from the live set (e.g. after closing a tab or switching workspace).
+  // Drop only CLOSED sessions of the active workspace; keep sessions of OTHER workspaces alive
+  // (s.cwd !== workspace) so switching away doesn't stop them.
   useEffect(() => {
-    setLiveIds((prev) => {
-      const ids = new Set(sessions.map((s) => s.id))
-      const filtered = prev.filter((id) => ids.has(id))
-      return filtered.length === prev.length ? prev : filtered
+    setLiveSessions((prev) => {
+      const activeIds = new Set(sessions.map((s) => s.id))
+      const next = prev.filter((s) => s.cwd !== workspace || activeIds.has(s.id))
+      return next.length === prev.length ? prev : next
     })
-  }, [sessions])
+  }, [sessions, workspace])
 
   // Load global key bindings once on mount.
   useEffect(() => {
@@ -852,6 +856,14 @@ function App(): React.JSX.Element {
   const activeSessionTitle =
     sessionsWithTitles.find((s) => s.id === activeId)?.label ??
     (workspace ? projectFromCwd(workspace) : 'decky')
+
+  // Terminals to mount: the global live pool + the active session if it isn't in it yet
+  // (avoids a one-frame gap before the LRU effect adds it). Active is the only visible one.
+  const activeSess = sessions.find((s) => s.id === activeId)
+  const hostSessions =
+    activeSess && !liveSessions.some((s) => s.id === activeId)
+      ? [...liveSessions, activeSess]
+      : liveSessions
 
   const cardPreviews: Record<string, PreviewSource> = activeId
     ? (previewsByCard[activeId] ?? {})
@@ -1125,9 +1137,8 @@ function App(): React.JSX.Element {
             </div>
             <div className="panel-body panel-body-flush">
               <TerminalHost
-                sessions={sessionsWithTitles}
+                sessions={hostSessions}
                 activeId={activeId}
-                liveIds={liveIds}
                 claudeBin={claudeBin}
                 commandFor={commandFor}
                 onUserInput={(id) => {

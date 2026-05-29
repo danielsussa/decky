@@ -81,7 +81,9 @@ export default function WorkspaceTree({
               <div className="wstree-children">
                 {sessions.map((s) => {
                   const isActiveSession = isActiveWs && s.id === activeSessionId
-                  const act = isActiveWs ? activity[s.id] : undefined
+                  // Show activity for ANY session (the live pool keeps cross-workspace sessions
+                  // running), so a session working in another workspace still pulses.
+                  const act = activity[s.id]
                   return (
                     <div
                       className={`wstree-session ${isActiveSession ? 'wstree-session-active' : ''}`}

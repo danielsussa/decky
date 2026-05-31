@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { themeForWorkspace, xtermTheme } from '../../../shared/themes'
+import { xtermTheme, type Mode, type Theme } from '../../../shared/themes'
 
 // xterm's onData carries genuine keystrokes AND automatic terminal→app reports the TUI
 // solicits: cursor-position/DA/DSR replies, focus in/out, and mouse tracking (motion reports
@@ -28,6 +28,10 @@ interface TerminalProps {
   command?: string[]
   /** When true, terminal is visible. When transitioning false → true, refits to the new container size. */
   visible?: boolean
+  /** Light/dark mode — drives the xterm surface (re-applied live on change, no re-spawn). */
+  mode: Mode
+  /** The session's workspace theme — surface (bg/fg/cursor) uses this; ANSI follows mode only. */
+  theme: Theme
   /** Called when the user types (keystroke) — lets the parent ignore echo as "bot activity". */
   onUserInput?: () => void
 }
@@ -37,6 +41,8 @@ export default function Terminal({
   cwd,
   command,
   visible = true,
+  mode,
+  theme,
   onUserInput
 }: TerminalProps): React.JSX.Element {
   const onUserInputRef = useRef(onUserInput)
@@ -60,8 +66,13 @@ export default function Terminal({
       cursorBlink: true,
       allowTransparency: false,
       scrollback: 10000,
-      // Surface (bg/fg/cursor) follows the session's workspace theme; ANSI palette stays fixed.
-      theme: xtermTheme(themeForWorkspace(cwd))
+      // Surface (bg/fg/cursor) follows the session's workspace hue + mode; ANSI follows the mode.
+      // mode/theme aren't in this effect's deps (no re-spawn on toggle) — the effect below re-applies live.
+      theme: xtermTheme(theme, mode),
+      // In light mode, force a min contrast against the light bg so claude's washed-out spans
+      // (inline `code`, dim/secondary text) stay legible. Off in dark mode (1 = no adjustment) so
+      // the tuned dark palette renders as-is.
+      minimumContrastRatio: mode === 'light' ? 4.5 : 1
     })
 
     termRef.current = term
@@ -175,6 +186,17 @@ export default function Terminal({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, cwd, commandKey])
+
+  // Re-tint the live terminal when the mode toggles (dark↔light) — updates the xterm surface in
+  // place, no PTY re-spawn. theme.id (not the object) is in deps so a parent re-render with a
+  // fresh themeFor callback doesn't re-tint when the resolved theme is unchanged.
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    term.options.theme = xtermTheme(theme, mode)
+    term.options.minimumContrastRatio = mode === 'light' ? 4.5 : 1
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, theme.id])
 
   // When the tab becomes visible again, the container size changed but ResizeObserver
   // doesn't always fire (display:none → block on same dimensions). Refit a few times

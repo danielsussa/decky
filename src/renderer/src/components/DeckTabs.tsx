@@ -100,7 +100,9 @@ export default function DeckTabs({
           </div>
         ))}
       </div>
-      <div className="deck-tabs-body">{active?.render()}</div>
+      <div className="deck-tabs-body" key={active?.id ?? '__empty'}>
+        {active?.render()}
+      </div>
     </div>
   )
 }

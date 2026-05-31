@@ -13,7 +13,12 @@ export const isMac =
 // Mission Control clash), Ctrl elsewhere.
 export const PRIMARY_MOD = isMac ? 'Cmd' : 'Ctrl'
 
-export type ActionId = 'session.prev' | 'session.next' | 'tab.prev' | 'tab.next'
+export type ActionId =
+  | 'session.prev'
+  | 'session.next'
+  | 'tab.prev'
+  | 'tab.next'
+  | 'tab.pin'
 
 export interface ActionDef {
   id: ActionId
@@ -25,7 +30,12 @@ export const ACTIONS: ActionDef[] = [
   { id: 'session.prev', label: 'Sessão anterior (acima)', defaultAccel: `${PRIMARY_MOD}+ArrowUp` },
   { id: 'session.next', label: 'Próxima sessão (abaixo)', defaultAccel: `${PRIMARY_MOD}+ArrowDown` },
   { id: 'tab.prev', label: 'Tab anterior (esquerda)', defaultAccel: `${PRIMARY_MOD}+ArrowLeft` },
-  { id: 'tab.next', label: 'Próxima tab (direita)', defaultAccel: `${PRIMARY_MOD}+ArrowRight` }
+  { id: 'tab.next', label: 'Próxima tab (direita)', defaultAccel: `${PRIMARY_MOD}+ArrowRight` },
+  {
+    id: 'tab.pin',
+    label: 'Pinnar/despinnar tab focada',
+    defaultAccel: isMac ? 'Cmd+Ctrl+P' : 'Ctrl+Alt+P'
+  }
 ]
 
 export type Keymap = Partial<Record<ActionId, string>>

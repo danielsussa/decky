@@ -9,6 +9,9 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+# Bundle dky-mcp into a self-contained file before signing (see build/afterPack.cjs) so the
+# externally-spawned MCP server can resolve its deps without app.asar.
+afterPack: build/afterPack.cjs
 # Deep ad-hoc re-sign after signing so the packaged app/dmg launch (see build/afterSign.cjs).
 afterSign: build/afterSign.cjs
 asarUnpack:
@@ -25,6 +28,12 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  # Local stable self-signed identity (see build/make-signing-cert.sh). Anchors the
+  # TCC designated requirement to the CERT (not the per-build CDHash), so granted
+  # permissions survive rebuilds instead of re-prompting every install. Not from
+  # Apple => no notarization; fine for local use only.
+  identity: Decky Local Code Signing
+  hardenedRuntime: true
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.

@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, Menu, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, Menu, Notification, dialog } from 'electron'
 import { join } from 'path'
 import { existsSync, statSync } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -14,13 +14,16 @@ import {
 } from './preview-server'
 import { registerWorkspaceHandlers } from './workspace-store'
 import { registerCardsHandlers } from './cards-store'
+import { registerCardMirrorHandlers } from './card-mirror'
 import { migrateGlobalState } from './migrate'
 import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from './mcp-installer'
 import { ensureDeckInstruction } from './claude-md-installer'
 import { resolveClaudeBin, readAiTitle } from './claude-bin'
 import { registerStateHandlers } from './state-store'
+import { registerCliHandlers } from './cli-handlers'
 import { registerDevRebuildHandlers } from './dev-rebuild'
+import { registerGitHandlers } from './git-stats'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -128,10 +131,13 @@ app.whenReady().then(async () => {
 
   registerPtyHandlers(() => mainWindow)
   registerStateHandlers()
+  registerCliHandlers()
   registerWorkspaceHandlers()
   registerCardsHandlers()
+  registerCardMirrorHandlers(() => mainWindow)
   registerFileWatchHandlers(() => mainWindow)
   registerDevRebuildHandlers(() => mainWindow)
+  registerGitHandlers()
   startPreviewServer(() => mainWindow)
 
   ipcMain.handle('dialog:pick-folder', async () => {
@@ -145,8 +151,36 @@ app.whenReady().then(async () => {
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
   })
 
+  // Native desktop notification for "sessão terminou de processar". Renderer fires this when a
+  // session transitions from working → idle and the user isn't looking (different session OR
+  // window unfocused). Clicking the notification brings the app forward and tells the renderer
+  // which session to switch to.
+  ipcMain.handle(
+    'notify:show',
+    (_e, payload: { id: string; title: string; body?: string }) => {
+      if (!Notification.isSupported()) return
+      const n = new Notification({
+        title: payload.title,
+        body: payload.body ?? '',
+        silent: false
+      })
+      n.on('click', () => {
+        const win = mainWindow
+        if (!win || win.isDestroyed()) return
+        if (win.isMinimized()) win.restore()
+        win.show()
+        win.focus()
+        if (process.platform === 'darwin') app.focus({ steal: true })
+        win.webContents.send('notify:focus-session', { id: payload.id })
+      })
+      n.show()
+    }
+  )
+
   ipcMain.handle('preview:get-all', () => getPreviewSources())
-  ipcMain.handle('preview:rehydrate', (_e, byCard) => rehydratePreviews(byCard))
+  ipcMain.handle('preview:rehydrate', (_e, byCard, workspace?: string) =>
+    rehydratePreviews(byCard, workspace)
+  )
   ipcMain.handle('claude:get-bin', () => resolveClaudeBin())
   ipcMain.handle('claude:ai-title', (_e, cwd: string, uuid: string) => readAiTitle(cwd, uuid))
   ipcMain.handle('sessions:get-titles', () => getSessionTitles())

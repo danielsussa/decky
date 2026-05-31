@@ -1,5 +1,6 @@
 import Terminal from './Terminal'
 import type { Session } from '../types'
+import type { Mode, Theme } from '../../../shared/themes'
 
 interface TerminalHostProps {
   // The GLOBAL pool of live sessions (across workspaces). Every one mounts a terminal that
@@ -9,6 +10,9 @@ interface TerminalHostProps {
   activeId?: string
   claudeBin: string | null
   commandFor: (s: Session) => string[] | undefined
+  mode: Mode
+  // Resolves a session's cwd to its workspace's theme (uses the persisted assignment table).
+  themeFor: (path: string | null | undefined) => Theme
   onUserInput: (id: string) => void
 }
 
@@ -17,6 +21,8 @@ export default function TerminalHost({
   activeId,
   claudeBin,
   commandFor,
+  mode,
+  themeFor,
   onUserInput
 }: TerminalHostProps): React.JSX.Element {
   return (
@@ -35,6 +41,8 @@ export default function TerminalHost({
                 cwd={s.cwd}
                 command={commandFor(s)}
                 visible={isActive}
+                mode={mode}
+                theme={themeFor(s.cwd)}
                 onUserInput={() => onUserInput(s.id)}
               />
             )}

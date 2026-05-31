@@ -4,12 +4,19 @@ import Preview from './components/Preview'
 import DeckGrid from './components/DeckGrid'
 import DeckTabs from './components/DeckTabs'
 import WorkspaceTree, { type TreeSession } from './components/WorkspaceTree'
+import GitStats from './components/GitStats'
 import TerminalHost from './components/TerminalHost'
 import type { Session } from './types'
 import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
 import type { PreviewSource } from '../../shared/preview'
-import { applyTheme, themeForWorkspace } from '../../shared/themes'
+import {
+  applyTheme,
+  assignNewWorkspaceTheme,
+  themeFromAssignments,
+  type Mode,
+  type Theme
+} from '../../shared/themes'
 import {
   ACTIONS,
   accelLabel,
@@ -27,7 +34,13 @@ const DECKY_LAYOUT: 'grid' | 'tabs' = 'tabs'
 // Browser-tab model: sessions are always LISTED, but only this many keep a live pty
 // (claude process). Opening one beyond the cap suspends the least-recently-used; reopening
 // resumes it (--resume keeps the conversation). Keeps idle workspaces from spawning N claudes.
-const MAX_LIVE_SESSIONS = 6
+const MAX_LIVE_SESSIONS = 20
+
+// Switching to a session makes its hidden terminal visible → xterm refits (resize) and grabs
+// focus, and claude's TUI answers both with a full-screen repaint. That repaint is real pty
+// output but NOT the bot working, so we ignore a session's output for this long right after
+// switching to it — otherwise opening an IDLE session flashes the working dot for ~1.5s.
+const SWITCH_REPAINT_GUARD_MS = 1500
 
 // System (session-independent) panels that open as center tabs from the command
 // palette. Their card ids are prefixed so they never collide with bot cards.
@@ -91,6 +104,33 @@ interface WorkspaceState {
 function pickTitles(sessions: Session[], titles: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const s of sessions) if (titles[s.id]) out[s.id] = titles[s.id]
+  return out
+}
+
+// Per-workspace state maps (cardsBySession, focusedCardBySession, previewsByCard) are indexed
+// by sessionId — globally unique — but persisted PER-WORKSPACE. A session belonging to W_A
+// that emits a preview while the user is on W_B would otherwise be (a) saved into W_B's file
+// and (b) wiped from memory when W_A reloads. Filter on save (only sessions in this WS) and
+// merge on load (keep in-memory entries that disk doesn't know about) closes the leak.
+function filterToSessionIds<T>(map: Record<string, T>, ids: Set<string>): Record<string, T> {
+  const out: Record<string, T> = {}
+  for (const [k, v] of Object.entries(map)) if (ids.has(k)) out[k] = v
+  return out
+}
+
+// Merge disk state into in-memory: keep prev (in-memory wins for sessions still active in
+// other workspaces, and for THIS workspace's sessions that already have fresher state from a
+// cross-workspace event). Fill in entries disk has for this workspace's sessions that prev
+// doesn't (cold-load case).
+function mergeSessionScopedMap<T>(
+  prev: Record<string, T>,
+  loaded: Record<string, T>,
+  workspaceIds: Set<string>
+): Record<string, T> {
+  const out = { ...prev }
+  for (const [k, v] of Object.entries(loaded)) {
+    if (workspaceIds.has(k) && !(k in prev)) out[k] = v
+  }
   return out
 }
 
@@ -218,6 +258,13 @@ function migrateSessions(list: Session[]): Session[] {
   )
 }
 
+function sourcePath(source: PreviewSource | undefined): string | undefined {
+  if (!source) return undefined
+  if (source.type === 'editor' || source.type === 'xlsx') return source.path
+  if ((source.type === 'markdown' || source.type === 'diff') && source.path) return source.path
+  return undefined
+}
+
 function cardTitle(source: PreviewSource | undefined, fallback: string): string {
   if (!source || source.type === 'none') return fallback
   if (source.type === 'me') return 'live view'
@@ -258,21 +305,55 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
     }
     return 'diff'
   }
+  if (source.type === 'editor' || source.type === 'xlsx') {
+    if (source.title) return source.title
+    return source.path.split('/').pop() ?? source.path
+  }
   return fallback
 }
 
 // On persist, drop markdown content when we have a path (re-read on load).
+// Paths inside `workspace` are stored relative to it so cards survive the workspace
+// folder being renamed/moved. Paths outside the workspace stay absolute.
+function toWorkspaceRelative(path: string, workspace: string | null): string {
+  if (!workspace) return path
+  const root = workspace.endsWith('/') ? workspace : workspace + '/'
+  if (path === workspace) return '.'
+  if (path.startsWith(root)) return './' + path.slice(root.length)
+  return path
+}
+
 function serializePreviews(
-  byCard: Record<string, Record<string, PreviewSource>>
+  byCard: Record<string, Record<string, PreviewSource>>,
+  workspace: string | null
 ): Record<string, Record<string, PreviewSource>> {
   const out: Record<string, Record<string, PreviewSource>> = {}
   for (const [sid, cards] of Object.entries(byCard)) {
     out[sid] = {}
     for (const [cid, src] of Object.entries(cards)) {
-      out[sid][cid] =
-        src.type === 'markdown' && src.path
-          ? { type: 'markdown', content: '', path: src.path, title: src.title }
-          : src
+      if (src.type === 'markdown' && src.path) {
+        out[sid][cid] = {
+          type: 'markdown',
+          content: '',
+          path: toWorkspaceRelative(src.path, workspace),
+          title: src.title
+        }
+      } else if (src.type === 'editor') {
+        out[sid][cid] = {
+          type: 'editor',
+          content: '',
+          path: toWorkspaceRelative(src.path, workspace),
+          title: src.title
+        }
+      } else if (src.type === 'xlsx') {
+        out[sid][cid] = {
+          type: 'xlsx',
+          path: toWorkspaceRelative(src.path, workspace),
+          title: src.title
+        }
+      } else {
+        out[sid][cid] = src
+      }
     }
   }
   return out
@@ -284,6 +365,14 @@ function App(): React.JSX.Element {
   const [workspace, setWorkspace] = useState<string | null>(null)
   // Registry of folders opened as workspaces (global, ~/.decky/state.json) — drives the switcher.
   const [workspaces, setWorkspaces] = useState<string[]>([])
+  // Persisted workspace→theme assignments. We compute each entry ONCE (greedy: prefer the hashed
+  // theme, fall back to the nearest unused hue) when the workspace is registered, then never
+  // recompute it — so removing/re-adding doesn't churn the colors of other workspaces.
+  const [workspaceThemes, setWorkspaceThemes] = useState<Record<string, string>>({})
+  // Gates the ensure-assigned + persist effects until the disk-read of workspaceThemes settles —
+  // otherwise an empty-default ensure-assigned could fire & clobber the persisted map before
+  // the read resolves.
+  const [themesHydrated, setThemesHydrated] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeId, setActiveId] = useState<string | undefined>(undefined)
   // GLOBAL pool of sessions with a live pty (most-recent at the end), ACROSS workspaces — so
@@ -314,7 +403,15 @@ function App(): React.JSX.Element {
   // drives the green "done while you were away" dot until you return.
   const [seenAt, setSeenAt] = useState<Record<string, number>>({})
   const [aiTitles, setAiTitles] = useState<Record<string, string>>({})
+  const [gitStats, setGitStats] = useState<{
+    isRepo: boolean
+    additions: number
+    deletions: number
+  } | null>(null)
   const [now, setNow] = useState(Date.now())
+  // Light/dark mode: a GLOBAL preference (the per-workspace hue is separate). Toggled from the
+  // command palette, persisted in ~/.decky/state.json.
+  const [mode, setMode] = useState<Mode>('dark')
   // Keyboard bindings: stored overrides (global, ~/.decky/state.json).
   const [keymapOverrides, setKeymapOverrides] = useState<Keymap>({})
   // Command palette (Cmd/Ctrl+P) + which system panels are open as center tabs.
@@ -325,7 +422,7 @@ function App(): React.JSX.Element {
     enabled: false,
     accel: ''
   })
-  const [rebuildState, setRebuildState] = useState<'idle' | 'running' | 'error'>('idle')
+  const [rebuildState, setRebuildState] = useState<'idle' | 'running' | 'ready' | 'error'>('idle')
   const [rebuildLog, setRebuildLog] = useState('')
   const rebuildStateRef = useRef(rebuildState)
   rebuildStateRef.current = rebuildState
@@ -336,7 +433,13 @@ function App(): React.JSX.Element {
   const pendingActiveRef = useRef<string | null>(null)
   const pendingNewRef = useRef(false)
   const userInputAtRef = useRef<Record<string, number>>({})
+  // When each session was last switched-to (made visible). Output within
+  // SWITCH_REPAINT_GUARD_MS of this is the switch-induced repaint, not bot activity.
+  const switchGuardRef = useRef<Record<string, number>>({})
   const prevActiveIdRef = useRef<string | undefined>(undefined)
+  // Cmd+Arrow nav cursor when it crosses a workspace boundary: holds the "hovered"
+  // target without actually switching workspace. Enter commits, Esc cancels.
+  const [previewedNav, setPreviewedNav] = useState<{ ws: string; id: string } | null>(null)
   // Latest nav state for the global keyboard shortcuts (Ctrl+Arrows). Assigned
   // each render below; the listener (registered once) reads through this ref.
   const navRef = useRef<{
@@ -346,20 +449,32 @@ function App(): React.JSX.Element {
     cardIds: string[]
     activeId?: string
     focusedCardId: string | null
+    previewedNav: { ws: string; id: string } | null
   }>({
     navSessions: [],
     activeWorkspace: null,
     cardIds: [],
     activeId: undefined,
-    focusedCardId: null
+    focusedCardId: null,
+    previewedNav: null
   })
   const keymapRef = useRef<Record<ActionId, string>>(resolveKeymap({}))
+  // togglePin is defined further down (closes over current state); the global
+  // key handler reaches it through this ref, refreshed each render.
+  const togglePinRef = useRef<(id: string) => void>(() => {})
+  // Per-session "was working last tick" — drives the working→idle edge that fires a desktop
+  // notification (see effect below). Resets implicitly when a session goes back to working.
+  const wasWorkingRef = useRef<Record<string, boolean>>({})
+  // Click handler for the OS notification, refreshed each render so it closes over latest
+  // sessions/wsSessionsCache (needed to switch workspace when the session lives elsewhere).
+  const focusSessionRef = useRef<(id: string) => void>(() => {})
   const paletteOpenRef = useRef(false)
   // Set true while ShortcutsPanel records a chord, so the global nav handler
   // stands down and lets the panel's own capture listener grab the keys.
   const captureLockRef = useRef(false)
   const stateRef = useRef({
     sessions,
+    liveSessions,
     activeId,
     workspace,
     startupCwd,
@@ -372,6 +487,7 @@ function App(): React.JSX.Element {
   })
   stateRef.current = {
     sessions,
+    liveSessions,
     activeId,
     workspace,
     startupCwd,
@@ -384,17 +500,24 @@ function App(): React.JSX.Element {
   }
 
   const doRebuild = useCallback(async () => {
+    // When a previous build is sitting at "Restart", the same affordance fires the relaunch
+    // (the build is already swapped on disk — only the live process is stale).
+    if (rebuildStateRef.current === 'ready') {
+      void window.deck.dev.relaunch()
+      return
+    }
     if (rebuildStateRef.current === 'running') return
     setRebuildLog('')
     setRebuildState('running')
     const res = await window.deck.dev.rebuild()
-    // On success the app relaunches, so this component is torn down before we'd update state.
-    if (!res.ok) setRebuildState('error')
+    setRebuildState(res.ok ? 'ready' : 'error')
   }, [])
 
   // Dev rebuild: resolve availability + stream build output; bind the keyboard shortcut.
   useEffect(() => {
-    void window.deck.dev.getInfo().then((info) => setDevInfo({ enabled: info.enabled, accel: info.accel }))
+    void window.deck.dev
+      .getInfo()
+      .then((info) => setDevInfo({ enabled: info.enabled, accel: info.accel }))
     return window.deck.dev.onOutput((line) => {
       setRebuildLog((prev) => (prev + line).slice(-6000))
     })
@@ -420,6 +543,10 @@ function App(): React.JSX.Element {
     void window.deck.state.get<string[]>('workspaces').then((ws) => {
       if (Array.isArray(ws)) setWorkspaces(ws)
     })
+    void window.deck.state.get<Record<string, string>>('workspaceThemes').then((m) => {
+      if (m && typeof m === 'object') setWorkspaceThemes(m)
+      setThemesHydrated(true)
+    })
     void window.deck.state.get<string>(LAST_WORKSPACE_KEY).then((ws) => {
       if (ws) setWorkspace(ws)
       setLastWorkspaceResolved(true)
@@ -432,6 +559,9 @@ function App(): React.JSX.Element {
       const t = Date.now()
       // ignore output that's just an echo of recent user typing
       if (t - (userInputAtRef.current[id] ?? 0) < 700) return
+      // ignore the full-screen repaint claude emits when this session was just switched to
+      // (xterm refit + focus) — otherwise opening an idle session pulses the working dot
+      if (t - (switchGuardRef.current[id] ?? 0) < SWITCH_REPAINT_GUARD_MS) return
       // ANY output means the session is doing something — the thinking spinner/timer
       // ("Composing… 2m 43s"), tool output, streamed text. Bump the timestamp on every chunk so
       // it stays "active" (pulsing) and only goes "done" (green) when output TRULY stops; the
@@ -452,56 +582,105 @@ function App(): React.JSX.Element {
       })
     })
 
-    const unsubPreview = window.deck.preview.onSourceChange(({ sessionId, cardId, source }) => {
-      const {
-        cardsBySession: cm,
-        focusedCardBySession: fm,
-        workspace: ws,
-        pinned: pin
-      } = stateRef.current
-      const existing = cm[sessionId] ?? []
-      // Target card: explicit cardId from the bot, else the focused card, else create one
-      // with a semantic name (slug of the content title) so the file is discoverable.
-      let target = cardId || fm[sessionId] || existing[0]
-      const targetIsPinned = !!target && !!pin[target]
-      if (!target || (!existing.includes(target) && !targetIsPinned)) {
-        const slug = cardId ? '' : slugify(cardTitle(source, ''))
-        target = cardId || slug || `card-${Date.now().toString(36)}`
-        if (existing.includes(target)) target += `-${Date.now().toString(36).slice(-4)}`
-        const finalTarget = target
-        setCardsBySession((prev) => {
-          const list = prev[sessionId] ?? []
-          if (list.includes(finalTarget)) return prev
-          return { ...prev, [sessionId]: [...list, finalTarget] }
-        })
-      }
-      setFocusedCardBySession((prev) => ({ ...prev, [sessionId]: target! }))
+    const unsubPreview = window.deck.preview.onSourceChange(
+      ({ sessionId, cardId, source, reqId }) => {
+        const {
+          cardsBySession: cm,
+          focusedCardBySession: fm,
+          previewsByCard: pm,
+          sessions: aSess,
+          liveSessions: lSess,
+          pinned: pin
+        } = stateRef.current
+        const existing = cm[sessionId] ?? []
+        // Dedupe by file path: if the bot didn't pass an explicit id and the source is a file
+        // already open (pinned or own), route the update to that card so we don't spawn a
+        // second tab with the same title (e.g. preview_show on a file that's already pinned).
+        let matchByPath: string | undefined
+        if (!cardId) {
+          const srcPath = sourcePath(source)
+          if (srcPath) {
+            for (const [id, p] of Object.entries(pin)) {
+              if (sourcePath(p) === srcPath) {
+                matchByPath = id
+                break
+              }
+            }
+            if (!matchByPath) {
+              const sessionCards = pm[sessionId] ?? {}
+              for (const id of existing) {
+                if (sourcePath(sessionCards[id]) === srcPath) {
+                  matchByPath = id
+                  break
+                }
+              }
+            }
+          }
+        }
+        // Target card: explicit cardId from the bot, else a card already showing this path,
+        // else the focused card, else create one with a semantic name (slug of the content
+        // title) so the file is discoverable.
+        let target = cardId || matchByPath || fm[sessionId] || existing[0]
+        const targetIsPinned = !!target && !!pin[target]
+        if (!target || (!existing.includes(target) && !targetIsPinned)) {
+          const slug = cardId ? '' : slugify(cardTitle(source, ''))
+          target = cardId || slug || `card-${Date.now().toString(36)}`
+          if (existing.includes(target)) target += `-${Date.now().toString(36).slice(-4)}`
+          const finalTarget = target
+          setCardsBySession((prev) => {
+            const list = prev[sessionId] ?? []
+            if (list.includes(finalTarget)) return prev
+            return { ...prev, [sessionId]: [...list, finalTarget] }
+          })
+        }
+        setFocusedCardBySession((prev) => ({ ...prev, [sessionId]: target! }))
 
-      const apply = (s: PreviewSource): void => {
-        if (pin[target!]) {
-          setPinned((prev) => ({ ...prev, [target!]: s }))
+        // Ack back to main so the HTTP /preview response can echo cardId+path to the MCP
+        // caller. Inline markdown waits for the file write to know the real path; other types
+        // ack immediately with whatever path the source already carries (none for json/web/me).
+        const ack = (path?: string): void => {
+          if (!reqId) return
+          window.deck.preview.resolved({
+            reqId,
+            cardId: target!,
+            path,
+            title: cardTitle(source, '')
+          })
+        }
+
+        const apply = (s: PreviewSource): void => {
+          if (pin[target!]) {
+            setPinned((prev) => ({ ...prev, [target!]: s }))
+          } else {
+            setPreviewsByCard((prev) => ({
+              ...prev,
+              [sessionId]: { ...(prev[sessionId] ?? {}), [target!]: s }
+            }))
+          }
+        }
+
+        // Materialize inline markdown into a real file (main owns the path, in <workspace>/.decky) →
+        // editable, live-watched, discoverable by other sessions. target may contain "/".
+        // Use the EMITTING session's workspace, not the active one — a session in the live pool
+        // can be from a different workspace than the user is currently viewing, and the card file
+        // belongs with its owner session.
+        const owner = aSess.find((s) => s.id === sessionId) ?? lSess.find((s) => s.id === sessionId)
+        const ownerWs = owner?.cwd
+        if (source.type === 'markdown' && !source.path && ownerWs) {
+          void window.deck.cards.write(ownerWs, target!, source.content).then((filePath) => {
+            apply(
+              filePath
+                ? { type: 'markdown', content: source.content, title: source.title, path: filePath }
+                : source
+            )
+            ack(filePath ?? undefined)
+          })
         } else {
-          setPreviewsByCard((prev) => ({
-            ...prev,
-            [sessionId]: { ...(prev[sessionId] ?? {}), [target!]: s }
-          }))
+          apply(source)
+          ack(sourcePath(source))
         }
       }
-
-      // Materialize inline markdown into a real file (main owns the path, in <workspace>/.decky) →
-      // editable, live-watched, discoverable by other sessions. target may contain "/".
-      if (source.type === 'markdown' && !source.path && ws) {
-        void window.deck.cards.write(ws, target!, source.content).then((filePath) => {
-          apply(
-            filePath
-              ? { type: 'markdown', content: source.content, title: source.title, path: filePath }
-              : source
-          )
-        })
-      } else {
-        apply(source)
-      }
-    })
+    )
     const unsubTitle = window.deck.sessions.onTitleChange(({ id, title }) => {
       setTitles((prev) => ({ ...prev, [id]: title }))
     })
@@ -524,6 +703,22 @@ function App(): React.JSX.Element {
       setSessions((prev) => [...prev, def])
       setActiveId(def.id)
     })
+    // A popup/new-tab opened from inside a web card's <webview> would otherwise spawn a
+    // separate OS window. WebPreview blocks the native popup (no allowpopups) and re-fires the
+    // URL as a 'decky:web-open' DOM event; we open it as a new web card in the active session.
+    const onWebOpen = (ev: Event): void => {
+      const url = (ev as CustomEvent<string>).detail
+      const aId = stateRef.current.activeId
+      if (!aId || !url) return
+      const id = `web-${Date.now().toString(36)}`
+      setCardsBySession((p) => ({ ...p, [aId]: [...(p[aId] ?? []), id] }))
+      setPreviewsByCard((p) => ({
+        ...p,
+        [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url } }
+      }))
+      setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
+    }
+    window.addEventListener('decky:web-open', onWebOpen)
     const unsubCloseTab = window.deck.app.onMenuCloseTab(() => {
       const { sessions: prev, activeId: cur } = stateRef.current
       if (!cur) return
@@ -544,15 +739,16 @@ function App(): React.JSX.Element {
         void window.deck.app.flushDone()
         return
       }
+      const ids = new Set(s.sessions.map((x) => x.id))
       void window.deck.workspace
         .write(ws, {
           sessions: s.sessions,
           activeId: s.activeId,
-          cardsBySession: s.cardsBySession,
-          focusedCardBySession: s.focusedCardBySession,
-          previews: serializePreviews(s.previewsByCard),
+          cardsBySession: filterToSessionIds(s.cardsBySession, ids),
+          focusedCardBySession: filterToSessionIds(s.focusedCardBySession, ids),
+          previews: serializePreviews(filterToSessionIds(s.previewsByCard, ids), ws),
           titles: pickTitles(s.sessions, s.titles),
-          pinned: serializePreviews({ p: s.pinned }).p
+          pinned: serializePreviews({ p: s.pinned }, ws).p
         })
         .finally(() => void window.deck.app.flushDone())
     })
@@ -563,6 +759,7 @@ function App(): React.JSX.Element {
       unsubAdd()
       unsubConflict()
       unsubNewSession()
+      window.removeEventListener('decky:web-open', onWebOpen)
       unsubCloseTab()
       unsubFlush()
     }
@@ -616,14 +813,15 @@ function App(): React.JSX.Element {
 
     // Flush the previous workspace's current state before switching away.
     if (prevWs && wsLoaded) {
+      const prevIds = new Set(sessions.map((s) => s.id))
       void window.deck.workspace.write(prevWs, {
         sessions,
         activeId,
-        cardsBySession,
-        focusedCardBySession,
-        previews: serializePreviews(previewsByCard),
+        cardsBySession: filterToSessionIds(cardsBySession, prevIds),
+        focusedCardBySession: filterToSessionIds(focusedCardBySession, prevIds),
+        previews: serializePreviews(filterToSessionIds(previewsByCard, prevIds), prevWs),
         titles: pickTitles(sessions, titles),
-        pinned: serializePreviews({ p: pinned }).p
+        pinned: serializePreviews({ p: pinned }, prevWs).p
       })
     }
     // Drop the previous workspace's cached session list so the tree re-reads it fresh next expand.
@@ -644,7 +842,7 @@ function App(): React.JSX.Element {
       if (cancelled) return
       if (data && Array.isArray(data.sessions) && data.sessions.length > 0) {
         let sess = migrateSessions(data.sessions)
-        const previews = await window.deck.preview.rehydrate(data.previews ?? {})
+        const previews = await window.deck.preview.rehydrate(data.previews ?? {}, workspace)
         if (cancelled) return
         let initial =
           data.activeId && sess.some((s) => s.id === data.activeId) ? data.activeId : sess[0]?.id
@@ -659,28 +857,45 @@ function App(): React.JSX.Element {
         }
         pendingActiveRef.current = null
         pendingNewRef.current = false
+        // Mark the loaded workspace BEFORE setSessions: the prune effect keys off this ref to
+        // know which workspace `sessions` represents. If we update it later, the `await
+        // rehydrate({p: pinned})` below splits the microtask — React processes the setSessions
+        // batch before the ref catches up, so prune sees the new WS's sessions but the old WS's
+        // ref and drops every live session of the workspace we're switching AWAY from, killing
+        // those ptys mid-task. `data.pinned` is `{}` (truthy) even when empty, so this fired on
+        // every switch.
+        loadedWorkspaceRef.current = workspace
         setSessions(sess)
         setActiveId(initial)
-        setCardsBySession(data.cardsBySession ?? {})
-        setFocusedCardBySession(data.focusedCardBySession ?? {})
-        setPreviewsByCard(previews)
+        // Merge (not replace): keep in-memory entries for sessions belonging to other
+        // workspaces (live pool), AND for THIS workspace's sessions that have fresher state
+        // from a cross-workspace preview event the disk doesn't know about.
+        const wsIds = new Set(sess.map((s) => s.id))
+        setCardsBySession((prev) => mergeSessionScopedMap(prev, data.cardsBySession ?? {}, wsIds))
+        setFocusedCardBySession((prev) =>
+          mergeSessionScopedMap(prev, data.focusedCardBySession ?? {}, wsIds)
+        )
+        setPreviewsByCard((prev) => mergeSessionScopedMap(prev, previews, wsIds))
         if (data.titles) setTitles((prev) => ({ ...prev, ...data.titles }))
         const pinnedRe = data.pinned
-          ? ((await window.deck.preview.rehydrate({ p: data.pinned })).p ?? {})
+          ? ((await window.deck.preview.rehydrate({ p: data.pinned }, workspace)).p ?? {})
           : {}
         if (!cancelled) setPinned(pinnedRe)
       } else {
         const def = defaultClaudeSession(workspace)
         pendingActiveRef.current = null
         pendingNewRef.current = false
+        loadedWorkspaceRef.current = workspace
         setSessions([def])
         setActiveId(def.id)
-        setCardsBySession({})
-        setFocusedCardBySession({})
-        setPreviewsByCard({})
+        // Don't clobber other workspaces' in-memory entries; this WS has only a fresh session
+        // with no cards yet, so the merge just leaves the rest of the maps alone.
+        const wsIds = new Set([def.id])
+        setCardsBySession((prev) => mergeSessionScopedMap(prev, {}, wsIds))
+        setFocusedCardBySession((prev) => mergeSessionScopedMap(prev, {}, wsIds))
+        setPreviewsByCard((prev) => mergeSessionScopedMap(prev, {}, wsIds))
         setPinned({})
       }
-      loadedWorkspaceRef.current = workspace
       void window.deck.state.set(LAST_WORKSPACE_KEY, workspace)
       setWsLoaded(true)
     })()
@@ -694,14 +909,15 @@ function App(): React.JSX.Element {
   useEffect(() => {
     if (!wsLoaded || !workspace || loadedWorkspaceRef.current !== workspace) return
     const t = setTimeout(() => {
+      const ids = new Set(sessions.map((s) => s.id))
       void window.deck.workspace.write(workspace, {
         sessions,
         activeId,
-        cardsBySession,
-        focusedCardBySession,
-        previews: serializePreviews(previewsByCard),
+        cardsBySession: filterToSessionIds(cardsBySession, ids),
+        focusedCardBySession: filterToSessionIds(focusedCardBySession, ids),
+        previews: serializePreviews(filterToSessionIds(previewsByCard, ids), workspace),
         titles: pickTitles(sessions, titles),
-        pinned: serializePreviews({ p: pinned }).p
+        pinned: serializePreviews({ p: pinned }, workspace).p
       })
     }, 400)
     return () => clearTimeout(t)
@@ -722,11 +938,101 @@ function App(): React.JSX.Element {
     document.title = workspaceName || 'decky'
   }, [workspace])
 
-  // Each workspace gets a deterministic color identity (hash of its path → 1 of 7 themes), so
-  // the whole UI tints differently per workspace. Applied to :root; terminals tint themselves.
+  // Poll the workspace's uncommitted diff (additions/deletions) so the right header can show
+  // a tiny git stats badge. Skipped when there's no workspace or it isn't a git repo.
   useEffect(() => {
-    applyTheme(themeForWorkspace(workspace))
+    if (!workspace) {
+      setGitStats(null)
+      return
+    }
+    let cancelled = false
+    const fetchStats = async (): Promise<void> => {
+      const s = await window.deck.git.diffStats(workspace)
+      if (cancelled) return
+      setGitStats(s.isRepo ? s : null)
+    }
+    void fetchStats()
+    const iv = setInterval(fetchStats, 3000)
+    return () => {
+      cancelled = true
+      clearInterval(iv)
+    }
   }, [workspace])
+
+  // Debounced push of the canonical per-session card mirror to main. The MCP `list_cards`
+  // tool reads this so the bot can discover what cards the user has open (id/path/title/type),
+  // and `preview_*` callers get cardId+path resolution on every write. Debounce > React
+  // multi-set batching to avoid mid-batch snapshots.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const ownIds = (sid: string): string[] => cardsBySession[sid] ?? []
+      const pinnedIds = Object.keys(pinned)
+      const out: Record<
+        string,
+        {
+          cards: {
+            id: string
+            title: string
+            type: PreviewSource['type']
+            path?: string
+            url?: string
+            pinned: boolean
+          }[]
+          focused: string | null
+        }
+      > = {}
+      const allSessionIds = new Set<string>([
+        ...Object.keys(cardsBySession),
+        ...Object.keys(focusedCardBySession),
+        ...Object.keys(previewsByCard)
+      ])
+      for (const sid of allSessionIds) {
+        const own = ownIds(sid).filter((id) => !pinned[id])
+        const ids = [...pinnedIds, ...own]
+        const cards = ids.map((id, i) => {
+          const isPinned = !!pinned[id]
+          const source: PreviewSource = (isPinned ? pinned[id] : previewsByCard[sid]?.[id]) ?? {
+            type: 'none'
+          }
+          const t = source.type
+          const path = sourcePath(source)
+          const url = t === 'me' || t === 'web' ? source.url : undefined
+          return {
+            id,
+            title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
+            type: t,
+            path,
+            url,
+            pinned: isPinned
+          }
+        })
+        out[sid] = { cards, focused: focusedCardBySession[sid] ?? null }
+      }
+      window.deck.cards.syncState(out)
+    }, 80)
+    return () => clearTimeout(t)
+  }, [cardsBySession, focusedCardBySession, previewsByCard, pinned])
+
+  // Drop a stale Cmd+Arrow preview the moment the active workspace actually changes —
+  // Enter commits via setWorkspace, but other paths (mouse, close, palette) get here too.
+  useEffect(() => {
+    setPreviewedNav(null)
+  }, [workspace])
+
+  // Load the persisted mode once on mount.
+  useEffect(() => {
+    void window.deck.state.get<Mode>('themeMode').then((m) => {
+      if (m === 'light' || m === 'dark') setMode(m)
+    })
+  }, [])
+
+  const toggleMode = useCallback((): void => {
+    setMode((prev) => {
+      const next: Mode = prev === 'dark' ? 'light' : 'dark'
+      void window.deck.state.set('themeMode', next)
+      return next
+    })
+  }, [])
 
   // Register every opened workspace in the switcher list, and persist the registry.
   useEffect(() => {
@@ -736,6 +1042,52 @@ function App(): React.JSX.Element {
   useEffect(() => {
     if (workspaces.length) void window.deck.state.set('workspaces', workspaces)
   }, [workspaces])
+
+  // Whenever the workspace registry changes, ensure every entry has a theme assignment. We only
+  // assign workspaces that don't already have one (greedy: prefer the hashed theme, else the
+  // closest unused hue). Existing assignments are NEVER recomputed — so a workspace's color
+  // identity is fixed at registration time and survives adds/removes of siblings.
+  // Gate on themesHydrated so we don't compute fresh assignments over an empty default and clobber
+  // the persisted map before its disk-read resolves.
+  useEffect(() => {
+    if (!themesHydrated) return
+    setWorkspaceThemes((prev) => {
+      const next: Record<string, string> = {}
+      for (const ws of workspaces) if (prev[ws]) next[ws] = prev[ws]
+      const taken = new Set(Object.values(next))
+      const missing = workspaces
+        .filter((ws) => !next[ws])
+        .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+      for (const ws of missing) {
+        const t = assignNewWorkspaceTheme(ws, taken)
+        next[ws] = t.id
+        taken.add(t.id)
+      }
+      const prevKeys = Object.keys(prev)
+      const nextKeys = Object.keys(next)
+      const same = prevKeys.length === nextKeys.length && nextKeys.every((k) => prev[k] === next[k])
+      return same ? prev : next
+    })
+  }, [workspaces, themesHydrated])
+  useEffect(() => {
+    if (!themesHydrated) return
+    void window.deck.state.set('workspaceThemes', workspaceThemes)
+  }, [workspaceThemes, themesHydrated])
+
+  // Resolve any path (active workspace OR a session's cwd) to its theme. Pure lookup against the
+  // persisted assignment table; falls back to the hash when no assignment exists (e.g. a cwd
+  // that isn't a registered workspace, or during the brief pre-load window on startup).
+  const themeFor = useCallback(
+    (path: string | null | undefined): Theme => themeFromAssignments(path, workspaceThemes),
+    [workspaceThemes]
+  )
+
+  // Each workspace gets a color identity from the persisted assignment (1 of 15 themes, greedy
+  // collision-avoidance at registration); the mode (dark/light) is a global toggle. Both reapply
+  // to :root; terminals tint themselves.
+  useEffect(() => {
+    applyTheme(themeFor(workspace), mode)
+  }, [workspace, mode, themeFor])
 
   // Auto-expand the active workspace so its sessions show in the tree.
   useEffect(() => {
@@ -758,7 +1110,8 @@ function App(): React.JSX.Element {
           sess.map(async (s) => {
             let label = data?.titles?.[s.id]
             if (!label && s.kind === 'claude' && s.claudeSessionId) {
-              label = (await window.deck.claude.aiTitle(s.cwd ?? ws, s.claudeSessionId)) ?? undefined
+              label =
+                (await window.deck.claude.aiTitle(s.cwd ?? ws, s.claudeSessionId)) ?? undefined
             }
             return { id: s.id, label: label || s.label, kind: s.kind }
           })
@@ -786,6 +1139,12 @@ function App(): React.JSX.Element {
     const prev = prevActiveIdRef.current
     prevActiveIdRef.current = activeId
     const t = Date.now()
+    // Arm the repaint guard for BOTH sides of the switch: the session we just opened (terminal
+    // becomes visible → xterm refits + focus → claude repaints) AND the one we just left
+    // (terminal becomes hidden → refit/blur also triggers a repaint). Without the `prev` side,
+    // leaving an idle session would flash the working dot for ~1.5s before settling back to green.
+    if (activeId) switchGuardRef.current[activeId] = t
+    if (prev) switchGuardRef.current[prev] = t
     setSeenAt((s) => {
       const n = { ...s }
       if (prev) n[prev] = t
@@ -831,6 +1190,29 @@ function App(): React.JSX.Element {
       }
       // Let the palette / a recording shortcut field handle their own keys.
       if (captureLockRef.current || paletteOpenRef.current) return
+      // While a Cmd+Arrow preview cursor is parked in another workspace, Cmd/Ctrl+Enter
+      // commits the switch and Escape cancels — plain Enter is left for the terminal.
+      const preview = navRef.current.previewedNav
+      if (preview) {
+        if (openMod && !e.altKey && !e.shiftKey && e.key === 'Enter') {
+          e.preventDefault()
+          e.stopPropagation()
+          setPreviewedNav(null)
+          if (preview.ws === navRef.current.activeWorkspace) {
+            setActiveId(preview.id)
+          } else {
+            pendingActiveRef.current = preview.id
+            setWorkspace(preview.ws)
+          }
+          return
+        }
+        if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key === 'Escape') {
+          e.preventDefault()
+          e.stopPropagation()
+          setPreviewedNav(null)
+          return
+        }
+      }
       // Cmd/Ctrl+N → nova sessão no workspace ativo; Cmd/Ctrl+K → deleta a sessão ativa.
       // Handled here (capture phase, hot-reloadable) rather than via menu accelerators, which
       // the focused xterm/<webview> can swallow and which only refresh on a main-process restart.
@@ -895,19 +1277,22 @@ function App(): React.JSX.Element {
       e.stopPropagation()
       const nav = navRef.current
       if (action === 'session.prev' || action === 'session.next') {
-        // Navigate the flat cross-workspace list; switch workspace when crossing a boundary.
+        // Navigate the flat cross-workspace list as a "hover" cursor — never auto-commits,
+        // even within the active workspace. Enter switches to the parked session/workspace;
+        // Esc cancels. Avoids loading anything heavy just from scrolling past it.
         const list = nav.navSessions
-        if (list.length < 2 || !nav.activeId) return
-        const i = list.findIndex((x) => x.id === nav.activeId)
+        if (list.length < 2) return
+        const cursorId = nav.previewedNav?.id ?? nav.activeId
+        if (!cursorId) return
+        const i = list.findIndex((x) => x.id === cursorId)
         if (i === -1) return
         const d = action === 'session.prev' ? -1 : 1
         const target = list[(i + d + list.length) % list.length]
-        if (target.ws === nav.activeWorkspace) {
-          setActiveId(target.id)
-        } else {
-          pendingActiveRef.current = target.id
-          setWorkspace(target.ws)
-        }
+        setPreviewedNav({ ws: target.ws, id: target.id })
+      } else if (action === 'tab.pin') {
+        const cur = nav.focusedCardId
+        if (!cur || cur.startsWith(PANEL_PREFIX)) return
+        togglePinRef.current(cur)
       } else {
         const ids = nav.cardIds
         if (!ids.length || !nav.activeId) return
@@ -923,13 +1308,15 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [])
 
-  // Keep fs watchers in sync with the file-backed cards (markdown sources with a path).
+  // Keep fs watchers in sync with the file-backed cards (markdown + editor sources).
   const watchedPathsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     const paths = new Set<string>()
     for (const cards of Object.values(previewsByCard)) {
       for (const src of Object.values(cards)) {
         if (src.type === 'markdown' && src.path) paths.add(src.path)
+        else if (src.type === 'editor') paths.add(src.path)
+        else if (src.type === 'xlsx') paths.add(src.path)
       }
     }
     const prev = watchedPathsRef.current
@@ -949,7 +1336,10 @@ function App(): React.JSX.Element {
           for (const [sid, cards] of Object.entries(prev)) {
             next[sid] = {}
             for (const [cid, src] of Object.entries(cards)) {
-              if (src.type === 'markdown' && src.path === path) {
+              if (
+                (src.type === 'markdown' && src.path === path) ||
+                (src.type === 'editor' && src.path === path)
+              ) {
                 next[sid][cid] = { ...src, content }
                 changed = true
               } else {
@@ -977,6 +1367,8 @@ function App(): React.JSX.Element {
       else if (src.type === 'markdown') lines.push(`- **${id}** — (markdown inline)`)
       else if (src.type === 'json') lines.push(`- **${id}** — (json)`)
       else if (src.type === 'diff') lines.push(`- **${id}** — (diff)`)
+      else if (src.type === 'editor') lines.push(`- **${id}** — (editor: \`${src.path}\`)`)
+      else if (src.type === 'xlsx') lines.push(`- **${id}** — (xlsx: \`${src.path}\`)`)
       else if (src.type === 'web') lines.push(`- **${id}** — (web: ${src.url})`)
       else if (src.type === 'me') lines.push(`- **${id}** — (live view: ${src.url ?? 'me'})`)
     }
@@ -1008,6 +1400,44 @@ function App(): React.JSX.Element {
     }
   }
 
+  // Desktop notification on the working→idle edge for any session the user isn't watching right
+  // now (different session OR the window is unfocused). Edge-triggered via wasWorkingRef so we
+  // notify exactly once per "thinking burst that finished".
+  focusSessionRef.current = (id: string): void => {
+    if (sessions.some((s) => s.id === id)) {
+      setActiveId(id)
+      return
+    }
+    for (const [ws, list] of Object.entries(wsSessionsCache)) {
+      if (list.some((s) => s.id === id)) {
+        pendingActiveRef.current = id
+        setWorkspace(ws)
+        return
+      }
+    }
+    setActiveId(id)
+  }
+  useEffect(() => {
+    return window.deck.notify.onFocusSession(({ id }) => focusSessionRef.current(id))
+  }, [])
+  useEffect(() => {
+    for (const [id, a] of Object.entries(sessionActivity)) {
+      const wasWorking = wasWorkingRef.current[id] === true
+      if (wasWorking && !a.active) {
+        const watching = id === activeId && document.hasFocus()
+        if (!watching) {
+          const label = titles[id] || aiTitles[id] || 'sessão'
+          void window.deck.notify.show({
+            id,
+            title: `${label} pronta`,
+            body: 'terminou de processar'
+          })
+        }
+      }
+      wasWorkingRef.current[id] = a.active
+    }
+  }, [sessionActivity, activeId, titles, aiTitles])
+
   // Sessions shown in the tree: the active workspace from live state, others from the cache.
   // Only use live `sessions` once they belong to the current `workspace`. On switch, `workspace`
   // updates synchronously but `sessions` loads async — using them during that gap flashed the
@@ -1021,10 +1451,6 @@ function App(): React.JSX.Element {
       kind: s.kind
     }))
   }
-
-  const activeSessionTitle =
-    sessionsWithTitles.find((s) => s.id === activeId)?.label ??
-    (workspace ? projectFromCwd(workspace) : 'decky')
 
   // Terminals to mount: the global live pool + the active session if it isn't in it yet
   // (avoids a one-frame gap before the LRU effect adds it). Active is the only visible one.
@@ -1056,6 +1482,23 @@ function App(): React.JSX.Element {
       }
       return next
     })
+    // Drop the closed session's entries from the cross-workspace maps so they don't linger
+    // as dead memory (and don't get re-saved into the workspace file on the next debounce).
+    setCardsBySession((prev) => {
+      if (!(id in prev)) return prev
+      const { [id]: _drop, ...rest } = prev
+      return rest
+    })
+    setFocusedCardBySession((prev) => {
+      if (!(id in prev)) return prev
+      const { [id]: _drop, ...rest } = prev
+      return rest
+    })
+    setPreviewsByCard((prev) => {
+      if (!(id in prev)) return prev
+      const { [id]: _drop, ...rest } = prev
+      return rest
+    })
   }
 
   const newClaudeSession = (): void => {
@@ -1077,7 +1520,10 @@ function App(): React.JSX.Element {
     const aId = activeId
     const id = `web-${Date.now().toString(36)}`
     setCardsBySession((p) => ({ ...p, [aId]: [...(p[aId] ?? []), id] }))
-    setPreviewsByCard((p) => ({ ...p, [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url: '' } } }))
+    setPreviewsByCard((p) => ({
+      ...p,
+      [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url: '' } }
+    }))
     setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
   }
 
@@ -1087,6 +1533,7 @@ function App(): React.JSX.Element {
   // Selecting a session in a non-active workspace switches first; the load effect then
   // activates the pending session once that workspace's sessions land.
   const selectSession = (ws: string, sid: string): void => {
+    setPreviewedNav(null)
     if (ws === workspace) {
       setActiveId(sid)
       return
@@ -1207,6 +1654,7 @@ function App(): React.JSX.Element {
       }
     }
   }
+  togglePinRef.current = togglePin
 
   // Reorder cards from a drag-drop: split the new sequence back into pinned
   // (workspace-global, rebuilt to preserve key order) and the active session's own.
@@ -1276,14 +1724,20 @@ function App(): React.JSX.Element {
       id,
       title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
       pinned: isPinned,
-      render: () => <Preview source={source} />
+      render: () => <Preview source={source} cardId={id} />
     }
   })
   const deckCards = [...panelCards, ...contentCards]
 
+  // Workspaces sorted alphabetically by display name — drives BOTH the tree render and
+  // the cross-workspace nav order, so Cmd+Arrow walks them in the same order they appear.
+  const sortedWorkspaces = [...workspaces].sort((a, b) =>
+    projectFromCwd(a).localeCompare(projectFromCwd(b), undefined, { sensitivity: 'base' })
+  )
+
   // Flat session list across all workspaces, in tree order (workspace registry × sessions).
   const navSessions: { ws: string; id: string }[] = []
-  for (const ws of workspaces) {
+  for (const ws of sortedWorkspaces) {
     for (const s of treeSessionsByWorkspace[ws] ?? []) navSessions.push({ ws, id: s.id })
   }
 
@@ -1292,10 +1746,17 @@ function App(): React.JSX.Element {
     activeWorkspace: workspace,
     cardIds: deckCards.map((c) => c.id),
     activeId,
-    focusedCardId
+    focusedCardId,
+    previewedNav
   }
 
   const paletteCommands: Command[] = [
+    {
+      id: 'theme:toggle-mode',
+      label: mode === 'dark' ? 'Tema claro' : 'Tema escuro',
+      hint: 'aparência',
+      run: toggleMode
+    },
     { id: 'web:new', label: 'Nova aba de browser', hint: 'abre um webview', run: openWebTab },
     ...PANELS.map((p) => ({
       id: `panel:${p.id}`,
@@ -1315,39 +1776,54 @@ function App(): React.JSX.Element {
         >
           <section className="panel panel-sessions">
             <div className="panel-header">
-              <span>{activeSessionTitle}</span>
+              <span>decky</span>
             </div>
-            <div className="panel-body panel-body-flush">
-              <TerminalHost
-                sessions={hostSessions}
-                activeId={activeId}
-                claudeBin={claudeBin}
-                commandFor={commandFor}
-                onUserInput={(id) => {
-                  userInputAtRef.current[id] = Date.now()
-                }}
+            <ResizableSplit
+              direction="vertical"
+              defaultSizes={[65, 35]}
+              minSizes={[20, 10]}
+              storageKey="deck-layout-sessions-v0"
+            >
+              <div className="panel-body panel-body-flush">
+                <TerminalHost
+                  sessions={hostSessions}
+                  activeId={activeId}
+                  claudeBin={claudeBin}
+                  commandFor={commandFor}
+                  mode={mode}
+                  themeFor={themeFor}
+                  onUserInput={(id) => {
+                    userInputAtRef.current[id] = Date.now()
+                  }}
+                />
+              </div>
+              <WorkspaceTree
+                workspaces={sortedWorkspaces}
+                activeWorkspace={workspace}
+                activeSessionId={activeId}
+                previewedSession={previewedNav}
+                expanded={expandedWorkspaces}
+                sessionsByWorkspace={treeSessionsByWorkspace}
+                activity={sessionActivity}
+                mode={mode}
+                themeFor={themeFor}
+                nameOf={projectFromCwd}
+                onToggleExpand={toggleExpand}
+                onSelectSession={selectSession}
+                onNewSession={newSessionIn}
+                onCloseSession={handleClose}
+                onCloseWorkspace={closeWorkspace}
+                onAddFolder={() => void addFolder()}
               />
-            </div>
-            <WorkspaceTree
-              workspaces={workspaces}
-              activeWorkspace={workspace}
-              activeSessionId={activeId}
-              expanded={expandedWorkspaces}
-              sessionsByWorkspace={treeSessionsByWorkspace}
-              activity={sessionActivity}
-              nameOf={projectFromCwd}
-              onToggleExpand={toggleExpand}
-              onSelectSession={selectSession}
-              onNewSession={newSessionIn}
-              onCloseSession={handleClose}
-              onCloseWorkspace={closeWorkspace}
-              onAddFolder={() => void addFolder()}
-            />
+            </ResizableSplit>
           </section>
 
           <section className="panel panel-preview">
             <div className="panel-header">
-              <span>decky</span>
+              <span>{workspace ? projectFromCwd(workspace) : 'decky'}</span>
+              {gitStats && (
+                <GitStats additions={gitStats.additions} deletions={gitStats.deletions} />
+              )}
             </div>
             <div className="panel-body panel-body-flush">
               {DECKY_LAYOUT === 'tabs' ? (
@@ -1383,13 +1859,19 @@ function App(): React.JSX.Element {
             className={`dev-rebuild-btn dev-rebuild-${rebuildState}`}
             onClick={() => void doRebuild()}
             disabled={rebuildState === 'running'}
-            title={`Rebuild & relaunch (${accelLabel(devInfo.accel)})`}
+            title={
+              rebuildState === 'ready'
+                ? `Restart into new build (${accelLabel(devInfo.accel)})`
+                : `Rebuild & relaunch (${accelLabel(devInfo.accel)})`
+            }
           >
             {rebuildState === 'running'
               ? 'Rebuilding…'
-              : rebuildState === 'error'
-                ? 'Rebuild failed — retry'
-                : `⟳ Rebuild`}
+              : rebuildState === 'ready'
+                ? '↻ Restart'
+                : rebuildState === 'error'
+                  ? 'Rebuild failed — retry'
+                  : `⟳ Rebuild`}
           </button>
         </div>
       )}

@@ -8,3 +8,4 @@ out
 .decky-dev/
 .deck/
 .deck-dev/
+build/decky-signing.p12

@@ -151,9 +151,10 @@ export function registerDevRebuildHandlers(getWindow: () => BrowserWindow | null
         }
       }
 
-      send('\n✓ relaunching…\n')
-      app.relaunch() // re-spawns process.execPath (= the now-updated bundle) after exit
-      app.quit() // goes through before-quit so the workspace state flush still runs
+      // Don't auto-relaunch: the user may be busy in another decky session and a rebuild can
+      // take a while. The renderer flips to a "Restart" button and fires dev:relaunch when the
+      // user is ready. The bundle on disk is already the new one — only the live process is old.
+      send('\n✓ built — click Restart when ready\n')
       return { ok: true }
     } catch (err) {
       send(`\n✗ ${(err as Error).message}\n`)
@@ -161,5 +162,10 @@ export function registerDevRebuildHandlers(getWindow: () => BrowserWindow | null
     } finally {
       rebuilding = false
     }
+  })
+
+  ipcMain.handle('dev:relaunch', () => {
+    app.relaunch() // re-spawns process.execPath (= the now-updated bundle) after exit
+    app.quit() // goes through before-quit so the workspace state flush still runs
   })
 }

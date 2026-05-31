@@ -8,5 +8,11 @@
     <true/>
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
+    <!-- Self-signed cert has no Apple Team ID. Hardened runtime's Library Validation
+         requires every loaded lib to share the main binary's Team ID (or be Apple-signed),
+         so without this it rejects the Electron Framework at load ("different Team IDs"
+         dyld error → crash on launch). Exempt the app from that check. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
   </dict>
 </plist>

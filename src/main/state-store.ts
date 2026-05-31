@@ -30,28 +30,32 @@ async function persist(): Promise<void> {
   await rename(tmp, STATE_PATH)
 }
 
-export function registerStateHandlers(): void {
-  ipcMain.handle('state:get', async (_e, key: string) => {
-    const state = await load()
-    return state[key] ?? null
-  })
+/** Get a value from the shared state store. Returns null when the key is absent. */
+export async function getState<T = unknown>(key: string): Promise<T | null> {
+  const state = await load()
+  return (state[key] as T | undefined) ?? null
+}
 
+/** Set (or delete, when value is null/undefined) a key in the shared state store. */
+export async function setState(key: string, value: unknown): Promise<void> {
+  const state = await load()
+  if (value === null || value === undefined) {
+    delete state[key]
+  } else {
+    state[key] = value
+  }
+  // Serialize writes to avoid clobbering when multiple set() calls race.
+  writeChain = writeChain.then(persist).catch((err) => {
+    console.error('[state-store] persist failed:', err)
+  })
+  await writeChain
+}
+
+export function registerStateHandlers(): void {
+  ipcMain.handle('state:get', async (_e, key: string) => getState(key))
   ipcMain.handle('state:set', async (_e, key: string, value: unknown) => {
-    const state = await load()
-    if (value === null || value === undefined) {
-      delete state[key]
-    } else {
-      state[key] = value
-    }
-    // Serialize writes to avoid clobbering when multiple set() calls race.
-    writeChain = writeChain.then(persist).catch((err) => {
-      console.error('[state-store] persist failed:', err)
-    })
-    await writeChain
+    await setState(key, value)
     return true
   })
-
-  ipcMain.handle('state:get-all', async () => {
-    return await load()
-  })
+  ipcMain.handle('state:get-all', async () => load())
 }

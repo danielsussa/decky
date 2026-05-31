@@ -96,6 +96,25 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} }
   },
   {
+    name: 'editor_open',
+    description:
+      'Open a file in a minimal text editor card so the USER can edit it inline (textarea, monospace, Cmd+S saves to disk). USE THIS when you need the user to edit a file you cannot modify yourself — e.g. you ask them to add a value to a .env, tweak a config, paste a secret. Works for ANY text file (.env, json, ts, conf, etc). The user edits and saves; you can then re-read the file with Read to confirm.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the text file to open for editing.' },
+        card: { type: 'string', description: CARD_DESC }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'list_cards',
+    description:
+      'List the cards (tabs) the user currently has open in the decky preview panel for this session: id, title, type, file path (when materialized), focused flag, and pinned flag. CALL THIS before "update the card" / "fix the typo in that list" / any request that references a card you did not just create — it is the only way to learn what the user is looking at. For markdown cards you can then Edit the returned `path` directly; the card live-reloads on save. Returns the focused card id as well.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
     name: 'session_set_title',
     description:
       'Label the current decky session tab so the user can tell tabs apart. Call this when starting a new task or when the current focus changes meaningfully (e.g. "fixing auth bug", "drafting PR description"). Keep it short (under 40 chars).',
@@ -125,6 +144,28 @@ async function post(path, body, cardId) {
   return res.json()
 }
 
+async function get(path) {
+  const headers = {}
+  if (process.env.DECKY_SESSION_ID) headers['x-deck-session-id'] = process.env.DECKY_SESSION_ID
+  const res = await fetch(BASE + path, { headers })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`decky ${path}: HTTP ${res.status} ${text}`)
+  }
+  return res.json()
+}
+
+// Format the resolved {cardId, path} that POST /preview echoes back so the bot has a clear
+// anchor for follow-up Edits ("card 'foo' at /abs/path/foo.md").
+function describeResolved(verb, resolved) {
+  const cardId = resolved && resolved.cardId
+  const filePath = resolved && resolved.path
+  if (cardId && filePath) return `${verb} card '${cardId}' at ${filePath} (Edit this file to update the card)`
+  if (cardId) return `${verb} card '${cardId}'`
+  if (filePath) return `${verb} at ${filePath}`
+  return verb
+}
+
 async function handleCall(name, args) {
   const a = args || {}
 
@@ -132,19 +173,23 @@ async function handleCall(name, args) {
     if (typeof a.path !== 'string') throw new Error('preview_show: path required')
     const ext = a.path.split('.').pop()?.toLowerCase()
     if (ext === 'md' || ext === 'markdown') {
-      await post('/preview', { type: 'markdown', path: a.path }, a.card)
-      return `markdown rendered: ${a.path}`
+      const r = await post('/preview', { type: 'markdown', path: a.path }, a.card)
+      return describeResolved(`markdown rendered from ${a.path} as`, r)
     }
     if (ext === 'json') {
       const fs = require('node:fs/promises')
       const text = await fs.readFile(a.path, 'utf-8')
       const value = JSON.parse(text)
-      await post('/preview', { type: 'json', value }, a.card)
-      return `json rendered: ${a.path}`
+      const r = await post('/preview', { type: 'json', value }, a.card)
+      return describeResolved(`json rendered from ${a.path} as`, r)
     }
     if (ext === 'diff' || ext === 'patch') {
-      await post('/preview', { type: 'diff', path: a.path }, a.card)
-      return `diff rendered: ${a.path}`
+      const r = await post('/preview', { type: 'diff', path: a.path }, a.card)
+      return describeResolved(`diff rendered from ${a.path} as`, r)
+    }
+    if (ext === 'xlsx') {
+      const r = await post('/preview', { type: 'xlsx', path: a.path }, a.card)
+      return describeResolved(`xlsx rendered from ${a.path} as`, r)
     }
     throw new Error(
       `unsupported file extension: .${ext}. Use preview_markdown/preview_json/preview_diff for inline content.`
@@ -153,30 +198,64 @@ async function handleCall(name, args) {
 
   if (name === 'preview_diff') {
     if (typeof a.content !== 'string') throw new Error('preview_diff: content required')
-    await post('/preview', { type: 'diff', content: a.content, title: a.title }, a.card)
-    return 'diff rendered in decky card'
+    const r = await post('/preview', { type: 'diff', content: a.content, title: a.title }, a.card)
+    return describeResolved('diff rendered as', r)
   }
 
   if (name === 'preview_markdown') {
     if (typeof a.content !== 'string') throw new Error('preview_markdown: content required')
-    await post('/preview', { type: 'markdown', content: a.content, title: a.title }, a.card)
-    return 'markdown rendered in decky card'
+    const r = await post(
+      '/preview',
+      { type: 'markdown', content: a.content, title: a.title },
+      a.card
+    )
+    return describeResolved('markdown rendered as', r)
   }
 
   if (name === 'preview_json') {
     if (!('value' in a)) throw new Error('preview_json: value required')
-    await post('/preview', { type: 'json', value: a.value }, a.card)
-    return 'json rendered in decky card'
+    const r = await post('/preview', { type: 'json', value: a.value }, a.card)
+    return describeResolved('json rendered as', r)
   }
 
   if (name === 'preview_me') {
-    await post('/preview', { type: 'me', ...(a.url ? { url: a.url } : {}) }, a.card)
-    return 'switched to me live view'
+    const r = await post('/preview', { type: 'me', ...(a.url ? { url: a.url } : {}) }, a.card)
+    return describeResolved('switched to me live view as', r)
   }
 
   if (name === 'preview_hide') {
     await post('/preview/clear', {}, a.card)
     return 'preview cleared'
+  }
+
+  if (name === 'editor_open') {
+    if (typeof a.path !== 'string') throw new Error('editor_open: path required')
+    const r = await post('/preview', { type: 'editor', path: a.path }, a.card)
+    return describeResolved(`editor opened on ${a.path} as`, r)
+  }
+
+  if (name === 'list_cards') {
+    const sessionId = process.env.DECKY_SESSION_ID
+    if (!sessionId) {
+      throw new Error(
+        'DECKY_SESSION_ID not set — this MCP server is not running inside a deck session'
+      )
+    }
+    const data = await get(`/sessions/${encodeURIComponent(sessionId)}/cards`)
+    const cards = (data && data.cards) || []
+    if (cards.length === 0) {
+      return 'no cards open in this session yet'
+    }
+    const focused = data && data.focused
+    const lines = cards.map((c) => {
+      const flags = []
+      if (c.id === focused) flags.push('focused')
+      if (c.pinned) flags.push('pinned')
+      const suffix = flags.length ? ` [${flags.join(', ')}]` : ''
+      const loc = c.path ? ` → ${c.path}` : c.url ? ` → ${c.url}` : ''
+      return `- ${c.id} (${c.type}) "${c.title}"${loc}${suffix}`
+    })
+    return lines.join('\n')
   }
 
   if (name === 'session_set_title') {

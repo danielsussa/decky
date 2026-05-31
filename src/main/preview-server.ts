@@ -1,9 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, isAbsolute, resolve as resolvePath } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { BrowserWindow } from 'electron'
 import type { PreviewSource, PreviewSourceWire } from '../shared/preview'
 import { isGeneratedCardPath } from './paths'
+import { getCardsForSession, getAllCards, registerPreviewResolution } from './card-mirror'
 
 const PORT = Number(process.env.DECKY_PREVIEW_PORT) || 6790
 const HOST = '127.0.0.1'
@@ -21,32 +23,66 @@ export function getSessionTitles(): Record<string, string> {
   return Object.fromEntries(sessionTitles)
 }
 
-/** Re-read markdown sources that were persisted as just a path (no content). */
+/**
+ * Re-read markdown sources that were persisted as just a path (no content).
+ * Paths persisted as relative are resolved against `workspace` so cards survive
+ * the workspace folder being renamed/moved.
+ */
 export async function rehydratePreviews(
-  byCard: Record<string, Record<string, PreviewSource>>
+  byCard: Record<string, Record<string, PreviewSource>>,
+  workspace?: string
 ): Promise<Record<string, Record<string, PreviewSource>>> {
   const out: Record<string, Record<string, PreviewSource>> = {}
   for (const [sessionId, cards] of Object.entries(byCard ?? {})) {
     out[sessionId] = {}
     for (const [cardId, source] of Object.entries(cards)) {
       if (source.type === 'markdown' && source.path && !source.content) {
+        const abs =
+          !isAbsolute(source.path) && workspace ? resolvePath(workspace, source.path) : source.path
         try {
-          const content = await readFile(source.path, 'utf-8')
+          const content = await readFile(abs, 'utf-8')
           // Generated card files (<workspace>/.decky/cards/<id>.md) have meaningless
           // basenames. Drop a title that's just the filename so it derives from the content
           // (heading / first line); keep a real custom title if the bot set one.
-          const generated = isGeneratedCardPath(source.path)
-          const bn = basename(source.path)
+          const generated = isGeneratedCardPath(abs)
+          const bn = basename(abs)
           let title = source.title
           if (generated && (!title || title === bn)) title = undefined
           else if (!generated && !title) title = bn
-          out[sessionId][cardId] = { type: 'markdown', content, title, path: source.path }
+          out[sessionId][cardId] = { type: 'markdown', content, title, path: abs }
         } catch {
           out[sessionId][cardId] = {
             type: 'markdown',
-            content: `*(arquivo não encontrado: ${source.path})*`,
-            path: source.path
+            content: `*(arquivo não encontrado: ${abs})*`,
+            path: abs
           }
+        }
+      } else if (source.type === 'editor' && source.path && !source.content) {
+        const abs =
+          !isAbsolute(source.path) && workspace ? resolvePath(workspace, source.path) : source.path
+        try {
+          const content = await readFile(abs, 'utf-8')
+          out[sessionId][cardId] = {
+            type: 'editor',
+            content,
+            title: source.title ?? basename(abs),
+            path: abs
+          }
+        } catch {
+          out[sessionId][cardId] = {
+            type: 'editor',
+            content: '',
+            title: source.title ?? basename(abs),
+            path: abs
+          }
+        }
+      } else if (source.type === 'xlsx' && source.path) {
+        const abs =
+          !isAbsolute(source.path) && workspace ? resolvePath(workspace, source.path) : source.path
+        out[sessionId][cardId] = {
+          type: 'xlsx',
+          path: abs,
+          title: source.title ?? basename(abs)
         }
       } else {
         out[sessionId][cardId] = source
@@ -60,11 +96,12 @@ function broadcastPreview(
   getWindow: () => BrowserWindow | null,
   sessionId: string,
   cardId: string | null,
-  source: PreviewSource
+  source: PreviewSource,
+  reqId?: string
 ): void {
   const win = getWindow()
   if (!win || win.isDestroyed()) return
-  win.webContents.send('preview:source-changed', { sessionId, cardId, source })
+  win.webContents.send('preview:source-changed', { sessionId, cardId, source, reqId })
 }
 
 function cardIdFrom(req: IncomingMessage): string | null {
@@ -114,6 +151,17 @@ async function normalize(wire: PreviewSourceWire): Promise<PreviewSource> {
       return { type: 'diff', content, title: wire.title ?? basename(wire.path), path: wire.path }
     }
     throw new Error('diff source requires content or path')
+  }
+  if (wire.type === 'editor') {
+    if (!wire.path) throw new Error('editor source requires a path')
+    const content = await readFile(wire.path, 'utf-8')
+    return { type: 'editor', content, title: wire.title ?? basename(wire.path), path: wire.path }
+  }
+  if (wire.type === 'xlsx') {
+    if (!wire.path) throw new Error('xlsx source requires a path')
+    // Binary — don't read here; the renderer reads via file:read-binary on mount.
+    await stat(wire.path)
+    return { type: 'xlsx', path: wire.path, title: wire.title ?? basename(wire.path) }
   }
   if (wire.type === 'web' && !wire.url) {
     throw new Error('web source requires a url')
@@ -171,8 +219,23 @@ async function handleRequest(
       const wire = JSON.parse(raw) as PreviewSourceWire
       const source = await normalize(wire)
       previews.set(sessionId, source)
-      broadcastPreview(getWindow, sessionId, cardId, source)
-      sendJson(res, 200, source)
+      // Park a resolver keyed by reqId; the renderer acks it via the 'preview:resolved' IPC
+      // after computing the target card and (for inline markdown) materializing the file.
+      const reqId = randomUUID()
+      const resolved = await new Promise<{
+        cardId: string
+        path?: string
+        title?: string
+      }>((resolve) => {
+        registerPreviewResolution(reqId, resolve)
+        broadcastPreview(getWindow, sessionId, cardId, source, reqId)
+      })
+      sendJson(res, 200, {
+        source,
+        cardId: resolved.cardId || cardId || '',
+        path: resolved.path,
+        title: resolved.title
+      })
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
     }
@@ -184,6 +247,20 @@ async function handleRequest(
     previews.set(sessionId, cleared)
     broadcastPreview(getWindow, sessionId, cardId, cleared)
     sendJson(res, 200, cleared)
+    return
+  }
+
+  // GET /sessions/<id>/cards → mirror of the renderer's per-session card list,
+  // so external callers (MCP list_cards) can see what the user has open.
+  const cardsMatch = req.method === 'GET' && /^\/sessions\/([^/]+)\/cards\/?$/.exec(url)
+  if (cardsMatch) {
+    const id = decodeURIComponent(cardsMatch[1])
+    sendJson(res, 200, getCardsForSession(id))
+    return
+  }
+
+  if (req.method === 'GET' && url === '/sessions/cards') {
+    sendJson(res, 200, getAllCards())
     return
   }
 

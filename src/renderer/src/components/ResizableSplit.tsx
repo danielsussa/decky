@@ -7,6 +7,8 @@ interface ResizableSplitProps {
   minSizes?: number[]
   /** localStorage key for persisting layout. */
   storageKey?: string
+  /** Split axis. Defaults to horizontal (panes side-by-side, handle resizes width). */
+  direction?: 'horizontal' | 'vertical'
   children: React.ReactNode
 }
 
@@ -14,8 +16,10 @@ export default function ResizableSplit({
   defaultSizes,
   minSizes,
   storageKey,
+  direction = 'horizontal',
   children
 }: ResizableSplitProps): React.JSX.Element {
+  const isVertical = direction === 'vertical'
   const panes = Children.toArray(children)
   const n = panes.length
 
@@ -53,26 +57,28 @@ export default function ResizableSplit({
       const container = containerRef.current
       if (!container) return
 
-      const containerWidth = container.getBoundingClientRect().width
-      const startX = e.clientX
+      const rect = container.getBoundingClientRect()
+      const containerSize = isVertical ? rect.height : rect.width
+      const startCoord = isVertical ? e.clientY : e.clientX
       const startSizes = [...sizes]
       setDragging(true)
 
       const onMove = (ev: MouseEvent): void => {
-        const deltaPx = ev.clientX - startX
-        const deltaPct = (deltaPx / containerWidth) * 100
+        const coord = isVertical ? ev.clientY : ev.clientX
+        const deltaPx = coord - startCoord
+        const deltaPct = (deltaPx / containerSize) * 100
 
         // adjust the two panes adjacent to this handle
-        const left = handleIdx
-        const right = handleIdx + 1
-        const newLeft = startSizes[left] + deltaPct
-        const newRight = startSizes[right] - deltaPct
+        const a = handleIdx
+        const b = handleIdx + 1
+        const newA = startSizes[a] + deltaPct
+        const newB = startSizes[b] - deltaPct
 
-        if (newLeft < mins[left] || newRight < mins[right]) return
+        if (newA < mins[a] || newB < mins[b]) return
 
         const next = [...startSizes]
-        next[left] = newLeft
-        next[right] = newRight
+        next[a] = newA
+        next[b] = newB
         setSizes(next)
       }
 
@@ -85,25 +91,32 @@ export default function ResizableSplit({
       window.addEventListener('mousemove', onMove)
       window.addEventListener('mouseup', onUp)
     },
-    [sizes, mins]
+    [sizes, mins, isVertical]
   )
 
+  const rootClass = `rsplit ${isVertical ? 'rsplit-v' : ''}`.trim()
+  const overlayClass = `rsplit-overlay ${isVertical ? 'rsplit-overlay-v' : ''}`.trim()
+
   return (
-    <div className="rsplit" ref={containerRef}>
+    <div className={rootClass} ref={containerRef}>
       {panes.map((child, i) => (
-        <div key={i} className="rsplit-pane" style={{ width: `${sizes[i]}%` }}>
+        <div
+          key={i}
+          className="rsplit-pane"
+          style={isVertical ? { height: `${sizes[i]}%` } : { width: `${sizes[i]}%` }}
+        >
           {child}
           {i < n - 1 && (
             <div
               className="rsplit-handle"
               onMouseDown={(e) => startDrag(i, e)}
               role="separator"
-              aria-orientation="vertical"
+              aria-orientation={isVertical ? 'horizontal' : 'vertical'}
             />
           )}
         </div>
       ))}
-      {dragging && <div className="rsplit-overlay" />}
+      {dragging && <div className={overlayClass} />}
     </div>
   )
 }

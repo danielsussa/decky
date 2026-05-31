@@ -80,6 +80,15 @@ export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null)
     }
   })
 
+  ipcMain.handle('file:read-binary', async (_e, path: string) => {
+    try {
+      const buf = await readFile(path)
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+    } catch {
+      return null
+    }
+  })
+
   ipcMain.handle('file:write', async (_e, path: string, content: string) => {
     try {
       await mkdir(dirname(path), { recursive: true })

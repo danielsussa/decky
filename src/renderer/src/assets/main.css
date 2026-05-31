@@ -109,6 +109,41 @@ code {
   background: transparent;
 }
 
+/* Vertical split: stack panes top/bottom, drag with row-resize. */
+.rsplit-v {
+  flex-direction: column;
+}
+
+.rsplit-v .rsplit-pane {
+  width: 100%;
+  height: auto; /* size comes from inline style */
+  flex-direction: column;
+  min-height: 0;
+}
+
+.rsplit-v .rsplit-handle {
+  top: auto;
+  bottom: -3px;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 7px;
+  cursor: row-resize;
+}
+
+.rsplit-v .rsplit-handle::after {
+  left: 0;
+  right: 0;
+  top: 3px;
+  bottom: auto;
+  width: auto;
+  height: 1px;
+}
+
+.rsplit-overlay-v {
+  cursor: row-resize;
+}
+
 .panel-header {
   display: flex;
   align-items: center;
@@ -613,6 +648,154 @@ code {
   margin: 1.4em 0;
 }
 
+/* === mermaid === */
+
+.mermaid-block {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 1em 0;
+  padding: 12px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+}
+
+.mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-error {
+  margin: 1em 0;
+  padding: 10px 12px;
+  background: var(--bg-1);
+  border: 1px solid #ff7676;
+  border-radius: 6px;
+}
+
+.mermaid-error-msg {
+  color: #ff7676;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  margin-bottom: 8px;
+}
+
+.mermaid-error-src {
+  margin: 0;
+  padding: 8px;
+  background: var(--bg-0);
+  border-radius: 4px;
+  font-size: 12px;
+  overflow: auto;
+}
+
+/* === editor === */
+
+.editor-preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-2);
+  flex: 0 0 auto;
+}
+
+.editor-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.editor-status {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+}
+
+.editor-dirty {
+  color: var(--accent);
+}
+
+.editor-saved {
+  color: var(--text-2);
+  opacity: 0.9;
+  transition: opacity 0.4s ease;
+}
+
+.editor-err {
+  color: #ff7676;
+}
+
+.editor-reload {
+  background: transparent;
+  border: 1px solid #ff7676;
+  color: #ff7676;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.editor-reload:hover {
+  background: rgba(255, 118, 118, 0.12);
+}
+
+.editor-save {
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.editor-save:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.editor-save:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.editor-textarea {
+  flex: 1;
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 12px 16px;
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  user-select: text;
+}
+
 /* === json === */
 
 .json-preview {
@@ -684,6 +867,22 @@ code {
 .json-value-null {
   color: var(--text-3);
   font-style: italic;
+}
+
+/* Light mode: the JSON syntax colors above are tuned for a dark surface and wash out on a light
+   one — swap them for darker, legible variants. (Markdown code blocks keep their dark `pre`
+   surface in both modes, so their github-dark highlighting stays correct.) */
+:root[data-mode='light'] .json-key {
+  color: #0550ae;
+}
+:root[data-mode='light'] .json-value-string {
+  color: #0a7d33;
+}
+:root[data-mode='light'] .json-value-number {
+  color: #953800;
+}
+:root[data-mode='light'] .json-value-boolean {
+  color: #8250df;
 }
 
 .panel-header-meta {
@@ -822,8 +1021,8 @@ code {
 
 /* Workspace tree below the terminal: collapsible folders → their sessions. */
 .wstree {
-  flex: 0 1 auto;
-  max-height: 50%;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   border-top: 1px solid var(--border);
   display: flex;
@@ -861,15 +1060,6 @@ code {
   color: var(--text-3);
   cursor: pointer;
 }
-/* Per-workspace color identity: a small dot in the workspace's deterministic theme accent,
-   so you can tell workspaces apart in the list (chrome reflects only the active one). */
-.wstree-ws-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  margin: 0 2px 0 2px;
-}
 .wstree-name {
   flex: 1;
   min-width: 0;
@@ -902,6 +1092,18 @@ code {
   border-left-color: var(--accent);
   background: var(--bg-1);
 }
+/* Cmd+Arrow preview cursor parked in another workspace — Enter commits, Esc cancels.
+   Dashed accent reads as "tentative" against the solid bar of the real active session. */
+.wstree-session-previewed {
+  border-left: 2px dashed var(--accent);
+  background: var(--bg-2);
+}
+.wstree-session-previewed .wstree-session-btn {
+  color: var(--text-1);
+}
+.wstree-row-previewed .wstree-name {
+  color: var(--text-1);
+}
 .wstree-session-btn {
   flex: 1;
   min-width: 0;
@@ -932,8 +1134,10 @@ code {
   background: var(--text-3);
   flex-shrink: 0;
 }
+/* Fixed hue — the pulse means "this session is working" regardless of which workspace
+   it lives in, so it shouldn't shift color when the surface theme changes. */
 .wstree-dot-on {
-  background: var(--accent);
+  background: #e3b341;
   animation: deck-dot-pulse 1s ease-in-out infinite;
 }
 /* Finished while you were away — steady green until you open the session. */
@@ -1616,6 +1820,12 @@ code {
   cursor: progress;
 }
 
+.dev-rebuild-ready {
+  opacity: 1;
+  color: #3fb950;
+  border-color: #3fb950;
+}
+
 .dev-rebuild-error {
   opacity: 1;
   color: #f85149;
@@ -1638,3 +1848,183 @@ code {
   padding: 8px 10px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
 }
+
+/* xlsx preview — Google-Sheets-ish read-only grid */
+.xlsx-preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-0);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.xlsx-preview.xlsx-loading,
+.xlsx-preview.xlsx-error {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  color: var(--text-2);
+}
+
+.xlsx-preview.xlsx-error .xlsx-path {
+  font: 11px / 1.4 var(--mono);
+  color: var(--text-3);
+  margin-top: 6px;
+  word-break: break-all;
+}
+
+.xlsx-grid-wrap {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.xlsx-grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  background: #fff;
+  color: #000;
+}
+
+/* Row/column headers (the gray A/B/C and 1/2/3 strips) — sticky like Sheets. */
+.xlsx-grid thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.xlsx-corner,
+.xlsx-col-head,
+.xlsx-row-head {
+  background: #f8f9fa;
+  color: #5f6368;
+  font-weight: 500;
+  font-size: 11px;
+  text-align: center;
+  border-right: 1px solid #e0e0e0;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 2px 4px;
+  user-select: none;
+}
+
+.xlsx-row-head {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-width: 40px;
+  width: 40px;
+}
+
+.xlsx-corner {
+  position: sticky;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  width: 40px;
+  min-width: 40px;
+}
+
+.xlsx-col-head {
+  height: 22px;
+  min-width: 40px;
+}
+
+.xlsx-cell {
+  border-right: 1px solid #e0e0e0;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 2px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.xlsx-cell a {
+  color: #1a73e8;
+  text-decoration: underline;
+}
+
+.xlsx-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+  overflow-x: auto;
+}
+
+.xlsx-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.xlsx-tab:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+
+.xlsx-tab-active {
+  background: var(--bg-0);
+  color: var(--text-1);
+  border-color: var(--border);
+  border-bottom-color: var(--bg-0);
+  font-weight: 500;
+}
+
+/* git stats badge — right side of .panel-header for the workspace panel */
+.git-stats {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-stats-add {
+  color: #4ade80;
+}
+
+.git-stats-del {
+  color: #f87171;
+}
+
+.git-stats-bar {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 2px;
+}
+
+.git-stats-sq {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--bg-2, #2a2d31);
+}
+
+.git-stats-sq-g {
+  background: #22c55e;
+}
+
+.git-stats-sq-r {
+  background: #ef4444;
+}
+

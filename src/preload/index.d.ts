@@ -1,10 +1,14 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { PreviewSource } from '../shared/preview'
+import type { CliKind } from '../shared/cli-spec'
 
-export type { PreviewSource }
+export type { PreviewSource, CliKind }
 
 export type PtyDataMsg = { id: string; data: string }
 export type PtyExitMsg = { id: string; code: number }
+
+export type DetectedCli = { kind: CliKind; displayName: string; bin: string; version?: string }
+export type CliInstallHint = { kind: CliKind; displayName: string; installHint: string }
 
 export interface DeckAPI {
   pty: {
@@ -21,11 +25,18 @@ export interface DeckAPI {
   preview: {
     getAll: () => Promise<Record<string, PreviewSource>>
     rehydrate: (
-      byCard: Record<string, Record<string, PreviewSource>>
+      byCard: Record<string, Record<string, PreviewSource>>,
+      workspace?: string
     ) => Promise<Record<string, Record<string, PreviewSource>>>
     onSourceChange: (
-      callback: (msg: { sessionId: string; cardId: string | null; source: PreviewSource }) => void
+      callback: (msg: {
+        sessionId: string
+        cardId: string | null
+        source: PreviewSource
+        reqId?: string
+      }) => void
     ) => () => void
+    resolved: (payload: { reqId: string; cardId: string; path?: string; title?: string }) => void
   }
   workspace: {
     read: <T = unknown>(cwd: string) => Promise<T | null>
@@ -33,17 +44,31 @@ export interface DeckAPI {
   }
   cards: {
     write: (workspace: string, cardId: string, content: string) => Promise<string | null>
+    syncState: (sessions: Record<string, unknown>) => void
   }
   file: {
     watch: (path: string) => Promise<true>
     unwatch: (path: string) => Promise<true>
     readText: (path: string) => Promise<string | null>
+    readBinary: (path: string) => Promise<Uint8Array | null>
     write: (path: string, content: string) => Promise<boolean>
     onChanged: (callback: (msg: { path: string }) => void) => () => void
   }
   claude: {
     getBin: () => Promise<string>
     aiTitle: (cwd: string, uuid: string) => Promise<string | null>
+  }
+  git: {
+    diffStats: (cwd: string) => Promise<{ isRepo: boolean; additions: number; deletions: number }>
+  }
+  cli: {
+    list: () => Promise<DetectedCli[]>
+    recheck: () => Promise<DetectedCli[]>
+    installHints: () => Promise<CliInstallHint[]>
+    getDefault: () => Promise<CliKind | null>
+    setDefault: (kind: CliKind) => Promise<true>
+    isFirstRun: () => Promise<boolean>
+    markFirstRunDone: () => Promise<true>
   }
   sessions: {
     getTitles: () => Promise<Record<string, string>>
@@ -62,11 +87,16 @@ export interface DeckAPI {
   dev: {
     getInfo: () => Promise<{ enabled: boolean; repo?: string; accel: string }>
     rebuild: () => Promise<{ ok: boolean; error?: string }>
+    relaunch: () => Promise<void>
     onOutput: (callback: (line: string) => void) => () => void
   }
   state: {
     get: <T = unknown>(key: string) => Promise<T | null>
     set: (key: string, value: unknown) => Promise<true>
+  }
+  notify: {
+    show: (payload: { id: string; title: string; body?: string }) => Promise<void>
+    onFocusSession: (callback: (msg: { id: string }) => void) => () => void
   }
 }
 

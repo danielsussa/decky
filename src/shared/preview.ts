@@ -5,6 +5,8 @@ export type PreviewSource =
   | { type: 'json'; value: unknown }
   | { type: 'web'; url: string; title?: string }
   | { type: 'diff'; content: string; title?: string; path?: string }
+  | { type: 'editor'; content: string; path: string; title?: string }
+  | { type: 'xlsx'; path: string; title?: string }
 
 export type PreviewSourceWire =
   | { type: 'none' }
@@ -13,3 +15,5 @@ export type PreviewSourceWire =
   | { type: 'json'; value: unknown }
   | { type: 'web'; url: string; title?: string }
   | { type: 'diff'; content?: string; path?: string; title?: string }
+  | { type: 'editor'; path: string; title?: string }
+  | { type: 'xlsx'; path: string; title?: string }

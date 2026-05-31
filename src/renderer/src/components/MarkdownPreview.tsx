@@ -1,11 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import 'highlight.js/styles/github-dark.css'
+import MermaidBlock from './MermaidBlock'
+
+// Intercept ```mermaid fenced blocks and render them as diagrams instead of code.
+// Other code blocks fall through to rehype-highlight's default.
+const MD_COMPONENTS: Components = {
+  code(props) {
+    const { className, children, ...rest } = props
+    const classes = className?.split(/\s+/) ?? []
+    if (classes.includes('language-mermaid')) {
+      return <MermaidBlock code={String(children).replace(/\n$/, '')} />
+    }
+    return (
+      <code className={className} {...rest}>
+        {children}
+      </code>
+    )
+  }
+}
 
 interface MarkdownPreviewProps {
   content: string
+  cardId?: string
 }
 
 // Cheap signature of a content string to remember what we've already streamed in — so a card
@@ -14,13 +33,40 @@ interface MarkdownPreviewProps {
 const streamedSigs = new Set<string>()
 const sigOf = (s: string): string => `${s.length}|${s.slice(-24)}`
 
+// Remember where each card was scrolled to, by card id — restores on remount after
+// session/tab switch. Module-level so it survives unmounts.
+const scrollByCard = new Map<string, number>()
+
 // Draw the preview "streaming": on first appearance reveal from empty → full; on an append
 // reveal just the new tail; a re-show (already streamed) or a tiny delta renders instantly.
 // Duration is capped so big content doesn't re-parse markdown for too long.
-export default function MarkdownPreview({ content }: MarkdownPreviewProps): React.JSX.Element {
+export default function MarkdownPreview({
+  content,
+  cardId
+}: MarkdownPreviewProps): React.JSX.Element {
   const [shown, setShown] = useState(() => (streamedSigs.has(sigOf(content)) ? content : ''))
   const prevRef = useRef(shown)
   const rafRef = useRef<number | null>(null)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+
+  // Restore the saved scroll position when this card mounts/refocuses. Runs whenever the
+  // mounted content has caught up enough to fit the prior scrollTop (the card may streamline
+  // in over several frames, so layoutEffect on first mount alone wouldn't always have height).
+  useEffect(() => {
+    if (!cardId) return
+    const el = bodyRef.current
+    if (!el) return
+    const saved = scrollByCard.get(cardId) ?? 0
+    if (saved > 0 && Math.abs(el.scrollTop - saved) > 1 && el.scrollHeight >= saved) {
+      el.scrollTop = saved
+    }
+  }, [cardId, shown])
+
+  const onScroll = (): void => {
+    if (!cardId) return
+    const el = bodyRef.current
+    if (el) scrollByCard.set(cardId, el.scrollTop)
+  }
 
   useEffect(() => {
     const prev = prevRef.current
@@ -65,8 +111,12 @@ export default function MarkdownPreview({ content }: MarkdownPreviewProps): Reac
 
   return (
     <div className="md-preview">
-      <div className="md-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+      <div className="md-body" ref={bodyRef} onScroll={onScroll}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeHighlight]}
+          components={MD_COMPONENTS}
+        >
           {shown}
         </ReactMarkdown>
       </div>

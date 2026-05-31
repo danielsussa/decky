@@ -13,7 +13,41 @@ interface WebviewEl extends HTMLElement {
   canGoForward(): boolean
   getURL(): string
   loadURL(url: string): Promise<void>
+  executeJavaScript(code: string): Promise<unknown>
 }
+
+// Injected into every guest page on dom-ready. Without allowpopups, target=_blank and
+// window.open silently do nothing — so we override window.open AND intercept clicks that
+// would open a new tab (target=_blank or cmd/ctrl/middle-click), and push the URL back up
+// through console.log with a known sentinel. The host listens via 'console-message' and
+// dispatches a 'decky:web-open' DOM event that App.tsx turns into a new decky web card.
+// console.log is the channel because guest→host IPC needs nodeIntegration or a webview
+// preload script, both of which are heavier than this and have security trade-offs.
+const POPUP_CAPTURE = `
+(() => {
+  const TOKEN = '__DECKY_POPUP__:';
+  const orig = window.open;
+  window.open = function(u, t) {
+    if (t === '_self' && typeof orig === 'function') return orig.call(window, u, t);
+    if (u) console.log(TOKEN + String(u));
+    return null;
+  };
+  const onClick = (e) => {
+    if (e.defaultPrevented) return;
+    const t = e.target;
+    const a = t && t.closest ? t.closest('a[href]') : null;
+    if (!a) return;
+    const target = a.getAttribute('target');
+    const newTab = target === '_blank' || e.metaKey || e.ctrlKey || e.button === 1;
+    if (!newTab) return;
+    e.preventDefault();
+    e.stopPropagation();
+    console.log(TOKEN + a.href);
+  };
+  document.addEventListener('click', onClick, true);
+  document.addEventListener('auxclick', onClick, true);
+})();
+`
 
 interface WebPreviewProps {
   url: string
@@ -43,11 +77,13 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // When the bot/command points this card at a new URL, navigate there.
+  // When the bot/command points this card at a new URL, navigate there. Skip loadURL on
+  // empty — Electron's Chromium rejects '' as a URL and can crash the renderer.
   useEffect(() => {
     setAddress(url)
     setCurrent(url)
     const wv = ref.current
+    if (!url) return
     if (wv && wv.getURL && wv.getURL() !== url) {
       void wv.loadURL(url).catch(() => {})
     }
@@ -75,15 +111,30 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
       syncNav()
     }
     const onNav = (): void => syncNav()
+    // Re-inject the popup capture on every page load — each navigation gets a fresh window
+    // so the previous override is gone.
+    const onDomReady = (): void => {
+      void wv.executeJavaScript(POPUP_CAPTURE).catch(() => {})
+    }
+    const onConsole = (e: Event): void => {
+      const msg = (e as Event & { message?: string }).message ?? ''
+      const m = /^__DECKY_POPUP__:(.+)$/.exec(msg)
+      if (!m) return
+      window.dispatchEvent(new CustomEvent('decky:web-open', { detail: m[1] }))
+    }
     wv.addEventListener('did-start-loading', onStart)
     wv.addEventListener('did-stop-loading', onStop)
     wv.addEventListener('did-navigate', onNav)
     wv.addEventListener('did-navigate-in-page', onNav)
+    wv.addEventListener('dom-ready', onDomReady)
+    wv.addEventListener('console-message', onConsole)
     return () => {
       wv.removeEventListener('did-start-loading', onStart)
       wv.removeEventListener('did-stop-loading', onStop)
       wv.removeEventListener('did-navigate', onNav)
       wv.removeEventListener('did-navigate-in-page', onNav)
+      wv.removeEventListener('dom-ready', onDomReady)
+      wv.removeEventListener('console-message', onConsole)
     }
   }, [])
 
@@ -145,9 +196,10 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
       </div>
       {createElement('webview', {
         ref: ref as never,
-        src: url,
-        partition: 'persist:deckweb',
-        allowpopups: 'true'
+        // Empty src crashes Electron's webview ("ERR_INVALID_URL"); use about:blank as the
+        // placeholder until the user types a URL in the address bar.
+        src: url || 'about:blank',
+        partition: 'persist:deckweb'
       })}
     </div>
   )

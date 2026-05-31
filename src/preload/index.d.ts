@@ -1,14 +1,11 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { PreviewSource } from '../shared/preview'
-import type { CliKind } from '../shared/cli-spec'
+import type { CliKind, DetectedCli, CliInstallHint } from '../shared/cli-spec'
 
-export type { PreviewSource, CliKind }
+export type { PreviewSource, CliKind, DetectedCli, CliInstallHint }
 
 export type PtyDataMsg = { id: string; data: string }
 export type PtyExitMsg = { id: string; code: number }
-
-export type DetectedCli = { kind: CliKind; displayName: string; bin: string; version?: string }
-export type CliInstallHint = { kind: CliKind; displayName: string; installHint: string }
 
 export interface DeckAPI {
   pty: {
@@ -59,7 +56,10 @@ export interface DeckAPI {
     aiTitle: (cwd: string, uuid: string) => Promise<string | null>
   }
   git: {
-    diffStats: (cwd: string) => Promise<{ isRepo: boolean; additions: number; deletions: number }>
+    diffStats: (
+      cwd: string
+    ) => Promise<{ isRepo: boolean; additions: number; deletions: number; branch?: string }>
+    diffText: (cwd: string) => Promise<string>
   }
   cli: {
     list: () => Promise<DetectedCli[]>
@@ -83,6 +83,8 @@ export interface DeckAPI {
     onMenuCloseTab: (callback: () => void) => () => void
     onFlush: (callback: () => void) => () => void
     flushDone: () => void
+    onOpenUrl: (callback: (url: string) => void) => () => void
+    openExternal: (url: string) => Promise<void>
   }
   dev: {
     getInfo: () => Promise<{ enabled: boolean; repo?: string; accel: string }>

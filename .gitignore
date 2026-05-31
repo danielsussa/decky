@@ -4,6 +4,8 @@ out
 .DS_Store
 .eslintcache
 *.log*
+*.tsbuildinfo
+/index.js
 .decky/
 .decky-dev/
 .deck/

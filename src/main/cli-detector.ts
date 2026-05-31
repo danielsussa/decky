@@ -1,14 +1,15 @@
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { CLI_SPECS, CLI_KINDS, type CliKind, type CliSpec } from '../shared/cli-spec'
+import {
+  CLI_SPECS,
+  CLI_KINDS,
+  type CliKind,
+  type CliSpec,
+  type DetectedCli
+} from '../shared/cli-spec'
 
-export interface DetectedCli {
-  kind: CliKind
-  displayName: string
-  bin: string
-  version?: string
-}
+export type { DetectedCli }
 
 let cache: DetectedCli[] | null = null
 

@@ -340,7 +340,28 @@ code {
 .deck-tabs-body {
   flex: 1;
   min-height: 0;
+  position: relative;
+}
+
+/* Panes stack absolutely in the same area — visibility:hidden keeps inactive ones in the
+   render tree (so <webview> guests don't get torn down) while only the active pane is
+   visible and interactive. */
+.deck-tab-pane {
+  position: absolute;
+  inset: 0;
   overflow: auto;
+}
+
+.deck-tab-pane-active {
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.deck-tab-pane-inactive {
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
 }
 
 /* === DeckGrid (gridstack) === */
@@ -1599,7 +1620,7 @@ code {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #fff;
+  background: var(--bg-0);
 }
 
 .web-bar {
@@ -1656,7 +1677,7 @@ code {
   flex: 1;
   width: 100%;
   border: none;
-  background: #fff;
+  background: var(--bg-0);
 }
 
 .web-spin {
@@ -1986,9 +2007,42 @@ code {
   font-weight: 500;
 }
 
+/* git cluster (stats + branch) glued to the right side of .panel-header */
+.panel-header-git {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* branch chip — right side of .panel-header, shown whenever cwd is a git repo */
+.git-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-2);
+  background: var(--bg-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 6px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-branch-icon {
+  opacity: 0.7;
+  font-size: 12px;
+  line-height: 1;
+}
+
 /* git stats badge — right side of .panel-header for the workspace panel */
 .git-stats {
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1997,6 +2051,22 @@ code {
   letter-spacing: 0;
   text-transform: none;
   font-variant-numeric: tabular-nums;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.git-stats:hover:not(:disabled) {
+  background: var(--bg-2, rgba(255, 255, 255, 0.06));
+  border-color: var(--border);
+}
+
+.git-stats:disabled {
+  cursor: default;
 }
 
 .git-stats-add {
@@ -2026,5 +2096,132 @@ code {
 
 .git-stats-sq-r {
   background: #ef4444;
+}
+
+.first-run-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+
+.first-run-modal {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 22px 24px 18px;
+  width: min(460px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.first-run-modal-header h2 {
+  margin: 0 0 6px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.first-run-modal-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+.first-run-modal-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.first-run-modal-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.first-run-modal-option:hover {
+  background: var(--bg-2);
+}
+
+.first-run-modal-option-name {
+  color: var(--text-1);
+  flex: 1;
+}
+
+.first-run-modal-option-ver {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.first-run-modal-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.first-run-modal-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.first-run-modal-hint-name {
+  color: var(--text-1);
+  min-width: 88px;
+}
+
+.first-run-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.first-run-modal-skip {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.first-run-modal-skip:hover {
+  color: var(--text-2);
+}
+
+.first-run-modal-action {
+  background: var(--accent);
+  border: none;
+  color: white;
+  border-radius: 4px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.first-run-modal-action:disabled {
+  background: var(--bg-2);
+  color: var(--text-3);
+  cursor: not-allowed;
 }
 

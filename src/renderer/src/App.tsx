@@ -9,7 +9,9 @@ import TerminalHost from './components/TerminalHost'
 import type { Session } from './types'
 import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
+import FirstRunModal from './components/FirstRunModal'
 import type { PreviewSource } from '../../shared/preview'
+import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '../../shared/cli-spec'
 import {
   applyTheme,
   assignNewWorkspaceTheme,
@@ -181,59 +183,111 @@ function projectFromCwd(cwd: string): string {
   return cwd.replace(/\/+$/, '').split('/').pop() || cwd
 }
 
-// Placeholder session name (animal + gender-neutral adjective, so it reads right with any
-// animal) shown until the bot titles the session via session_set_title / aiTitle.
+// Placeholder session name (animal + adjective) shown until the bot titles the
+// session via session_set_title / aiTitle.
 const SESSION_ANIMALS = [
-  'lontra',
-  'tatu',
-  'coruja',
-  'raposa',
-  'lobo',
-  'gato',
-  'pardal',
-  'onça',
+  'otter',
+  'armadillo',
+  'owl',
+  'fox',
+  'wolf',
+  'cat',
+  'sparrow',
   'jaguar',
-  'lince',
-  'tucano',
-  'golfinho',
-  'polvo',
-  'texugo',
-  'furão',
-  'esquilo',
-  'castor',
-  'lebre',
-  'falcão',
-  'gavião',
-  'garça',
-  'sabiá',
-  'quati',
-  'capivara'
+  'leopard',
+  'lynx',
+  'toucan',
+  'dolphin',
+  'octopus',
+  'badger',
+  'ferret',
+  'squirrel',
+  'beaver',
+  'hare',
+  'falcon',
+  'hawk',
+  'heron',
+  'robin',
+  'raccoon',
+  'capybara',
+  'panda',
+  'tiger',
+  'lion',
+  'bear',
+  'moose',
+  'elk',
+  'deer',
+  'eagle',
+  'raven',
+  'swan',
+  'seal',
+  'whale',
+  'shark',
+  'salmon',
+  'crab',
+  'mantis',
+  'cricket',
+  'beetle',
+  'mole',
+  'weasel',
+  'mink',
+  'marten',
+  'boar',
+  'bison',
+  'yak',
+  'gazelle'
 ]
 const SESSION_ADJS = [
-  'veloz',
-  'ágil',
-  'feroz',
-  'audaz',
-  'voraz',
-  'tenaz',
-  'fugaz',
-  'sutil',
-  'sagaz',
-  'vivaz',
-  'gentil',
-  'hábil',
-  'nobre',
-  'livre',
-  'célere',
-  'errante',
-  'elegante',
-  'brilhante',
-  'vigilante',
-  'radiante',
-  'valente',
-  'ardente',
-  'prudente',
-  'silente'
+  'swift',
+  'agile',
+  'fierce',
+  'bold',
+  'hungry',
+  'tenacious',
+  'fleeting',
+  'subtle',
+  'clever',
+  'lively',
+  'gentle',
+  'deft',
+  'noble',
+  'free',
+  'brisk',
+  'roaming',
+  'elegant',
+  'brilliant',
+  'vigilant',
+  'radiant',
+  'valiant',
+  'ardent',
+  'prudent',
+  'silent',
+  'nimble',
+  'quick',
+  'keen',
+  'wise',
+  'proud',
+  'calm',
+  'steady',
+  'mighty',
+  'bright',
+  'dashing',
+  'daring',
+  'cunning',
+  'crafty',
+  'sly',
+  'wild',
+  'gallant',
+  'stoic',
+  'serene',
+  'jolly',
+  'merry',
+  'plucky',
+  'dapper',
+  'spry',
+  'lithe',
+  'zealous',
+  'eager'
 ]
 function randomSessionName(): string {
   const a = SESSION_ANIMALS[Math.floor(Math.random() * SESSION_ANIMALS.length)]
@@ -241,21 +295,33 @@ function randomSessionName(): string {
   return `${a}-${j}`
 }
 
-function defaultClaudeSession(cwd: string): Session {
+function defaultCliSession(cwd: string, cliKind: CliKind): Session {
+  const spec = CLI_SPECS[cliKind]
   return {
-    id: `claude-${Date.now().toString(36)}`,
+    id: `${cliKind}-${Date.now().toString(36)}`,
     label: randomSessionName(),
     project: projectFromCwd(cwd),
     cwd,
     kind: 'claude',
-    claudeSessionId: freshClaudeId()
+    cliKind,
+    // Only CLIs that support --session-id get a stable id.
+    claudeSessionId: spec.supportsResume ? freshClaudeId() : undefined
   }
 }
 
 function migrateSessions(list: Session[]): Session[] {
-  return list.map((s) =>
-    s.kind === 'claude' && !s.claudeSessionId ? { ...s, claudeSessionId: freshClaudeId() } : s
-  )
+  return list.map((s) => {
+    if (s.kind !== 'claude') return s
+    // Legacy sessions had no cliKind → they were always claude.
+    const cliKind: CliKind = s.cliKind ?? 'claude'
+    const needsId = CLI_SPECS[cliKind].supportsResume && !s.claudeSessionId
+    if (s.cliKind === cliKind && !needsId) return s
+    return {
+      ...s,
+      cliKind,
+      claudeSessionId: needsId ? freshClaudeId() : s.claudeSessionId
+    }
+  })
 }
 
 function sourcePath(source: PreviewSource | undefined): string | undefined {
@@ -360,7 +426,12 @@ function serializePreviews(
 }
 
 function App(): React.JSX.Element {
-  const [claudeBin, setClaudeBin] = useState<string | null>(null)
+  // List of AI CLIs found on PATH (claude/codex/cline). null = not yet fetched.
+  const [detectedClis, setDetectedClis] = useState<DetectedCli[] | null>(null)
+  // The user's chosen default CLI for new sessions. null = legacy state (treat as 'claude').
+  const [defaultCli, setDefaultCli] = useState<CliKind | null>(null)
+  // Whether to show the first-run banner asking the user to pick a default CLI.
+  const [firstRunPending, setFirstRunPending] = useState(false)
   const [startupCwd, setStartupCwd] = useState<string | null>(null)
   const [workspace, setWorkspace] = useState<string | null>(null)
   // Registry of folders opened as workspaces (global, ~/.decky/state.json) — drives the switcher.
@@ -407,6 +478,7 @@ function App(): React.JSX.Element {
     isRepo: boolean
     additions: number
     deletions: number
+    branch?: string
   } | null>(null)
   const [now, setNow] = useState(Date.now())
   // Light/dark mode: a GLOBAL preference (the per-workspace hue is separate). Toggled from the
@@ -537,7 +609,9 @@ function App(): React.JSX.Element {
 
   // Mount: resolve env + subscriptions.
   useEffect(() => {
-    void window.deck.claude.getBin().then(setClaudeBin)
+    void window.deck.cli.list().then(setDetectedClis)
+    void window.deck.cli.getDefault().then(setDefaultCli)
+    void window.deck.cli.isFirstRun().then(setFirstRunPending)
     void window.deck.app.getStartupCwd().then(setStartupCwd)
     void window.deck.sessions.getTitles().then(setTitles)
     void window.deck.state.get<string[]>('workspaces').then((ws) => {
@@ -699,7 +773,7 @@ function App(): React.JSX.Element {
       const { workspace: ws, startupCwd: scwd } = stateRef.current
       const cwd = ws || scwd
       if (!cwd) return
-      const def = defaultClaudeSession(cwd)
+      const def = defaultCliSession(cwd, defaultCli ?? 'claude')
       setSessions((prev) => [...prev, def])
       setActiveId(def.id)
     })
@@ -719,6 +793,11 @@ function App(): React.JSX.Element {
       setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
     }
     window.addEventListener('decky:web-open', onWebOpen)
+    // Main forwards any link / window.open from the renderer here (markdown card links,
+    // terminal weblinks, etc.) — re-fire on the same channel a web-card popup uses.
+    const unsubOpenUrl = window.deck.app.onOpenUrl((url) => {
+      window.dispatchEvent(new CustomEvent('decky:web-open', { detail: url }))
+    })
     const unsubCloseTab = window.deck.app.onMenuCloseTab(() => {
       const { sessions: prev, activeId: cur } = stateRef.current
       if (!cur) return
@@ -760,6 +839,7 @@ function App(): React.JSX.Element {
       unsubConflict()
       unsubNewSession()
       window.removeEventListener('decky:web-open', onWebOpen)
+      unsubOpenUrl()
       unsubCloseTab()
       unsubFlush()
     }
@@ -851,7 +931,7 @@ function App(): React.JSX.Element {
           initial = pendingActiveRef.current
         }
         if (pendingNewRef.current) {
-          const def = defaultClaudeSession(workspace)
+          const def = defaultCliSession(workspace, defaultCli ?? 'claude')
           sess = [...sess, def]
           initial = def.id
         }
@@ -882,7 +962,7 @@ function App(): React.JSX.Element {
           : {}
         if (!cancelled) setPinned(pinnedRe)
       } else {
-        const def = defaultClaudeSession(workspace)
+        const def = defaultCliSession(workspace, defaultCli ?? 'claude')
         pendingActiveRef.current = null
         pendingNewRef.current = false
         loadedWorkspaceRef.current = workspace
@@ -1222,7 +1302,7 @@ function App(): React.JSX.Element {
         const { workspace: ws, startupCwd: scwd } = stateRef.current
         const cwd = ws || scwd
         if (cwd) {
-          const def = defaultClaudeSession(cwd)
+          const def = defaultCliSession(cwd, defaultCli ?? 'claude')
           setSessions((prev) => [...prev, def])
           setActiveId(def.id)
         }
@@ -1425,13 +1505,18 @@ function App(): React.JSX.Element {
       const wasWorking = wasWorkingRef.current[id] === true
       if (wasWorking && !a.active) {
         const watching = id === activeId && document.hasFocus()
+        console.log('[notify] working→idle edge', {
+          id,
+          activeId,
+          watching,
+          hasFocus: document.hasFocus()
+        })
         if (!watching) {
           const label = titles[id] || aiTitles[id] || 'sessão'
-          void window.deck.notify.show({
-            id,
-            title: `${label} pronta`,
-            body: 'terminou de processar'
-          })
+          void window.deck.notify
+            .show({ id, title: `${label} pronta`, body: 'terminou de processar' })
+            .then(() => console.log('[notify] IPC resolved for', id))
+            .catch((e) => console.error('[notify] IPC failed', e))
         }
       }
       wasWorkingRef.current[id] = a.active
@@ -1504,7 +1589,7 @@ function App(): React.JSX.Element {
   const newClaudeSession = (): void => {
     const cwd = workspace || startupCwd
     if (!cwd) return
-    const def = defaultClaudeSession(cwd)
+    const def = defaultCliSession(cwd, defaultCli ?? 'claude')
     setSessions((prev) => [...prev, def])
     setActiveId(def.id)
   }
@@ -1577,15 +1662,13 @@ function App(): React.JSX.Element {
 
   const commandFor = (s: Session): string[] | undefined => {
     if (s.kind !== 'claude') return undefined
-    return s.claudeSessionId
-      ? [
-          claudeBin!,
-          '--session-id',
-          s.claudeSessionId,
-          '--append-system-prompt',
-          DECKY_SESSION_PROMPT
-        ]
-      : [claudeBin!, '--append-system-prompt', DECKY_SESSION_PROMPT]
+    const cliKind: CliKind = s.cliKind ?? 'claude'
+    const detected = detectedClis?.find((c) => c.kind === cliKind)
+    if (!detected) return undefined
+    return [detected.bin, ...buildArgs(cliKind, {
+      sessionId: s.claudeSessionId,
+      systemPrompt: DECKY_SESSION_PROMPT
+    })]
   }
 
   const openPanel = (pid: PanelId): void => {
@@ -1619,6 +1702,29 @@ function App(): React.JSX.Element {
       return { ...prev, [activeId]: cards }
     })
   }
+
+  // Click on the header git stats: read the uncommitted diff and route it to a stable
+  // `git-diff` card in the active session (created if absent, refreshed if open).
+  const openGitDiff = useCallback(async (): Promise<void> => {
+    const ws = stateRef.current.workspace
+    const aId = stateRef.current.activeId
+    if (!ws || !aId) return
+    const content = await window.deck.git.diffText(ws)
+    if (!content) return
+    const cardId = 'git-diff'
+    setCardsBySession((prev) => {
+      const list = prev[aId] ?? []
+      return list.includes(cardId) ? prev : { ...prev, [aId]: [...list, cardId] }
+    })
+    setPreviewsByCard((prev) => ({
+      ...prev,
+      [aId]: {
+        ...(prev[aId] ?? {}),
+        [cardId]: { type: 'diff', content, title: 'git diff (uncommitted)' }
+      }
+    }))
+    setFocusedCardBySession((prev) => ({ ...prev, [aId]: cardId }))
+  }, [])
 
   const togglePin = (id: string): void => {
     if (pinned[id]) {
@@ -1720,11 +1826,30 @@ function App(): React.JSX.Element {
   const contentCards = [...pinnedIds, ...ownIds].map((id, i) => {
     const isPinned = !!pinned[id]
     const source = isPinned ? pinned[id] : (cardPreviews[id] ?? { type: 'none' })
+    // Persist the navigated URL of a web card up to parent state so a remount (session
+    // switch, workspace switch, full reload) restores the typed URL instead of falling
+    // back to the source's initial value (often '' from "nova aba" → about:blank).
+    const onWebUrlChange = (nextUrl: string): void => {
+      if (isPinned) {
+        setPinned((prev) => {
+          const cur = prev[id]
+          if (!cur || cur.type !== 'web' || cur.url === nextUrl) return prev
+          return { ...prev, [id]: { ...cur, url: nextUrl } }
+        })
+      } else if (activeId) {
+        setPreviewsByCard((prev) => {
+          const sess = prev[activeId] ?? {}
+          const cur = sess[id]
+          if (!cur || cur.type !== 'web' || cur.url === nextUrl) return prev
+          return { ...prev, [activeId]: { ...sess, [id]: { ...cur, url: nextUrl } } }
+        })
+      }
+    }
     return {
       id,
       title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
       pinned: isPinned,
-      render: () => <Preview source={source} cardId={id} />
+      render: () => <Preview source={source} cardId={id} onWebUrlChange={onWebUrlChange} />
     }
   })
   const deckCards = [...panelCards, ...contentCards]
@@ -1758,6 +1883,18 @@ function App(): React.JSX.Element {
       run: toggleMode
     },
     { id: 'web:new', label: 'Nova aba de browser', hint: 'abre um webview', run: openWebTab },
+    {
+      id: 'notify:test',
+      label: 'Testar notificação',
+      hint: 'diagnóstico',
+      run: () => {
+        console.log('[notify-test] firing test notification')
+        void window.deck.notify
+          .show({ id: activeId ?? 'test', title: 'decky', body: 'teste de notificação' })
+          .then(() => console.log('[notify-test] IPC resolved'))
+          .catch((e) => console.error('[notify-test] IPC failed', e))
+      }
+    },
     ...PANELS.map((p) => ({
       id: `panel:${p.id}`,
       label: p.paletteLabel,
@@ -1766,8 +1903,35 @@ function App(): React.JSX.Element {
     }))
   ]
 
+  const handleCliSave = async (kind: CliKind): Promise<void> => {
+    await window.deck.cli.setDefault(kind)
+    await window.deck.cli.markFirstRunDone()
+    setDefaultCli(kind)
+    setFirstRunPending(false)
+  }
+
+  const handleCliSkip = async (): Promise<void> => {
+    await window.deck.cli.markFirstRunDone()
+    setFirstRunPending(false)
+  }
+
+  const handleCliRecheck = async (): Promise<DetectedCli[]> => {
+    const fresh = await window.deck.cli.recheck()
+    setDetectedClis(fresh)
+    return fresh
+  }
+
   return (
     <div className="deck">
+      {firstRunPending && detectedClis !== null && (
+        <FirstRunModal
+          detectedClis={detectedClis}
+          currentDefault={defaultCli}
+          onSave={handleCliSave}
+          onSkip={handleCliSkip}
+          onRecheck={handleCliRecheck}
+        />
+      )}
       <main className="deck-main">
         <ResizableSplit
           defaultSizes={[30, 70]}
@@ -1788,7 +1952,7 @@ function App(): React.JSX.Element {
                 <TerminalHost
                   sessions={hostSessions}
                   activeId={activeId}
-                  claudeBin={claudeBin}
+                  detectionLoaded={detectedClis !== null}
                   commandFor={commandFor}
                   mode={mode}
                   themeFor={themeFor}
@@ -1822,7 +1986,19 @@ function App(): React.JSX.Element {
             <div className="panel-header">
               <span>{workspace ? projectFromCwd(workspace) : 'decky'}</span>
               {gitStats && (
-                <GitStats additions={gitStats.additions} deletions={gitStats.deletions} />
+                <span className="panel-header-git">
+                  <GitStats
+                    additions={gitStats.additions}
+                    deletions={gitStats.deletions}
+                    onClick={openGitDiff}
+                  />
+                  {gitStats.branch && (
+                    <span className="git-branch" title={`branch ${gitStats.branch}`}>
+                      <span className="git-branch-icon" aria-hidden="true">⎇</span>
+                      {gitStats.branch}
+                    </span>
+                  )}
+                </span>
               )}
             </div>
             <div className="panel-body panel-body-flush">

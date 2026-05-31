@@ -24,6 +24,10 @@ import { registerStateHandlers } from './state-store'
 import { registerCliHandlers } from './cli-handlers'
 import { registerDevRebuildHandlers } from './dev-rebuild'
 import { registerGitHandlers } from './git-stats'
+import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
+
+// Privileged scheme registration must happen before app is ready.
+registerAssetScheme()
 
 let mainWindow: BrowserWindow | null = null
 
@@ -93,9 +97,33 @@ function createWindow(): void {
     mainWindow = null
   })
 
+  // Route link clicks from anywhere in the renderer (markdown card, terminal weblinks, etc.)
+  // into our internal web card instead of the OS browser. setWindowOpenHandler covers
+  // window.open + target="_blank"; will-navigate covers plain <a href> clicks (without it
+  // they'd navigate the WHOLE decky window away from the app shell). Non-http schemes and
+  // explicit "open external" affordances still go through shell.openExternal via the
+  // 'app:open-external' IPC.
+  const routeToInternal = (url: string): void => {
+    if (!/^https?:\/\//i.test(url)) {
+      void shell.openExternal(url).catch(() => {})
+      return
+    }
+    mainWindow?.webContents.send('app:open-url', url)
+  }
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    routeToInternal(details.url)
     return { action: 'deny' }
+  })
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    // Same-origin navigation = app shell itself (HMR, dev reload, file:// reload). Let it through.
+    try {
+      const current = mainWindow?.webContents.getURL() ?? ''
+      if (current && new URL(url).origin === new URL(current).origin) return
+    } catch {
+      return
+    }
+    e.preventDefault()
+    routeToInternal(url)
   })
 
   // HMR for renderer base on electron-vite cli.
@@ -138,6 +166,7 @@ app.whenReady().then(async () => {
   registerFileWatchHandlers(() => mainWindow)
   registerDevRebuildHandlers(() => mainWindow)
   registerGitHandlers()
+  setupAssetProtocol()
   startPreviewServer(() => mainWindow)
 
   ipcMain.handle('dialog:pick-folder', async () => {
@@ -158,13 +187,18 @@ app.whenReady().then(async () => {
   ipcMain.handle(
     'notify:show',
     (_e, payload: { id: string; title: string; body?: string }) => {
-      if (!Notification.isSupported()) return
+      const supported = Notification.isSupported()
+      console.log('[notify] handler called', { supported, payload })
+      if (!supported) return
       const n = new Notification({
         title: payload.title,
         body: payload.body ?? '',
         silent: false
       })
+      n.on('show', () => console.log('[notify] shown', payload.id))
+      n.on('failed', (_evt, err) => console.error('[notify] failed', err))
       n.on('click', () => {
+        console.log('[notify] clicked', payload.id)
         const win = mainWindow
         if (!win || win.isDestroyed()) return
         if (win.isMinimized()) win.restore()
@@ -185,6 +219,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('claude:ai-title', (_e, cwd: string, uuid: string) => readAiTitle(cwd, uuid))
   ipcMain.handle('sessions:get-titles', () => getSessionTitles())
   ipcMain.handle('app:get-startup-cwd', () => process.cwd())
+  // Explicit "open in the OS browser" affordance — used by the external-link button on the
+  // web card, since every other window.open in the renderer now routes to an internal card.
+  ipcMain.handle('app:open-external', (_e, url: string) => shell.openExternal(url))
 
   // Packaged: getAppPath() is .../app.asar, but claude spawns dk-mcp with a plain
   // `node` (no asar support), so point at the unpacked copy (see asarUnpack bin/**).

@@ -1,6 +1,7 @@
 type Props = {
   additions: number
   deletions: number
+  onClick?: () => void
 }
 
 const SQUARES = 5
@@ -19,7 +20,11 @@ function bucketize(additions: number, deletions: number): { green: number; red: 
   return { green, red, empty: SQUARES - green - red }
 }
 
-export default function GitStats({ additions, deletions }: Props): React.JSX.Element | null {
+export default function GitStats({
+  additions,
+  deletions,
+  onClick
+}: Props): React.JSX.Element | null {
   if (additions === 0 && deletions === 0) return null
   const { green, red, empty } = bucketize(additions, deletions)
   const squares: Array<'g' | 'r' | 'e'> = [
@@ -27,8 +32,17 @@ export default function GitStats({ additions, deletions }: Props): React.JSX.Ele
     ...Array(red).fill('r'),
     ...Array(empty).fill('e')
   ]
+  const title = onClick
+    ? `+${additions} −${deletions} — abrir diff`
+    : `+${additions} −${deletions} (não commitado)`
   return (
-    <span className="git-stats" title={`+${additions} −${deletions} (não commitado)`}>
+    <button
+      type="button"
+      className="git-stats"
+      title={title}
+      onClick={onClick}
+      disabled={!onClick}
+    >
       <span className="git-stats-add">+{additions}</span>
       <span className="git-stats-del">−{deletions}</span>
       <span className="git-stats-bar" aria-hidden="true">
@@ -36,6 +50,6 @@ export default function GitStats({ additions, deletions }: Props): React.JSX.Ele
           <span key={i} className={`git-stats-sq git-stats-sq-${s}`} />
         ))}
       </span>
-    </span>
+    </button>
   )
 }

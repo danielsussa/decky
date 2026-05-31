@@ -20,7 +20,6 @@ export default function DeckTabs({
   onReorder
 }: DeckTabsProps): React.JSX.Element {
   const activeId = focusedId && cards.some((c) => c.id === focusedId) ? focusedId : cards[0]?.id
-  const active = cards.find((c) => c.id === activeId)
   const [dragId, setDragId] = useState<string | null>(null)
   const [overId, setOverId] = useState<string | null>(null)
 
@@ -100,8 +99,20 @@ export default function DeckTabs({
           </div>
         ))}
       </div>
-      <div className="deck-tabs-body" key={active?.id ?? '__empty'}>
-        {active?.render()}
+      {/* Render every card pane and stack them in the same area — inactive ones use
+          visibility:hidden instead of display:none. Electron tears down a <webview>'s guest
+          when it (or an ancestor) goes display:none, so on re-show the page reloads from
+          scratch; visibility:hidden keeps the element in the layout/render tree and the
+          guest attached, so the actual page survives tab switches. */}
+      <div className="deck-tabs-body">
+        {cards.map((c) => (
+          <div
+            key={c.id}
+            className={`deck-tab-pane ${c.id === activeId ? 'deck-tab-pane-active' : 'deck-tab-pane-inactive'}`}
+          >
+            {c.render()}
+          </div>
+        ))}
       </div>
     </div>
   )

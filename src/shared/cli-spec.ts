@@ -57,6 +57,21 @@ export const CLI_SPECS: Record<CliKind, CliSpec> = {
 
 export const CLI_KINDS: CliKind[] = Object.keys(CLI_SPECS) as CliKind[]
 
+/** A CLI that has been resolved on the user's machine. */
+export interface DetectedCli {
+  kind: CliKind
+  displayName: string
+  bin: string
+  version?: string
+}
+
+/** Install hint surfaced to the user when a CLI is missing. */
+export interface CliInstallHint {
+  kind: CliKind
+  displayName: string
+  installHint: string
+}
+
 export interface BuildArgsOpts {
   /** Stable id used by CLIs that support resume (currently only claude). */
   sessionId?: string

@@ -1,16 +1,16 @@
 import { ipcMain } from 'electron'
 import { getState, setState } from './state-store'
-import { detectAvailableClis, invalidateCliCache, type DetectedCli } from './cli-detector'
-import { CLI_SPECS, CLI_KINDS, type CliKind } from '../shared/cli-spec'
+import { detectAvailableClis, invalidateCliCache } from './cli-detector'
+import {
+  CLI_SPECS,
+  CLI_KINDS,
+  type CliKind,
+  type DetectedCli,
+  type CliInstallHint
+} from '../shared/cli-spec'
 
 function isCliKind(v: unknown): v is CliKind {
   return typeof v === 'string' && (CLI_KINDS as string[]).includes(v)
-}
-
-export interface CliInstallHint {
-  kind: CliKind
-  displayName: string
-  installHint: string
 }
 
 export function getInstallHints(): CliInstallHint[] {

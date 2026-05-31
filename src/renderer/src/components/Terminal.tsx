@@ -21,6 +21,27 @@ function isUserTyping(data: string): boolean {
   return /[\x20-\x7e]/.test(stripped) || /[\r\n\t\x08\x7f]/.test(stripped)
 }
 
+const URL_REGEX = /https?:\/\/\S+/i
+const URL_CHAR = /[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]/
+
+// Walk cells outward from the clicked col to assemble the URL-token. Cell-based
+// (not string-based) so wide chars like ⏺ elsewhere on the line don't shift the
+// offset between buffer columns and the translated string.
+function urlAtCell(term: XTerm, col: number, bufferY: number): string | null {
+  const line = term.buffer.active.getLine(bufferY)
+  if (!line) return null
+  const charAt = (c: number): string => line.getCell(c)?.getChars() || ''
+  if (!URL_CHAR.test(charAt(col))) return null
+  let l = col
+  let r = col
+  while (l > 0 && URL_CHAR.test(charAt(l - 1))) l--
+  while (r < term.cols - 1 && URL_CHAR.test(charAt(r + 1))) r++
+  let token = ''
+  for (let c = l; c <= r; c++) token += charAt(c)
+  const match = token.match(URL_REGEX)
+  return match ? match[0].replace(/[.,;:!?)]+$/, '') : null
+}
+
 interface TerminalProps {
   id: string
   cwd?: string
@@ -79,9 +100,49 @@ export default function Terminal({
     const fit = new FitAddon()
     fitRef.current = fit
     term.loadAddon(fit)
-    term.loadAddon(new WebLinksAddon())
+    // Open the URL as a new decky web card (same channel "nova aba de browser" uses).
+    // This handler only fires when xterm's link service activates — TUIs with mouse
+    // tracking (Claude, Codex) swallow the click before it gets here. The capture-phase
+    // listener below is the fallback that beats mouse tracking.
+    term.loadAddon(
+      new WebLinksAddon((_event, uri) => {
+        window.dispatchEvent(new CustomEvent('decky:web-open', { detail: uri }))
+      })
+    )
 
     term.open(host)
+
+    // When Claude/Codex have mouse tracking on, every click is encoded as CSI and shipped
+    // to the PTY before WebLinksAddon sees it. Capture-phase mousedown on the host runs
+    // BEFORE xterm's own screen-element listeners, so we can intercept Cmd/Ctrl+click,
+    // resolve the URL from the buffer at the clicked cell, and open it as a new web card —
+    // stopping propagation so the TUI doesn't also receive the click as a mouse report.
+    const onMouseDownCapture = (e: MouseEvent): void => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      const screen = host.querySelector('.xterm-screen') as HTMLElement | null
+      if (!screen) return
+      const rect = screen.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) return
+      const col = Math.floor(((e.clientX - rect.left) / rect.width) * term.cols)
+      const row = Math.floor(((e.clientY - rect.top) / rect.height) * term.rows)
+      if (col < 0 || col >= term.cols || row < 0 || row >= term.rows) return
+      const url = urlAtCell(term, col, term.buffer.active.viewportY + row)
+      if (!url) return
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      window.dispatchEvent(new CustomEvent('decky:web-open', { detail: url }))
+    }
+    // Mousedown is what we intercept (mouse-tracking encodes on press), but click on the
+    // same gesture would still bubble — and could re-trigger WebLinksAddon's activate.
+    // Swallow click too while the modifier is held, so we don't open twice.
+    const onClickCapture = (e: MouseEvent): void => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+    }
+    host.addEventListener('mousedown', onMouseDownCapture, true)
+    host.addEventListener('click', onClickCapture, true)
 
     let disposed = false
     let ptyCreated = false
@@ -177,6 +238,8 @@ export default function Terminal({
       disposed = true
       settleTimers.forEach(clearTimeout)
       ro.disconnect()
+      host.removeEventListener('mousedown', onMouseDownCapture, true)
+      host.removeEventListener('click', onClickCapture, true)
       unsubData?.()
       unsubExit?.()
       window.deck.pty.kill(id)

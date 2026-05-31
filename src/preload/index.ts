@@ -2,13 +2,10 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 import type { PreviewSource } from '../shared/preview'
-import type { CliKind } from '../shared/cli-spec'
+import type { CliKind, DetectedCli, CliInstallHint } from '../shared/cli-spec'
 
 type PtyDataMsg = { id: string; data: string }
 type PtyExitMsg = { id: string; code: number }
-
-type DetectedCli = { kind: CliKind; displayName: string; bin: string; version?: string }
-type CliInstallHint = { kind: CliKind; displayName: string; installHint: string }
 
 const deckApi = {
   pty: {
@@ -99,8 +96,11 @@ const deckApi = {
       ipcRenderer.invoke('claude:ai-title', cwd, uuid)
   },
   git: {
-    diffStats: (cwd: string): Promise<{ isRepo: boolean; additions: number; deletions: number }> =>
-      ipcRenderer.invoke('git:diff-stats', cwd)
+    diffStats: (
+      cwd: string
+    ): Promise<{ isRepo: boolean; additions: number; deletions: number; branch?: string }> =>
+      ipcRenderer.invoke('git:diff-stats', cwd),
+    diffText: (cwd: string): Promise<string> => ipcRenderer.invoke('git:diff-text', cwd)
   },
   cli: {
     list: (): Promise<DetectedCli[]> => ipcRenderer.invoke('cli:list'),
@@ -149,7 +149,15 @@ const deckApi = {
       ipcRenderer.on('app:flush', listener)
       return () => ipcRenderer.removeListener('app:flush', listener)
     },
-    flushDone: (): void => ipcRenderer.send('app:flush-done')
+    flushDone: (): void => ipcRenderer.send('app:flush-done'),
+    // Main forwards every link click / window.open from the renderer here so we can spawn an
+    // internal web card instead of leaking to the OS browser.
+    onOpenUrl: (callback: (url: string) => void): (() => void) => {
+      const listener = (_: unknown, url: string): void => callback(url)
+      ipcRenderer.on('app:open-url', listener)
+      return () => ipcRenderer.removeListener('app:open-url', listener)
+    },
+    openExternal: (url: string): Promise<void> => ipcRenderer.invoke('app:open-external', url)
   },
   dev: {
     getInfo: (): Promise<{ enabled: boolean; repo?: string; accel: string }> =>

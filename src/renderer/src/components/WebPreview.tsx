@@ -51,6 +51,10 @@ const POPUP_CAPTURE = `
 
 interface WebPreviewProps {
   url: string
+  // Notifies the parent when the webview navigates to a real URL (typed in the address
+  // bar, clicked link, history nav). The parent persists it on the card's source so a
+  // remount — session switch, workspace switch, full reload — restores where we were.
+  onUrlChange?: (url: string) => void
 }
 
 function normalizeUrl(raw: string): string {
@@ -62,7 +66,9 @@ function normalizeUrl(raw: string): string {
   return `https://${s}`
 }
 
-export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element {
+export default function WebPreview({ url, onUrlChange }: WebPreviewProps): React.JSX.Element {
+  const onUrlChangeRef = useRef(onUrlChange)
+  onUrlChangeRef.current = onUrlChange
   const ref = useRef<WebviewEl | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [address, setAddress] = useState(url)
@@ -70,6 +76,19 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
   const [canBack, setCanBack] = useState(false)
   const [canFwd, setCanFwd] = useState(false)
   const [loading, setLoading] = useState(true)
+  // Tracks whether the webview has fired did-attach yet. Calling loadURL before attach
+  // races with the <webview src=...> auto-load and silently fails — same trap that hit
+  // the "nova aba de browser" button (the webview just stays blank).
+  const attachedRef = useRef(false)
+  // Latest url prop, captured so the did-attach listener (registered with [] deps) reads
+  // the current value instead of the one from initial render.
+  const urlRef = useRef(url)
+  urlRef.current = url
+  // Last URL the webview actually navigated to (typed in the address bar, or driven by the
+  // url prop). Survives Electron's quirk where hiding a <webview> via display:none detaches
+  // the guest — on re-show it reattaches and reloads the about:blank src, blowing away the
+  // user's typed URL. We restore from this ref instead of urlRef (the original prop).
+  const lastNavRef = useRef<string>(url || '')
 
   // Opened blank (e.g. a new Cmd+T tab) → focus the address bar so you can just type.
   useEffect(() => {
@@ -77,14 +96,17 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // When the bot/command points this card at a new URL, navigate there. Skip loadURL on
-  // empty — Electron's Chromium rejects '' as a URL and can crash the renderer.
+  // When the bot/command points this card at a new URL, navigate there. Before attach,
+  // the did-attach handler below will pick up urlRef and navigate. After attach, we drive
+  // navigation directly. Skip loadURL on empty — Chromium rejects '' as a URL.
   useEffect(() => {
     setAddress(url)
     setCurrent(url)
-    const wv = ref.current
+    if (url) lastNavRef.current = url
     if (!url) return
-    if (wv && wv.getURL && wv.getURL() !== url) {
+    const wv = ref.current
+    if (!wv || !attachedRef.current) return
+    if (wv.getURL && wv.getURL() !== url) {
       void wv.loadURL(url).catch(() => {})
     }
   }, [url])
@@ -97,10 +119,18 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
         setCanBack(wv.canGoBack())
         setCanFwd(wv.canGoForward())
         const u = wv.getURL()
-        if (u) {
-          setCurrent(u)
-          setAddress(u)
+        if (!u) return
+        // Tab-switch quirk: hiding the <webview> via display:none detaches the guest;
+        // re-showing reattaches and reloads the about:blank src. If we have a real URL
+        // we'd navigated to, restore it instead of letting the address bar flip to blank.
+        if (u === 'about:blank' && lastNavRef.current && lastNavRef.current !== 'about:blank') {
+          void wv.loadURL(lastNavRef.current).catch(() => {})
+          return
         }
+        if (lastNavRef.current !== u) onUrlChangeRef.current?.(u)
+        lastNavRef.current = u
+        setCurrent(u)
+        setAddress(u)
       } catch {
         // webview not ready
       }
@@ -111,6 +141,16 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
       syncNav()
     }
     const onNav = (): void => syncNav()
+    // First attach — webview is now ready to receive loadURL. Drive the initial navigation
+    // here instead of via the src attribute (which races with partition setup and silently
+    // leaves the page blank).
+    const onAttached = (): void => {
+      attachedRef.current = true
+      // Prefer the last navigated URL (typed by the user) over the original prop, so
+      // a guest re-attach (display:none cycle) restores where we were, not the initial blank.
+      const u = lastNavRef.current || urlRef.current
+      if (u && u !== 'about:blank') void wv.loadURL(u).catch(() => {})
+    }
     // Re-inject the popup capture on every page load — each navigation gets a fresh window
     // so the previous override is gone.
     const onDomReady = (): void => {
@@ -126,6 +166,7 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
     wv.addEventListener('did-stop-loading', onStop)
     wv.addEventListener('did-navigate', onNav)
     wv.addEventListener('did-navigate-in-page', onNav)
+    wv.addEventListener('did-attach', onAttached)
     wv.addEventListener('dom-ready', onDomReady)
     wv.addEventListener('console-message', onConsole)
     return () => {
@@ -133,6 +174,7 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
       wv.removeEventListener('did-stop-loading', onStop)
       wv.removeEventListener('did-navigate', onNav)
       wv.removeEventListener('did-navigate-in-page', onNav)
+      wv.removeEventListener('did-attach', onAttached)
       wv.removeEventListener('dom-ready', onDomReady)
       wv.removeEventListener('console-message', onConsole)
     }
@@ -141,6 +183,7 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
   const go = (raw: string): void => {
     const next = normalizeUrl(raw)
     if (!next) return
+    lastNavRef.current = next
     setCurrent(next)
     void ref.current?.loadURL(next).catch(() => {})
   }
@@ -188,7 +231,7 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
         <button
           type="button"
           className="web-btn"
-          onClick={() => window.open(current, '_blank')}
+          onClick={() => void window.deck.app.openExternal(current)}
           title="abrir no navegador externo"
         >
           <ExternalLink size={14} />
@@ -196,9 +239,10 @@ export default function WebPreview({ url }: WebPreviewProps): React.JSX.Element 
       </div>
       {createElement('webview', {
         ref: ref as never,
-        // Empty src crashes Electron's webview ("ERR_INVALID_URL"); use about:blank as the
-        // placeholder until the user types a URL in the address bar.
-        src: url || 'about:blank',
+        // Always start blank — the did-attach listener loads the real URL once the webview
+        // is actually ready. Setting src to the real URL on initial render races with the
+        // partition setup and tends to leave the page blank (the "nova aba" bug).
+        src: 'about:blank',
         partition: 'persist:deckweb'
       })}
     </div>

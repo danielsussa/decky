@@ -15,6 +15,37 @@
   box-sizing: border-box;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-2) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--bg-2);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 html,
 body,
 #root {
@@ -169,6 +200,31 @@ code {
 .panel-body-flush {
   padding: 0;
   overflow: hidden;
+}
+
+/* Thin accent strip at the top of whichever sub-panel (terminal / sessions tree / cards)
+ * the user is currently in. Painted as an absolutely-positioned ::before so it stays at
+ * the top edge regardless of the body's own padding/scroll, and z-index keeps it visible
+ * above the panel's content (xterm, deck tabs, tree rows). */
+.panel-focusable {
+  position: relative;
+}
+
+.panel-focusable::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+  z-index: 10;
+  pointer-events: none;
+  transition: background 120ms;
+}
+
+.panel-focusable[data-focused='true']::before {
+  background: var(--accent);
 }
 
 .panel-placeholder {
@@ -337,6 +393,32 @@ code {
   background: var(--bg-2);
 }
 
+.session-pane-stack {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* One DeckTabs per session, stacked in the same area. Inactive sessions stay mounted so
+   their <webview>/iframe guests aren't torn down — switching back is instant. */
+.session-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-pane-active {
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.session-pane-inactive {
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
 .deck-tabs-body {
   flex: 1;
   min-height: 0;
@@ -352,8 +434,11 @@ code {
   overflow: auto;
 }
 
+/* Deliberately NOT setting `visibility: visible` here: it would override the inherited
+   `visibility: hidden` from a `.session-pane-inactive` ancestor, leaking the active card
+   of an inactive session over the active session. Default value is `visible` and inherits
+   correctly from the parent. */
 .deck-tab-pane-active {
-  visibility: visible;
   pointer-events: auto;
   z-index: 1;
 }
@@ -817,6 +902,211 @@ code {
   user-select: text;
 }
 
+/* === form === */
+
+.form-preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-0);
+  color: var(--text-1);
+}
+
+.form-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.form-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.form-status {
+  font-size: 11px;
+}
+
+.form-sent {
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.form-cancelled {
+  color: var(--text-3);
+}
+
+.form-sending {
+  color: var(--text-2);
+}
+
+.form-err {
+  color: #ff7676;
+}
+
+.form-description {
+  padding: 10px 16px 0;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.form-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  letter-spacing: 0.02em;
+}
+
+.form-required {
+  color: #ff7676;
+}
+
+.form-input {
+  background: var(--bg-1);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.form-input:focus {
+  border-color: var(--accent);
+  background: var(--bg-0);
+}
+
+.form-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.form-input.has-error {
+  border-color: #ff7676;
+}
+
+textarea.form-input {
+  resize: vertical;
+  min-height: 64px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.form-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.form-checkbox input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.form-help {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+.form-error {
+  font-size: 11px;
+  color: #ff7676;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+  flex: 0 0 auto;
+}
+
+.form-cancel {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.form-cancel:hover:not(:disabled) {
+  color: var(--text-1);
+  border-color: var(--text-3);
+}
+
+.form-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.form-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.form-send:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.form-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.form-kbd {
+  font-size: 10.5px;
+  font-weight: 400;
+  opacity: 0.8;
+  padding-left: 4px;
+  border-left: 1px solid rgba(255, 255, 255, 0.35);
+}
+
 /* === json === */
 
 .json-preview {
@@ -1134,14 +1424,17 @@ code {
   padding: 5px 4px 5px 26px;
   background: transparent;
   border: none;
-  color: var(--text-2);
+  /* Tint each session toward its workspace's accent (--ws-tint set per-subtree by the
+     renderer), so the children read as a color-coded group. Fallback to plain --text-2
+     for subtrees rendered before the tint is applied. */
+  color: color-mix(in srgb, var(--text-2) 62%, var(--ws-tint, var(--text-2)) 38%);
   font-family: var(--mono);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
 .wstree-session-active .wstree-session-btn {
-  color: var(--text-1);
+  color: color-mix(in srgb, var(--text-1) 70%, var(--ws-tint, var(--text-1)) 30%);
 }
 .wstree-session-name {
   overflow: hidden;
@@ -1398,14 +1691,6 @@ code {
   background: transparent !important;
 }
 
-.terminal-host .xterm-viewport::-webkit-scrollbar {
-  width: 8px;
-}
-
-.terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
-}
 
 /* ── Remap (keyboard shortcuts) modal ───────────────────────────────────── */
 .remap-backdrop {

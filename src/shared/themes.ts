@@ -1,9 +1,8 @@
 // Two independent axes:
 //  • COLOR (hue): each workspace gets one of 5 Natureza themes — each evoking a place, not just
-//    a hue. The hash of its name picks a *preferred* theme; if that's already taken by another
-//    workspace, the assigner falls back to the unused theme closest to the preferred hue (see
-//    assignNewWorkspaceTheme). Up to 5 workspaces share no color; beyond that, collisions are
-//    unavoidable and the preferred wins.
+//    a hue. Assignment is sequential round-robin (see assignNewWorkspaceTheme): the Nth
+//    workspace registered gets THEMES[(N-1) % 5], so 1st-5th get all colors once and the 6th
+//    wraps to the first theme. No reservation logic — removing+adding can produce repeats.
 //  • MODE (dark/light): a global user preference, toggled from the command palette.
 // Each theme carries a dark and a light surface; the workspace picks the hue, the mode picks the
 // surface. The ANSI palette is fixed per-mode (not per-hue) so claude's terminal output reads the
@@ -131,16 +130,16 @@ export const THEMES: Theme[] = [
     name: 'Lava',
     dark: {
       vars: {
-        '--bg-0': '#1a0e0a',
-        '--bg-1': '#25140e',
-        '--bg-2': '#3a2118',
-        '--border': '#2c1813',
+        '--bg-0': '#241410',
+        '--bg-1': '#301c16',
+        '--bg-2': '#452a20',
+        '--border': '#37201a',
         '--text-1': '#ecd6cf',
         '--text-2': '#b09290',
         '--text-3': '#7c6660',
         '--accent': '#ff5a36'
       },
-      selection: '#5a2418'
+      selection: '#6e2e1f'
     },
     light: {
       vars: {
@@ -189,62 +188,29 @@ export const THEMES: Theme[] = [
 ]
 
 
-// Position on the color wheel (degrees), used only to break ties when the hashed-preferred
-// theme is already taken: the assigner picks the unused theme whose hue is closest.
-const THEME_HUE: Record<string, number> = {
-  lava: 12,
-  cerrado: 35,
-  floresta: 130,
-  abissal: 180,
-  geleira: 200
-}
-
-function hueDist(a: number, b: number): number {
-  const d = Math.abs(a - b) % 360
-  return Math.min(d, 360 - d)
-}
-
 function djb2(s: string): number {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0
   return h
 }
 
-// Hash the workspace NAME (trailing folder, not the full path) → preferred theme index.
-// Hashing the name spreads better than the full path, whose long shared prefix clumps
-// everything onto a couple of colors.
-function preferredThemeIdx(name: string): number {
-  return djb2(name) % THEMES.length
-}
-
-// Greedy single-workspace assignment: pick the hashed-preferred theme if it's still free,
-// otherwise the closest unused theme by hue. When all themes are taken (more workspaces than
-// themes), collisions become unavoidable — the preferred wins. Caller passes the set of
-// already-assigned theme IDs.
-export function assignNewWorkspaceTheme(workspacePath: string, taken: Set<string>): Theme {
-  const name = workspacePath.replace(/\/+$/, '').split('/').pop() || workspacePath
-  const preferred = preferredThemeIdx(name)
-  if (!taken.has(THEMES[preferred].id)) return THEMES[preferred]
-  const prefHue = THEME_HUE[THEMES[preferred].id] ?? 0
-  let best = preferred
-  let bestDist = Infinity
-  for (let i = 0; i < THEMES.length; i++) {
-    if (taken.has(THEMES[i].id)) continue
-    const d = hueDist(THEME_HUE[THEMES[i].id] ?? 0, prefHue)
-    if (d < bestDist) {
-      bestDist = d
-      best = i
-    }
-  }
-  return THEMES[best]
+// Sequential round-robin assignment. The Nth workspace gets THEMES[N % 5] (1-indexed: 1st →
+// THEMES[0], 6th → THEMES[0] again). N is inferred from existing.size — the caller adds each
+// freshly-assigned theme to the set before calling for the next workspace. No slot reservation
+// or collision avoidance: if a workspace is removed mid-block and another added, the new one
+// may share a color with an existing peer.
+export function assignNewWorkspaceTheme(_workspacePath: string, existing: Set<string>): Theme {
+  return THEMES[existing.size % THEMES.length]
 }
 
 // Memoryless fallback: hash → theme, no collision avoidance. Used when no assignment exists
 // yet (e.g. a session's cwd outside the registered workspace set, or pre-assignment renders).
+// The path-based hash keeps a given path on a stable color across sessions even when the
+// round-robin assigner can't run.
 export function themeForWorkspace(path: string | null | undefined): Theme {
   if (!path) return THEMES[0]
   const name = path.replace(/\/+$/, '').split('/').pop() || path
-  return THEMES[preferredThemeIdx(name)]
+  return THEMES[djb2(name) % THEMES.length]
 }
 
 // Resolve a path's theme via a persisted assignment table, falling back to the memoryless hash.

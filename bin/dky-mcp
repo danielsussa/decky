@@ -115,6 +115,73 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} }
   },
   {
+    name: 'prompt_form',
+    description:
+      'Show the USER a dynamic FORM card and BLOCK until they click SEND (or CANCEL). Use this whenever you need structured input (CEP, CPF, name, email, options, etc) instead of asking in chat. The form is rendered as a real interactive card on the right; this tool returns the submitted values as JSON so you can use them immediately. Build the field list dynamically per request — only ask for what you actually need next. ALWAYS prefer this over asking the user to type values into the terminal one by one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Form title shown at the top of the card.' },
+        description: {
+          type: 'string',
+          description: 'Optional one-line description shown below the title.'
+        },
+        submitLabel: {
+          type: 'string',
+          description: 'Optional label for the submit button (default "SEND").'
+        },
+        fields: {
+          type: 'array',
+          description:
+            'Ordered list of fields. Use the smallest field set possible. Field types: text, textarea, number, email, cep (auto-mask 00000-000), cpf (auto-mask 000.000.000-00), cnpj, phone, date, select, checkbox.',
+          items: {
+            type: 'object',
+            properties: {
+              key: { type: 'string', description: 'Key in the returned values object.' },
+              label: { type: 'string', description: 'Visible field label.' },
+              type: {
+                type: 'string',
+                enum: [
+                  'text',
+                  'textarea',
+                  'number',
+                  'email',
+                  'cep',
+                  'cpf',
+                  'cnpj',
+                  'phone',
+                  'date',
+                  'select',
+                  'checkbox'
+                ]
+              },
+              required: { type: 'boolean' },
+              placeholder: { type: 'string' },
+              default: { description: 'Pre-filled value (string for text/number/etc, boolean for checkbox).' },
+              help: { type: 'string', description: 'Small helper text under the field.' },
+              options: {
+                type: 'array',
+                description: 'For type=select. Each option {value,label}.',
+                items: {
+                  type: 'object',
+                  properties: { value: { type: 'string' }, label: { type: 'string' } },
+                  required: ['value', 'label']
+                }
+              }
+            },
+            required: ['key', 'label']
+          }
+        },
+        card: { type: 'string', description: CARD_DESC },
+        timeoutMs: {
+          type: 'number',
+          description: 'Optional timeout in ms (default 600000 = 10min).'
+        }
+      },
+      required: ['fields']
+    }
+  },
+  {
     name: 'session_set_title',
     description:
       'Label the current decky session tab so the user can tell tabs apart. Call this when starting a new task or when the current focus changes meaningfully (e.g. "fixing auth bug", "drafting PR description"). Keep it short (under 40 chars).',
@@ -256,6 +323,43 @@ async function handleCall(name, args) {
       return `- ${c.id} (${c.type}) "${c.title}"${loc}${suffix}`
     })
     return lines.join('\n')
+  }
+
+  if (name === 'prompt_form') {
+    if (!Array.isArray(a.fields) || a.fields.length === 0)
+      throw new Error('prompt_form: fields[] required')
+    const { randomUUID } = require('node:crypto')
+    const formId = randomUUID()
+    const spec = {
+      formId,
+      title: typeof a.title === 'string' ? a.title : undefined,
+      description: typeof a.description === 'string' ? a.description : undefined,
+      submitLabel: typeof a.submitLabel === 'string' ? a.submitLabel : undefined,
+      fields: a.fields
+    }
+    // 1. Render the form card.
+    await post('/preview', { type: 'form', spec }, a.card)
+    // 2. Block until the user submits or cancels.
+    const headers = { 'content-type': 'application/json' }
+    if (process.env.DECKY_SESSION_ID) headers['x-deck-session-id'] = process.env.DECKY_SESSION_ID
+    const timeoutMs = typeof a.timeoutMs === 'number' ? a.timeoutMs : 10 * 60 * 1000
+    const res = await fetch(BASE + '/form/await', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ formId, timeoutMs })
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`decky /form/await: HTTP ${res.status} ${text}`)
+    }
+    const outcome = await res.json()
+    if (outcome.status === 'submitted') {
+      return JSON.stringify({ status: 'submitted', values: outcome.values }, null, 2)
+    }
+    if (outcome.status === 'cancelled') {
+      return JSON.stringify({ status: 'cancelled' })
+    }
+    return JSON.stringify({ status: 'timeout' })
   }
 
   if (name === 'session_set_title') {

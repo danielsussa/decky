@@ -24,6 +24,21 @@ function isUserTyping(data: string): boolean {
 const URL_REGEX = /https?:\/\/\S+/i
 const URL_CHAR = /[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]/
 
+// Extensions we treat as openable file refs. Mirrors what `preview_show` accepts in dky-mcp,
+// plus common code/text formats (those land in the editor card via the same preview pipeline).
+const FILE_EXTS =
+  'md|markdown|json|diff|patch|xlsx|csv|txt|log|yaml|yml|toml|ini|env|sql|sh|bash|zsh|py|rb|go|rs|js|jsx|ts|tsx|mjs|cjs|java|kt|kts|swift|c|h|cpp|hpp|cc|m|mm|css|scss|sass|less|html|htm|xml|svg|gql|graphql'
+const REF_TAIL = `\\.(?:${FILE_EXTS})(?=[\\s,;:!?)'"\`<>]|$)`
+// Path containing at least one `/` (relative or absolute). The `/`-anchor naturally rejects
+// leading sentence words ("Pronto. ") because those don't contain `/`. Spaces and accents
+// allowed inside — `validacao/FATURAMENTO MÉDICO MAIO.xlsx` works.
+const FILE_REF_WITH_SLASH = new RegExp(
+  String.raw`[/.\p{L}\p{N}~][\p{L}\p{N}\-._~/]*\/[\p{L}\p{N}\-._~/ ]*?` + REF_TAIL,
+  'giu'
+)
+// Single-token path (no spaces, no slashes — e.g. clicking on `README.md` printed bare).
+const FILE_REF_BARE = new RegExp(String.raw`[\p{L}\p{N}~][\p{L}\p{N}\-._~]*` + REF_TAIL, 'giu')
+
 // Walk cells outward from the clicked col to assemble the URL-token. Cell-based
 // (not string-based) so wide chars like ⏺ elsewhere on the line don't shift the
 // offset between buffer columns and the translated string.
@@ -40,6 +55,52 @@ function urlAtCell(term: XTerm, col: number, bufferY: number): string | null {
   for (let c = l; c <= r; c++) token += charAt(c)
   const match = token.match(URL_REGEX)
   return match ? match[0].replace(/[.,;:!?)]+$/, '') : null
+}
+
+// Read the line as a single string + a column→string-offset map (wide chars span 2 cols but 1
+// string char). Cell-based mapping keeps the click column accurate even when emoji/CJK shift
+// the offsets earlier on the line.
+function lineWithOffsets(
+  term: XTerm,
+  bufferY: number
+): { text: string; colToOffset: number[] } | null {
+  const line = term.buffer.active.getLine(bufferY)
+  if (!line) return null
+  let text = ''
+  const colToOffset: number[] = new Array(term.cols).fill(-1)
+  for (let c = 0; c < term.cols; c++) {
+    const cell = line.getCell(c)
+    if (!cell) continue
+    const chars = cell.getChars()
+    colToOffset[c] = text.length
+    if (chars) text += chars
+    else if (cell.getWidth() !== 0) text += ' '
+  }
+  return { text, colToOffset }
+}
+
+// Find a file-path token at the clicked cell by scanning the whole line for known-extension
+// matches and picking the one that covers the click position. Spaces and accents inside the
+// path are fine because the regex is anchored on the extension boundary on the right and a
+// path-shaped first char on the left — sentence prefixes like "Pronto. " stop being eligible
+// because "Pronto" doesn't end in a known extension.
+function pathAtCell(term: XTerm, col: number, bufferY: number): string | null {
+  const ln = lineWithOffsets(term, bufferY)
+  if (!ln) return null
+  const offset = ln.colToOffset[col]
+  if (offset < 0) return null
+  // Try paths-with-slash first — they're unambiguous and tolerate spaces inside the filename.
+  // Then fall back to bare single-token paths if the click didn't land on a slashed path.
+  for (const re of [FILE_REF_WITH_SLASH, FILE_REF_BARE]) {
+    re.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(ln.text)) != null) {
+      const start = m.index
+      const end = start + m[0].length
+      if (offset >= start && offset < end) return m[0]
+    }
+  }
+  return null
 }
 
 interface TerminalProps {
@@ -93,7 +154,23 @@ export default function Terminal({
       // In light mode, force a min contrast against the light bg so claude's washed-out spans
       // (inline `code`, dim/secondary text) stay legible. Off in dark mode (1 = no adjustment) so
       // the tuned dark palette renders as-is.
-      minimumContrastRatio: mode === 'light' ? 4.5 : 1
+      minimumContrastRatio: mode === 'light' ? 4.5 : 1,
+      // OSC 8 hyperlink handler. The agent wraps file refs as `\e]8;;decky-file:///abs/path\e\\…`
+      // and emits raw URLs unwrapped; here we route both. `allowNonHttpProtocols` is what lets
+      // xterm forward a non-http scheme (decky-file://) to activate without sanitizing it away.
+      linkHandler: {
+        allowNonHttpProtocols: true,
+        activate: (_event, text) => {
+          if (text.startsWith('decky-file://')) {
+            const path = decodeURIComponent(text.slice('decky-file://'.length))
+            window.dispatchEvent(
+              new CustomEvent('decky:open-path', { detail: { path, cwd, sessionId: id } })
+            )
+            return
+          }
+          window.dispatchEvent(new CustomEvent('decky:web-open', { detail: text }))
+        }
+      }
     })
 
     termRef.current = term
@@ -126,12 +203,27 @@ export default function Terminal({
       const col = Math.floor(((e.clientX - rect.left) / rect.width) * term.cols)
       const row = Math.floor(((e.clientY - rect.top) / rect.height) * term.rows)
       if (col < 0 || col >= term.cols || row < 0 || row >= term.rows) return
-      const url = urlAtCell(term, col, term.buffer.active.viewportY + row)
-      if (!url) return
-      e.preventDefault()
-      e.stopPropagation()
-      e.stopImmediatePropagation()
-      window.dispatchEvent(new CustomEvent('decky:web-open', { detail: url }))
+      const bufferY = term.buffer.active.viewportY + row
+      const url = urlAtCell(term, col, bufferY)
+      if (url) {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        window.dispatchEvent(new CustomEvent('decky:web-open', { detail: url }))
+        return
+      }
+      // Fallback for file paths printed bare in TUI output (Claude/Codex enable mouse-tracking
+      // so OSC 8 linkHandler.activate never fires inside their loop). Cell-walker uses an
+      // extension heuristic — only matches tokens ending in a known extension.
+      const path = pathAtCell(term, col, bufferY)
+      if (path) {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        window.dispatchEvent(
+          new CustomEvent('decky:open-path', { detail: { path, cwd, sessionId: id } })
+        )
+      }
     }
     // Mousedown is what we intercept (mouse-tracking encodes on press), but click on the
     // same gesture would still bubble — and could re-trigger WebLinksAddon's activate.

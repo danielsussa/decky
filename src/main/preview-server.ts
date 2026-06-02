@@ -15,6 +15,15 @@ const previews = new Map<string, PreviewSource>()
 const sessionTitles = new Map<string, string>()
 let server: Server | null = null
 
+// Form prompt flow: the MCP `prompt_form` tool POSTs /form/await with a formId and the
+// HTTP response is held open until the user clicks SEND or CANCEL in the renderer
+// (which POSTs /form/submit or /form/cancel here). The pending map keys are formIds.
+type FormOutcome =
+  | { status: 'submitted'; values: Record<string, string | boolean> }
+  | { status: 'cancelled' }
+  | { status: 'timeout' }
+const pendingForms = new Map<string, { resolve: (r: FormOutcome) => void; timer: NodeJS.Timeout }>()
+
 export function getPreviewSources(): Record<string, PreviewSource> {
   return Object.fromEntries(previews)
 }
@@ -266,6 +275,87 @@ async function handleRequest(
 
   if (req.method === 'GET' && url === '/health') {
     sendJson(res, 200, { ok: true, pid: process.pid })
+    return
+  }
+
+  // Long-poll: MCP `prompt_form` blocks here until the user submits/cancels in the renderer.
+  // Default timeout is 10min — agent prompts should resolve well before that.
+  if (req.method === 'POST' && url === '/form/await') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as { formId?: unknown; timeoutMs?: unknown }
+      if (typeof body.formId !== 'string' || body.formId.length === 0) {
+        sendJson(res, 400, { error: 'formId required' })
+        return
+      }
+      const formId = body.formId
+      const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : 10 * 60 * 1000
+      // Reject duplicate await for the same formId.
+      if (pendingForms.has(formId)) {
+        sendJson(res, 409, { error: 'already awaiting this formId' })
+        return
+      }
+      const outcome = await new Promise<FormOutcome>((resolve) => {
+        const timer = setTimeout(() => {
+          pendingForms.delete(formId)
+          resolve({ status: 'timeout' })
+        }, timeoutMs)
+        pendingForms.set(formId, { resolve, timer })
+      })
+      sendJson(res, 200, outcome)
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
+    return
+  }
+
+  if (req.method === 'POST' && url === '/form/submit') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as { formId?: unknown; values?: unknown }
+      if (typeof body.formId !== 'string') {
+        sendJson(res, 400, { error: 'formId required' })
+        return
+      }
+      const pending = pendingForms.get(body.formId)
+      if (!pending) {
+        sendJson(res, 404, { error: 'no form awaiting this id (timed out or already resolved)' })
+        return
+      }
+      clearTimeout(pending.timer)
+      pendingForms.delete(body.formId)
+      const values =
+        body.values && typeof body.values === 'object'
+          ? (body.values as Record<string, string | boolean>)
+          : {}
+      pending.resolve({ status: 'submitted', values })
+      sendJson(res, 200, { ok: true })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
+    return
+  }
+
+  if (req.method === 'POST' && url === '/form/cancel') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as { formId?: unknown }
+      if (typeof body.formId !== 'string') {
+        sendJson(res, 400, { error: 'formId required' })
+        return
+      }
+      const pending = pendingForms.get(body.formId)
+      if (!pending) {
+        sendJson(res, 200, { ok: true, alreadyResolved: true })
+        return
+      }
+      clearTimeout(pending.timer)
+      pendingForms.delete(body.formId)
+      pending.resolve({ status: 'cancelled' })
+      sendJson(res, 200, { ok: true })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
     return
   }
 

@@ -13,6 +13,7 @@ export type MirrorCardKind =
   | 'me'
   | 'editor'
   | 'xlsx'
+  | 'form'
   | 'none'
 
 export type MirrorCard = {

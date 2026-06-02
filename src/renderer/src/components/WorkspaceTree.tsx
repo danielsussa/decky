@@ -8,6 +8,7 @@ export interface TreeSession {
 }
 
 interface WorkspaceTreeProps {
+  isFocused?: boolean
   workspaces: string[]
   activeWorkspace: string | null
   activeSessionId?: string
@@ -32,6 +33,7 @@ interface WorkspaceTreeProps {
 // The left-panel navigation: a collapsible tree of workspaces, each expanding to its sessions.
 // Selecting a session switches workspace if needed; the terminal renders in TerminalHost below.
 export default function WorkspaceTree({
+  isFocused,
   workspaces,
   activeWorkspace,
   activeSessionId,
@@ -56,7 +58,11 @@ export default function WorkspaceTree({
       ? [...expanded, previewedSession.ws]
       : expanded
   return (
-    <div className="wstree">
+    <div
+      className="wstree panel-focusable"
+      data-panel="tree"
+      data-focused={isFocused}
+    >
       <div className="wstree-title">workspaces</div>
       {workspaces.map((ws) => {
         const isOpen = visualExpanded.includes(ws)
@@ -101,7 +107,10 @@ export default function WorkspaceTree({
               </button>
             </div>
             {isOpen && (
-              <div className="wstree-children">
+              <div
+                className="wstree-children"
+                style={{ ['--ws-tint' as string]: wsAccent }}
+              >
                 {sessions.map((s) => {
                   const isActiveSession = isActiveWs && s.id === activeSessionId
                   const isPreviewedSession =

@@ -1,3 +1,36 @@
+export type FormFieldType =
+  | 'text'
+  | 'textarea'
+  | 'number'
+  | 'email'
+  | 'cep'
+  | 'cpf'
+  | 'cnpj'
+  | 'phone'
+  | 'date'
+  | 'select'
+  | 'checkbox'
+
+export type FormField = {
+  key: string
+  label: string
+  type?: FormFieldType
+  required?: boolean
+  placeholder?: string
+  default?: string | number | boolean
+  options?: { value: string; label: string }[]
+  help?: string
+}
+
+export type FormSpec = {
+  formId: string
+  title?: string
+  description?: string
+  submitLabel?: string
+  fields: FormField[]
+  status?: 'pending' | 'submitted' | 'cancelled'
+}
+
 export type PreviewSource =
   | { type: 'none' }
   | { type: 'me'; url?: string }
@@ -7,6 +40,7 @@ export type PreviewSource =
   | { type: 'diff'; content: string; title?: string; path?: string }
   | { type: 'editor'; content: string; path: string; title?: string }
   | { type: 'xlsx'; path: string; title?: string }
+  | { type: 'form'; spec: FormSpec }
 
 export type PreviewSourceWire =
   | { type: 'none' }
@@ -17,3 +51,4 @@ export type PreviewSourceWire =
   | { type: 'diff'; content?: string; path?: string; title?: string }
   | { type: 'editor'; path: string; title?: string }
   | { type: 'xlsx'; path: string; title?: string }
+  | { type: 'form'; spec: FormSpec }

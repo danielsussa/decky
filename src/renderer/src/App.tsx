@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import ResizableSplit from './components/ResizableSplit'
 import Preview from './components/Preview'
-import DeckGrid from './components/DeckGrid'
+import DeckGrid, { type DeckCard as DeckCardData } from './components/DeckGrid'
 import DeckTabs from './components/DeckTabs'
 import WorkspaceTree, { type TreeSession } from './components/WorkspaceTree'
 import GitStats from './components/GitStats'
@@ -16,6 +16,7 @@ import {
   applyTheme,
   assignNewWorkspaceTheme,
   themeFromAssignments,
+  THEMES,
   type Mode,
   type Theme
 } from '../../shared/themes'
@@ -90,7 +91,9 @@ const DECKY_SESSION_PROMPT = [
   '- BEFORE generating a doc from scratch, check what already exists: Glob `$DECKY_CARDS_DIR/**/*.md` (run `echo "$DECKY_CARDS_DIR"` if you need the literal path), then Read/Grep the relevant ones and build on them instead of duplicating.',
   '- To revise an existing card, reuse the same `card` id (overwrites the file) or just edit the .md directly (the card live-updates via file-watch).',
   '',
-  'PINNED CONTEXT — `$DECKY_CARDS_DIR/PINNED.md` lists cards the user pinned. Pinned cards are shown in EVERY session and are meant as shared, always-relevant context. At the start of a task, read PINNED.md and the files it points to.'
+  'PINNED CONTEXT — `$DECKY_CARDS_DIR/PINNED.md` lists cards the user pinned. Pinned cards are shown in EVERY session and are meant as shared, always-relevant context. At the start of a task, read PINNED.md and the files it points to.',
+  '',
+  'CLICKABLE FILE REFS — Cmd/Ctrl+click on a path printed in the terminal opens it as a decky card (same pipeline as preview_show). The renderer detects path tokens by their FILE EXTENSION, so when you mention files to the user write them with the extension intact (e.g. "validacao/relatorio.xlsx", not "relatorio" alone). Relative paths resolve against the session cwd. For paths emitted via a `Bash` tool you control (printing to stdout from a script), you may additionally wrap them in an OSC 8 hyperlink — `printf \'\\033]8;;decky-file:///abs/path\\033\\\\visible-text\\033]8;;\\033\\\\\\n\'` — to render an underlined affordance; not needed for paths cited in your own response text (Cmd+click handles those). Skip the wrapping for paths cited inside cards (markdown links do that) and for paths already passed to a `preview_*` tool.'
 ].join('\n')
 
 interface WorkspaceState {
@@ -375,6 +378,7 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
     if (source.title) return source.title
     return source.path.split('/').pop() ?? source.path
   }
+  if (source.type === 'form') return source.spec.title ?? 'form'
   return fallback
 }
 
@@ -417,6 +421,10 @@ function serializePreviews(
           path: toWorkspaceRelative(src.path, workspace),
           title: src.title
         }
+      } else if (src.type === 'form') {
+        // Forms are tied to a live MCP await on the agent side. Persisting them across
+        // reloads would leave the user with a SEND button that 404s. Drop to 'none'.
+        out[sid][cid] = { type: 'none' }
       } else {
         out[sid][cid] = src
       }
@@ -489,6 +497,10 @@ function App(): React.JSX.Element {
   // Command palette (Cmd/Ctrl+P) + which system panels are open as center tabs.
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [openPanels, setOpenPanels] = useState<PanelId[]>([])
+  // Which sub-panel (terminal / sessions tree / cards preview) currently holds focus.
+  // Drives a thin accent strip on top so the user knows which area their keys land in.
+  // Tracked via a global focusin + pointerdown listener (see effect below).
+  const [focusedPanel, setFocusedPanel] = useState<'terminal' | 'tree' | 'preview' | null>(null)
   // Dev-only rebuild button (packaged macOS app + ~/.decky/dev.json marker). See dev-rebuild.ts.
   const [devInfo, setDevInfo] = useState<{ enabled: boolean; accel: string }>({
     enabled: false,
@@ -793,6 +805,32 @@ function App(): React.JSX.Element {
       setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
     }
     window.addEventListener('decky:web-open', onWebOpen)
+    // Cmd+click on a file ref in the terminal (or OSC 8 link with decky-file:// scheme) fires
+    // here. POST the appropriate wire source to the preview HTTP server — the SAME path MCP
+    // `preview_show` uses — so main does the normalize (reads md/diff/editor content, stats
+    // xlsx), then re-broadcasts via `preview:source-changed` and the existing handler routes
+    // it to a card. Zero-duplication: the click reuses the entire MCP pipeline.
+    const onOpenPath = (ev: Event): void => {
+      const detail = (ev as CustomEvent<{ path: string; cwd?: string; sessionId: string }>).detail
+      if (!detail?.path || !detail.sessionId) return
+      let abs = detail.path
+      if (!abs.startsWith('/') && detail.cwd) abs = detail.cwd.replace(/\/+$/, '') + '/' + abs
+      const ext = abs.split('.').pop()?.toLowerCase() ?? ''
+      let wire: { type: string; path: string } | null = null
+      if (ext === 'md' || ext === 'markdown') wire = { type: 'markdown', path: abs }
+      else if (ext === 'diff' || ext === 'patch') wire = { type: 'diff', path: abs }
+      else if (ext === 'xlsx') wire = { type: 'xlsx', path: abs }
+      else wire = { type: 'editor', path: abs }
+      void fetch('http://127.0.0.1:6790/preview', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-deck-session-id': detail.sessionId
+        },
+        body: JSON.stringify(wire)
+      }).catch((err) => console.warn('[decky:open-path] preview POST failed', err))
+    }
+    window.addEventListener('decky:open-path', onOpenPath)
     // Main forwards any link / window.open from the renderer here (markdown card links,
     // terminal weblinks, etc.) — re-fire on the same channel a web-card popup uses.
     const unsubOpenUrl = window.deck.app.onOpenUrl((url) => {
@@ -839,6 +877,7 @@ function App(): React.JSX.Element {
       unsubConflict()
       unsubNewSession()
       window.removeEventListener('decky:web-open', onWebOpen)
+      window.removeEventListener('decky:open-path', onOpenPath)
       unsubOpenUrl()
       unsubCloseTab()
       unsubFlush()
@@ -849,6 +888,25 @@ function App(): React.JSX.Element {
   useEffect(() => {
     const iv = setInterval(() => setNow(Date.now()), 600)
     return () => clearInterval(iv)
+  }, [])
+
+  // Track which sub-panel (terminal / tree / preview) the user is currently in. focusin handles
+  // keyboard focus moves; pointerdown (capture) handles clicks that don't shift DOM focus (e.g.
+  // clicking a card body that isn't a focusable element). Walks up to the nearest [data-panel]
+  // ancestor — anything inside the three marked regions counts.
+  useEffect(() => {
+    const update = (e: Event): void => {
+      const t = e.target as Element | null
+      const el = t?.closest?.('[data-panel]') as HTMLElement | null
+      const id = el?.dataset.panel as 'terminal' | 'tree' | 'preview' | undefined
+      if (id) setFocusedPanel(id)
+    }
+    document.addEventListener('focusin', update)
+    document.addEventListener('pointerdown', update, true)
+    return () => {
+      document.removeEventListener('focusin', update)
+      document.removeEventListener('pointerdown', update, true)
+    }
   }, [])
 
   // Pull claude's auto-generated session title (aiTitle in the .jsonl) as the tab name.
@@ -1133,7 +1191,14 @@ function App(): React.JSX.Element {
     if (!themesHydrated) return
     setWorkspaceThemes((prev) => {
       const next: Record<string, string> = {}
-      for (const ws of workspaces) if (prev[ws]) next[ws] = prev[ws]
+      const validIds = new Set(THEMES.map((t) => t.id))
+      // Drop assignments pointing at theme IDs that no longer exist (e.g. after the
+      // 15-theme → 5-theme migration); those workspaces fall back to the missing pool
+      // and get reassigned in alphabetical order via the round-robin assigner below.
+      for (const ws of workspaces) {
+        const id = prev[ws]
+        if (id && validIds.has(id)) next[ws] = id
+      }
       const taken = new Set(Object.values(next))
       const missing = workspaces
         .filter((ws) => !next[ws])
@@ -1545,10 +1610,6 @@ function App(): React.JSX.Element {
       ? [...liveSessions, activeSess]
       : liveSessions
 
-  const cardPreviews: Record<string, PreviewSource> = activeId
-    ? (previewsByCard[activeId] ?? {})
-    : {}
-
   const focusedCardId = activeId ? (focusedCardBySession[activeId] ?? null) : null
 
   const setFocusedCard = (id: string | null): void => {
@@ -1822,37 +1883,53 @@ function App(): React.JSX.Element {
     render: () => renderPanel(pid)
   }))
   const pinnedIds = Object.keys(pinned)
-  const ownIds = (activeId ? (cardsBySession[activeId] ?? []) : []).filter((id) => !pinned[id])
-  const contentCards = [...pinnedIds, ...ownIds].map((id, i) => {
-    const isPinned = !!pinned[id]
-    const source = isPinned ? pinned[id] : (cardPreviews[id] ?? { type: 'none' })
-    // Persist the navigated URL of a web card up to parent state so a remount (session
-    // switch, workspace switch, full reload) restores the typed URL instead of falling
-    // back to the source's initial value (often '' from "nova aba" → about:blank).
-    const onWebUrlChange = (nextUrl: string): void => {
-      if (isPinned) {
-        setPinned((prev) => {
-          const cur = prev[id]
-          if (!cur || cur.type !== 'web' || cur.url === nextUrl) return prev
-          return { ...prev, [id]: { ...cur, url: nextUrl } }
-        })
-      } else if (activeId) {
-        setPreviewsByCard((prev) => {
-          const sess = prev[activeId] ?? {}
-          const cur = sess[id]
-          if (!cur || cur.type !== 'web' || cur.url === nextUrl) return prev
-          return { ...prev, [activeId]: { ...sess, [id]: { ...cur, url: nextUrl } } }
-        })
+  // Build a DeckCard[] for EVERY session in this workspace (not just the active one) so we
+  // can keep all sessions' DeckTabs mounted in parallel — switching sessions then only flips
+  // CSS visibility, leaving <webview>/iframe guests alive instead of tearing them down and
+  // forcing a full reload on return.
+  const buildContentCards = (sessionId: string): DeckCardData[] => {
+    const sessPreviews = previewsByCard[sessionId] ?? {}
+    const own = (cardsBySession[sessionId] ?? []).filter((id) => !pinned[id])
+    return [...pinnedIds, ...own].map((id, i) => {
+      const isPinned = !!pinned[id]
+      const source = isPinned ? pinned[id] : (sessPreviews[id] ?? { type: 'none' })
+      // Persist the navigated URL of a web card up to parent state so a remount (workspace
+      // switch, full reload) restores the typed URL instead of falling back to the source's
+      // initial value (often '' from "nova aba" → about:blank).
+      const onWebUrlChange = (nextUrl: string): void => {
+        if (isPinned) {
+          setPinned((prev) => {
+            const cur = prev[id]
+            if (!cur || cur.type !== 'web' || cur.url === nextUrl) return prev
+            return { ...prev, [id]: { ...cur, url: nextUrl } }
+          })
+        } else {
+          setPreviewsByCard((prev) => {
+            const sess = prev[sessionId] ?? {}
+            const cur = sess[id]
+            if (!cur || cur.type !== 'web' || cur.url === nextUrl) return prev
+            return { ...prev, [sessionId]: { ...sess, [id]: { ...cur, url: nextUrl } } }
+          })
+        }
       }
-    }
-    return {
-      id,
-      title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
-      pinned: isPinned,
-      render: () => <Preview source={source} cardId={id} onWebUrlChange={onWebUrlChange} />
-    }
-  })
-  const deckCards = [...panelCards, ...contentCards]
+      return {
+        id,
+        title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
+        pinned: isPinned,
+        render: () => <Preview source={source} cardId={id} onWebUrlChange={onWebUrlChange} />
+      }
+    })
+  }
+  // Per-session deckCards (system panels are appended only on the active session — they're
+  // global UI, no need to render once per session).
+  const deckCardsBySession: Record<string, DeckCardData[]> = {}
+  for (const s of sessions) {
+    const own = buildContentCards(s.id)
+    deckCardsBySession[s.id] = s.id === activeId ? [...panelCards, ...own] : own
+  }
+  const deckCards: DeckCardData[] = activeId
+    ? (deckCardsBySession[activeId] ?? panelCards)
+    : panelCards
 
   // Workspaces sorted alphabetically by display name — drives BOTH the tree render and
   // the cross-workspace nav order, so Cmd+Arrow walks them in the same order they appear.
@@ -1948,7 +2025,11 @@ function App(): React.JSX.Element {
               minSizes={[20, 10]}
               storageKey="deck-layout-sessions-v0"
             >
-              <div className="panel-body panel-body-flush">
+              <div
+                className="panel-body panel-body-flush panel-focusable"
+                data-panel="terminal"
+                data-focused={focusedPanel === 'terminal'}
+              >
                 <TerminalHost
                   sessions={hostSessions}
                   activeId={activeId}
@@ -1962,6 +2043,7 @@ function App(): React.JSX.Element {
                 />
               </div>
               <WorkspaceTree
+                isFocused={focusedPanel === 'tree'}
                 workspaces={sortedWorkspaces}
                 activeWorkspace={workspace}
                 activeSessionId={activeId}
@@ -2001,16 +2083,37 @@ function App(): React.JSX.Element {
                 </span>
               )}
             </div>
-            <div className="panel-body panel-body-flush">
+            <div
+              className="panel-body panel-body-flush panel-focusable"
+              data-panel="preview"
+              data-focused={focusedPanel === 'preview'}
+            >
               {DECKY_LAYOUT === 'tabs' ? (
-                <DeckTabs
-                  focusedId={focusedCardId}
-                  onFocusChange={setFocusedCard}
-                  onClose={closeCard}
-                  onTogglePin={togglePin}
-                  onReorder={reorderCards}
-                  cards={deckCards}
-                />
+                // One DeckTabs per session of the active workspace, stacked in the same area —
+                // active one is visible, others are visibility:hidden. Keeping inactive panes
+                // mounted preserves <webview>/iframe guests (no full reload on session switch).
+                <div className="session-pane-stack">
+                  {sessions.map((s) => {
+                    const isActive = s.id === activeId
+                    return (
+                      <div
+                        key={s.id}
+                        className={`session-pane ${isActive ? 'session-pane-active' : 'session-pane-inactive'}`}
+                      >
+                        <DeckTabs
+                          focusedId={focusedCardBySession[s.id] ?? null}
+                          onFocusChange={(id) =>
+                            setFocusedCardBySession((prev) => ({ ...prev, [s.id]: id }))
+                          }
+                          onClose={closeCard}
+                          onTogglePin={togglePin}
+                          onReorder={reorderCards}
+                          cards={deckCardsBySession[s.id] ?? []}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
               ) : (
                 <DeckGrid
                   focusedId={focusedCardId}

@@ -149,6 +149,10 @@ export function registerDevRebuildHandlers(getWindow: () => BrowserWindow | null
           await run('mv', [backup, install]).catch(() => {})
           throw err
         }
+        // Drop the backup: same CFBundleIdentifier as the live app, so macOS
+        // treats it as a second install and re-prompts TCC ("decky.app.bak
+        // would like to access data from other apps") on every launch.
+        await run('rm', ['-rf', backup]).catch(() => {})
       }
 
       // Don't auto-relaunch: the user may be busy in another decky session and a rebuild can

@@ -5,6 +5,7 @@ import WebPreview from './WebPreview'
 import DiffPreview from './DiffPreview'
 import EditorPreview from './EditorPreview'
 import XlsxPreview from './XlsxPreview'
+import FormPreview from './FormPreview'
 import type { PreviewSource } from '../../../shared/preview'
 
 interface PreviewProps {
@@ -13,7 +14,11 @@ interface PreviewProps {
   onWebUrlChange?: (url: string) => void
 }
 
-export default function Preview({ source, cardId, onWebUrlChange }: PreviewProps): React.JSX.Element {
+export default function Preview({
+  source,
+  cardId,
+  onWebUrlChange
+}: PreviewProps): React.JSX.Element {
   if (source.type === 'me') return <MePreview url={source.url} />
   if (source.type === 'markdown')
     return <MarkdownPreview content={source.content} cardId={cardId} path={source.path} />
@@ -22,6 +27,7 @@ export default function Preview({ source, cardId, onWebUrlChange }: PreviewProps
   if (source.type === 'diff') return <DiffPreview content={source.content} />
   if (source.type === 'editor') return <EditorPreview content={source.content} path={source.path} />
   if (source.type === 'xlsx') return <XlsxPreview path={source.path} />
+  if (source.type === 'form') return <FormPreview key={source.spec.formId} spec={source.spec} />
 
   return (
     <div className="preview-empty">

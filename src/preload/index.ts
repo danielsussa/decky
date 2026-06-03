@@ -109,7 +109,12 @@ const deckApi = {
     getDefault: (): Promise<CliKind | null> => ipcRenderer.invoke('cli:get-default'),
     setDefault: (kind: CliKind): Promise<true> => ipcRenderer.invoke('cli:set-default', kind),
     isFirstRun: (): Promise<boolean> => ipcRenderer.invoke('cli:is-first-run'),
-    markFirstRunDone: (): Promise<true> => ipcRenderer.invoke('cli:mark-first-run-done')
+    markFirstRunDone: (): Promise<true> => ipcRenderer.invoke('cli:mark-first-run-done'),
+    getPaths: (): Promise<Partial<Record<CliKind, string>>> => ipcRenderer.invoke('cli:get-paths'),
+    setPath: (kind: CliKind, path: string | null): Promise<DetectedCli[]> =>
+      ipcRenderer.invoke('cli:set-path', kind, path),
+    validatePath: (path: string): Promise<{ ok: boolean; error?: string; version?: string }> =>
+      ipcRenderer.invoke('cli:validate-path', path)
   },
   sessions: {
     getTitles: (): Promise<Record<string, string>> => ipcRenderer.invoke('sessions:get-titles'),
@@ -133,6 +138,8 @@ const deckApi = {
   app: {
     getStartupCwd: (): Promise<string> => ipcRenderer.invoke('app:get-startup-cwd'),
     pickFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:pick-folder'),
+    pickFile: (title?: string): Promise<string | null> =>
+      ipcRenderer.invoke('dialog:pick-file', title),
     onMenuNewSession: (callback: () => void): (() => void) => {
       const listener = (): void => callback()
       ipcRenderer.on('menu:new-session', listener)
@@ -142,6 +149,11 @@ const deckApi = {
       const listener = (): void => callback()
       ipcRenderer.on('menu:close-tab', listener)
       return () => ipcRenderer.removeListener('menu:close-tab', listener)
+    },
+    onMenuOpenCliSettings: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('menu:open-cli-settings', listener)
+      return () => ipcRenderer.removeListener('menu:open-cli-settings', listener)
     },
     // Quit-time flush: main sends 'app:flush' and holds the exit until we reply 'app:flush-done'.
     onFlush: (callback: () => void): (() => void) => {

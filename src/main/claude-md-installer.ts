@@ -23,6 +23,17 @@ Este shell pode estar rodando dentro do **decky** (casca Electron com painel de 
 - **Descobrir o que o usuário tem aberto**: se o usuário pedir "atualiza aquele card / arruma o típo daquela lista" e você não tem o id na mão, chame \`list_cards\` — devolve id, type, title, path (quando aplicável), focused e pinned de tudo que está aberto nessa sessão. Pra cards markdown, o \`path\` retornado já é editável com \`Edit\`.
 - **Biblioteca de cards**: os cards que você cria são arquivos \`.md\` reais no \`.decky/cards/\` do projeto (a env var \`$DECKY_CARDS_DIR\` tem o caminho absoluto), compartilhados entre todas as sessions do workspace. Antes de gerar um doc do zero, dê um Glob \`$DECKY_CARDS_DIR/**/*.md\` e reaproveite/edite o existente. \`$DECKY_CARDS_DIR/PINNED.md\` lista os cards fixados (contexto sempre relevante).
 - Se o MCP \`decky\` não estiver disponível (ex.: shell fora do decky, ou decky não iniciado), use \`Read\` normalmente — sem reclamar.
+
+### Prévia antes de enviar mensagem (WhatsApp, email, etc)
+
+Sempre que o usuário pedir para enviar uma mensagem por qualquer canal (WhatsApp, email, SMS, DM — via \`me\`/handoff ou qualquer outro caminho), **NÃO envie direto**. Primeiro renderize um card no decky (painel à direita) com prévia visual da mensagem (destinatário + assunto/contexto + texto), e só envie depois que o usuário apertar SEND. Apertar SEND é o sinal explícito de autorização — evita disparar mensagem com texto errado, destinatário errado, ou quando o usuário mudou de ideia.
+
+- **WhatsApp**: \`preview_markdown\` com header (avatar/inicial + nome + telefone), últimas 3-5 mensagens da conversa como contexto (incoming = bolha cinza à esquerda, outgoing = bolha verde à direita, com timestamps — busque via \`me\`/handoff antes), e a mensagem a enviar como bolha verde no fim com borda tracejada / opacity / label "PRÉVIA".
+- **Email**: \`preview_markdown\` com header (\`De:\`, \`Para:\`, \`Cc:\` se houver, \`Assunto:\`) e corpo formatado como vai sair (HTML/markdown renderizado, não cru); se houver thread, mostre os últimos 2-3 emails acima como contexto.
+- **Outros canais**: adapte o mockup ao canal, mas mantenha destinatário + contexto + texto sempre visíveis.
+- Em seguida, \`prompt_form\` com \`textarea\` pré-preenchido (editável) para o corpo + campo \`text\` mostrando destinatário (e assunto, no email) para revisão. Botão \`submitLabel: "Enviar"\`.
+- Respeite o texto final que voltar nos \`values\` (usuário pode ter editado). Cancelar = não enviar; não reenvie sem nova autorização.
+- Sem histórico disponível (contato/thread novo, erro no handoff): renderize só o header + prévia e mencione no card que é conversa nova.
 `
 
 const BLOCK = `${MARKER_START}\n${BLOCK_BODY}${MARKER_END}\n`

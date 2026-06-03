@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { getCustomPathSync } from './cli-paths'
 
 // Claude Code writes an auto-generated `ai-title` into the session .jsonl. Read the
 // latest one — it's a stable, persisted name for the session (survives restarts).
@@ -35,6 +36,11 @@ let cached: string | null = null
  * Tries `which claude` first; falls back to common install locations; finally returns 'claude' (PATH lookup at spawn time).
  */
 export function resolveClaudeBin(): string {
+  // Don't cache the override path — the user can change it via the settings UI and we
+  // want the next call to see the new value without restarting the app.
+  const override = getCustomPathSync('claude')
+  if (override) return override
+
   if (cached) return cached
 
   try {

@@ -69,6 +69,9 @@ export interface DeckAPI {
     setDefault: (kind: CliKind) => Promise<true>
     isFirstRun: () => Promise<boolean>
     markFirstRunDone: () => Promise<true>
+    getPaths: () => Promise<Partial<Record<CliKind, string>>>
+    setPath: (kind: CliKind, path: string | null) => Promise<DetectedCli[]>
+    validatePath: (path: string) => Promise<{ ok: boolean; error?: string; version?: string }>
   }
   sessions: {
     getTitles: () => Promise<Record<string, string>>
@@ -79,8 +82,10 @@ export interface DeckAPI {
   app: {
     getStartupCwd: () => Promise<string>
     pickFolder: () => Promise<string | null>
+    pickFile: (title?: string) => Promise<string | null>
     onMenuNewSession: (callback: () => void) => () => void
     onMenuCloseTab: (callback: () => void) => () => void
+    onMenuOpenCliSettings: (callback: () => void) => () => void
     onFlush: (callback: () => void) => () => void
     flushDone: () => void
     onOpenUrl: (callback: (url: string) => void) => () => void

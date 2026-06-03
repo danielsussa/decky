@@ -187,6 +187,62 @@ export default function Terminal({
       })
     )
 
+    // Link provider for bare file paths printed in the terminal — xterm handles hover decoration
+    // (underline + pointer cursor) and click activation. The activate callback still only fires
+    // outside TUI mouse-tracking; capture-phase Cmd+click below is the universal fallback.
+    // Skip matches that fall INSIDE a URL (so `https://x.com/foo.html` doesn't double-match).
+    const linkDispose = term.registerLinkProvider({
+      provideLinks: (bufferY, callback) => {
+        const ln = lineWithOffsets(term, bufferY - 1)
+        if (!ln) return callback(undefined)
+        const urlSpans: Array<[number, number]> = []
+        const urlRe = /https?:\/\/\S+/gi
+        let um: RegExpExecArray | null
+        while ((um = urlRe.exec(ln.text)) != null) urlSpans.push([um.index, um.index + um[0].length])
+        const inUrl = (start: number, end: number): boolean =>
+          urlSpans.some(([s, e]) => start < e && end > s)
+        const offsetToCol: number[] = []
+        for (let c = 0; c < ln.colToOffset.length; c++) {
+          const off = ln.colToOffset[c]
+          if (off >= 0 && offsetToCol[off] === undefined) offsetToCol[off] = c
+        }
+        const out: import('@xterm/xterm').ILink[] = []
+        for (const re of [FILE_REF_WITH_SLASH, FILE_REF_BARE]) {
+          re.lastIndex = 0
+          let m: RegExpExecArray | null
+          while ((m = re.exec(ln.text)) != null) {
+            const start = m.index
+            const end = start + m[0].length
+            if (inUrl(start, end)) continue
+            const startCol = offsetToCol[start]
+            // End cell is exclusive — find the col whose offset is the FIRST one >= end.
+            let endCol = ln.colToOffset.length
+            for (let c = startCol + 1; c < ln.colToOffset.length; c++) {
+              const off = ln.colToOffset[c]
+              if (off >= 0 && off >= end) {
+                endCol = c
+                break
+              }
+            }
+            if (startCol == null) continue
+            out.push({
+              range: {
+                start: { x: startCol + 1, y: bufferY },
+                end: { x: endCol, y: bufferY }
+              },
+              text: m[0],
+              activate: (_event, text) => {
+                window.dispatchEvent(
+                  new CustomEvent('decky:open-path', { detail: { path: text, cwd, sessionId: id } })
+                )
+              }
+            })
+          }
+        }
+        callback(out.length > 0 ? out : undefined)
+      }
+    })
+
     term.open(host)
 
     // When Claude/Codex have mouse tracking on, every click is encoded as CSI and shipped
@@ -332,6 +388,7 @@ export default function Terminal({
       ro.disconnect()
       host.removeEventListener('mousedown', onMouseDownCapture, true)
       host.removeEventListener('click', onClickCapture, true)
+      linkDispose.dispose()
       unsubData?.()
       unsubExit?.()
       window.deck.pty.kill(id)

@@ -6,41 +6,22 @@ interface MePreviewProps {
   url?: string
 }
 
-function tabFromUrl(url?: string): string | null {
-  if (!url) return null
-  const m = url.match(/\/tab\/([^/?#]+)/)
-  return m ? decodeURIComponent(m[1]) : null
-}
-
 export default function MePreview({ url }: MePreviewProps): React.JSX.Element {
-  const [tabs, setTabs] = useState<string[]>([])
-  const [selected, setSelected] = useState<string | null>(() => tabFromUrl(url))
   const [daemonUp, setDaemonUp] = useState<boolean | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
-    const t = tabFromUrl(url)
-    if (t) setSelected(t)
-  }, [url])
-
-  useEffect(() => {
     let active = true
-    const fetchTabs = async (): Promise<void> => {
+    const ping = async (): Promise<void> => {
       try {
-        const res = await fetch(`${BASE}/api/tabs`)
-        const list = (await res.json()) as unknown
-        if (!active) return
-        setDaemonUp(true)
-        if (Array.isArray(list)) {
-          setTabs(list as string[])
-          setSelected((cur) => cur ?? (list as string[])[0] ?? null)
-        }
+        await fetch(`${BASE}/api/tabs`)
+        if (active) setDaemonUp(true)
       } catch {
         if (active) setDaemonUp(false)
       }
     }
-    void fetchTabs()
-    const iv = setInterval(fetchTabs, 3000)
+    void ping()
+    const iv = setInterval(ping, 3000)
     return () => {
       active = false
       clearInterval(iv)
@@ -63,25 +44,9 @@ export default function MePreview({ url }: MePreviewProps): React.JSX.Element {
     )
   }
 
-  const iframeSrc = selected ? `${BASE}/tab/${encodeURIComponent(selected)}` : (url ?? BASE)
-
   return (
     <div className="me-preview">
-      <div className="me-preview-bar">
-        <select
-          className="me-tab-select"
-          value={selected ?? ''}
-          onChange={(e) => setSelected(e.target.value)}
-        >
-          {tabs.length === 0 && <option value="">(sem abas)</option>}
-          {tabs.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </div>
-      <iframe className="liveview-frame" src={iframeSrc} title="me live view" />
+      <iframe className="liveview-frame" src={url ?? BASE} title="me live view" />
     </div>
   )
 }

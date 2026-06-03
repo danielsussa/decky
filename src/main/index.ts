@@ -20,11 +20,13 @@ import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from './mcp-installer'
 import { ensureDeckInstruction } from './claude-md-installer'
 import { resolveClaudeBin, readAiTitle } from './claude-bin'
+import { initCliPaths } from './cli-paths'
 import { registerStateHandlers } from './state-store'
 import { registerCliHandlers } from './cli-handlers'
 import { registerDevRebuildHandlers } from './dev-rebuild'
 import { registerGitHandlers } from './git-stats'
 import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
+import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
 
 // Privileged scheme registration must happen before app is ready.
 registerAssetScheme()
@@ -64,6 +66,11 @@ function routeFolderToWindow(dir: string | null): void {
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
+  // Another instance already holds the lock — the running one will get our argv via
+  // 'second-instance' and route the folder into its window, so we exit. Log it: this is the
+  // ONE startup path that quits before any other output, so a silent exit here is what makes
+  // a stale/zombie holder look like "decky opens and does nothing". Never let it be silent.
+  console.error('[decky] another instance already holds the single-instance lock — exiting.')
   app.quit()
 } else {
   app.on('second-instance', (_event, argv, workingDirectory) => {
@@ -142,6 +149,9 @@ app.whenReady().then(async () => {
   // Migrate pre-rename data (~/.deck → ~/.decky) BEFORE the renderer reads any state.
   await migrateGlobalState()
 
+  // Hydrate custom CLI paths before any cli:list call can race the renderer mount.
+  await initCliPaths()
+
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
@@ -167,12 +177,26 @@ app.whenReady().then(async () => {
   registerDevRebuildHandlers(() => mainWindow)
   registerGitHandlers()
   setupAssetProtocol()
+  setupWebSession(() => mainWindow)
+  attachWebContentsPopupRouter(() => mainWindow)
   startPreviewServer(() => mainWindow)
 
   ipcMain.handle('dialog:pick-folder', async () => {
     const opts: Electron.OpenDialogOptions = {
       properties: ['openDirectory', 'createDirectory'],
       title: 'Adicionar pasta de trabalho'
+    }
+    const res = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, opts)
+      : await dialog.showOpenDialog(opts)
+    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
+  })
+
+  ipcMain.handle('dialog:pick-file', async (_e, title?: string) => {
+    const opts: Electron.OpenDialogOptions = {
+      // showHiddenFiles so users can navigate into ~/.local/bin etc.
+      properties: ['openFile', 'showHiddenFiles', 'treatPackageAsDirectory'],
+      title: title ?? 'Escolher executável'
     }
     const res = mainWindow
       ? await dialog.showOpenDialog(mainWindow, opts)

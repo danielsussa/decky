@@ -440,6 +440,8 @@ function App(): React.JSX.Element {
   const [defaultCli, setDefaultCli] = useState<CliKind | null>(null)
   // Whether to show the first-run banner asking the user to pick a default CLI.
   const [firstRunPending, setFirstRunPending] = useState(false)
+  // User-triggered (re)open of the CLI picker after first-run, e.g. from the menu.
+  const [cliSettingsOpen, setCliSettingsOpen] = useState(false)
   const [startupCwd, setStartupCwd] = useState<string | null>(null)
   const [workspace, setWorkspace] = useState<string | null>(null)
   // Registry of folders opened as workspaces (global, ~/.decky/state.json) — drives the switcher.
@@ -806,26 +808,50 @@ function App(): React.JSX.Element {
     }
     window.addEventListener('decky:web-open', onWebOpen)
     // Cmd+click on a file ref in the terminal (or OSC 8 link with decky-file:// scheme) fires
-    // here. POST the appropriate wire source to the preview HTTP server — the SAME path MCP
-    // `preview_show` uses — so main does the normalize (reads md/diff/editor content, stats
-    // xlsx), then re-broadcasts via `preview:source-changed` and the existing handler routes
-    // it to a card. Zero-duplication: the click reuses the entire MCP pipeline.
+    // here. Routing is "open in new tab unless already open": if any card (own or pinned)
+    // already shows this path, focus it; otherwise POST a wire source with a fresh card id so
+    // a NEW tab is created (without it, the preview-server's broadcast handler would route to
+    // whichever card is focused and overwrite it — fine for `preview_show`, bad for a click).
     const onOpenPath = (ev: Event): void => {
       const detail = (ev as CustomEvent<{ path: string; cwd?: string; sessionId: string }>).detail
       if (!detail?.path || !detail.sessionId) return
       let abs = detail.path
       if (!abs.startsWith('/') && detail.cwd) abs = detail.cwd.replace(/\/+$/, '') + '/' + abs
+      const state = stateRef.current
+      const sessionCards = state.previewsByCard[detail.sessionId] ?? {}
+      const existing = state.cardsBySession[detail.sessionId] ?? []
+      let match: string | undefined
+      for (const id of existing) {
+        if (sourcePath(sessionCards[id]) === abs) {
+          match = id
+          break
+        }
+      }
+      if (!match) {
+        for (const [id, p] of Object.entries(state.pinned)) {
+          if (sourcePath(p) === abs) {
+            match = id
+            break
+          }
+        }
+      }
+      if (match) {
+        setFocusedCardBySession((p) => ({ ...p, [detail.sessionId]: match! }))
+        return
+      }
       const ext = abs.split('.').pop()?.toLowerCase() ?? ''
-      let wire: { type: string; path: string } | null = null
+      let wire: { type: string; path: string }
       if (ext === 'md' || ext === 'markdown') wire = { type: 'markdown', path: abs }
       else if (ext === 'diff' || ext === 'patch') wire = { type: 'diff', path: abs }
       else if (ext === 'xlsx') wire = { type: 'xlsx', path: abs }
       else wire = { type: 'editor', path: abs }
+      const newCardId = `file-${Date.now().toString(36)}`
       void fetch('http://127.0.0.1:6790/preview', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-deck-session-id': detail.sessionId
+          'x-deck-session-id': detail.sessionId,
+          'x-deck-card-id': newCardId
         },
         body: JSON.stringify(wire)
       }).catch((err) => console.warn('[decky:open-path] preview POST failed', err))
@@ -845,6 +871,11 @@ function App(): React.JSX.Element {
       const replacement = next[idx] ?? next[idx - 1] ?? next[0]
       setSessions(next)
       setActiveId(replacement?.id)
+    })
+    const unsubCliSettings = window.deck.app.onMenuOpenCliSettings(() => {
+      // Make sure the latest detection is in the modal even if PATH changed since boot.
+      void window.deck.cli.recheck().then(setDetectedClis)
+      setCliSettingsOpen(true)
     })
     // The debounced save (400ms) loses the tail on quit — a session created moments before
     // closing never reaches disk. On quit, main blocks the actual exit until we flush the
@@ -880,6 +911,7 @@ function App(): React.JSX.Element {
       window.removeEventListener('decky:open-path', onOpenPath)
       unsubOpenUrl()
       unsubCloseTab()
+      unsubCliSettings()
       unsubFlush()
     }
   }, [])
@@ -1985,11 +2017,13 @@ function App(): React.JSX.Element {
     await window.deck.cli.markFirstRunDone()
     setDefaultCli(kind)
     setFirstRunPending(false)
+    setCliSettingsOpen(false)
   }
 
   const handleCliSkip = async (): Promise<void> => {
     await window.deck.cli.markFirstRunDone()
     setFirstRunPending(false)
+    setCliSettingsOpen(false)
   }
 
   const handleCliRecheck = async (): Promise<DetectedCli[]> => {
@@ -2000,13 +2034,15 @@ function App(): React.JSX.Element {
 
   return (
     <div className="deck">
-      {firstRunPending && detectedClis !== null && (
+      {(firstRunPending || cliSettingsOpen) && detectedClis !== null && (
         <FirstRunModal
           detectedClis={detectedClis}
           currentDefault={defaultCli}
           onSave={handleCliSave}
           onSkip={handleCliSkip}
           onRecheck={handleCliRecheck}
+          showSkip={!firstRunPending}
+          heading={cliSettingsOpen && !firstRunPending ? 'CLIs de IA' : undefined}
         />
       )}
       <main className="deck-main">

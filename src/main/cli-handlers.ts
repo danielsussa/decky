@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import { getState, setState } from './state-store'
 import { detectAvailableClis, invalidateCliCache } from './cli-detector'
+import { getAllCustomPaths, setCustomPath, validatePath, type PathValidation } from './cli-paths'
 import {
   CLI_SPECS,
   CLI_KINDS,
@@ -51,4 +52,18 @@ export function registerCliHandlers(): void {
     await setState('firstRunDone', true)
     return true
   })
+
+  ipcMain.handle('cli:get-paths', (): Partial<Record<CliKind, string>> => getAllCustomPaths())
+
+  ipcMain.handle(
+    'cli:set-path',
+    async (_e, kind: CliKind, path: string | null): Promise<DetectedCli[]> => {
+      if (!isCliKind(kind)) throw new Error(`unknown cli kind: ${String(kind)}`)
+      await setCustomPath(kind, path)
+      invalidateCliCache()
+      return detectAvailableClis()
+    }
+  )
+
+  ipcMain.handle('cli:validate-path', (_e, path: string): PathValidation => validatePath(path))
 }

@@ -436,6 +436,14 @@ export function startPreviewServer(getWindow: () => BrowserWindow | null): void 
     console.log(`[preview-server] listening on http://${HOST}:${PORT}`)
   })
   server.on('error', (err) => {
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      // A previous decky that didn't shut down cleanly can leave the port held. Surface it
+      // loudly instead of dying mid-boot — the rest of the app still works without preview.
+      console.error(
+        `[preview-server] port ${PORT} already in use — a stale decky/preview-server is likely still holding it. Preview cards won't work until it's freed; the rest of decky keeps running.`
+      )
+      return
+    }
     console.error('[preview-server] server error:', err)
   })
 }

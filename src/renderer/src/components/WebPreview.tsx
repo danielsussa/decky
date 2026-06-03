@@ -1,5 +1,5 @@
 import { createElement, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, RotateCw, ExternalLink } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, ShieldAlert } from 'lucide-react'
 
 // Electron <webview> isn't in React's JSX types; we render it via createElement
 // and access the methods we use through this minimal interface.
@@ -16,30 +16,21 @@ interface WebviewEl extends HTMLElement {
   executeJavaScript(code: string): Promise<unknown>
 }
 
-// Injected into every guest page on dom-ready. Without allowpopups, target=_blank and
-// window.open silently do nothing — so we override window.open AND intercept clicks that
-// would open a new tab (target=_blank or cmd/ctrl/middle-click), and push the URL back up
-// through console.log with a known sentinel. The host listens via 'console-message' and
-// dispatches a 'decky:web-open' DOM event that App.tsx turns into a new decky web card.
-// console.log is the channel because guest→host IPC needs nodeIntegration or a webview
-// preload script, both of which are heavier than this and have security trade-offs.
+// window.open + target="_blank" are handled natively in main (web-session.ts attaches a
+// setWindowOpenHandler on every webview guest). This injection only covers the Chrome-y
+// keyboard-modifier convenience: cmd/ctrl-click and middle-click on a plain link open a
+// "new tab" — which in decky's world means a new web card. Without intercepting these,
+// Electron just follows the link in the current view (no modifier-aware default).
 const POPUP_CAPTURE = `
 (() => {
   const TOKEN = '__DECKY_POPUP__:';
-  const orig = window.open;
-  window.open = function(u, t) {
-    if (t === '_self' && typeof orig === 'function') return orig.call(window, u, t);
-    if (u) console.log(TOKEN + String(u));
-    return null;
-  };
   const onClick = (e) => {
     if (e.defaultPrevented) return;
+    const newTab = e.metaKey || e.ctrlKey || e.button === 1;
+    if (!newTab) return;
     const t = e.target;
     const a = t && t.closest ? t.closest('a[href]') : null;
     if (!a) return;
-    const target = a.getAttribute('target');
-    const newTab = target === '_blank' || e.metaKey || e.ctrlKey || e.button === 1;
-    if (!newTab) return;
     e.preventDefault();
     e.stopPropagation();
     console.log(TOKEN + a.href);
@@ -55,6 +46,25 @@ interface WebPreviewProps {
   // bar, clicked link, history nav). The parent persists it on the card's source so a
   // remount — session switch, workspace switch, full reload — restores where we were.
   onUrlChange?: (url: string) => void
+}
+
+// Google's account login refuses embedded webviews by policy (their "disallowed_useragent" /
+// "this browser may not be secure" page) — no amount of UA / Sec-CH-UA / userAgentData spoof
+// gets past the embedded-topology fingerprint they detect server-side. When the current page
+// is on a Google identity host, surface a banner offering to delegate to the real Chrome.
+function isGoogleAuthUrl(url: string): boolean {
+  if (!url) return false
+  try {
+    const u = new URL(url)
+    return (
+      u.hostname === 'accounts.google.com' ||
+      u.hostname === 'accounts.youtube.com' ||
+      // OAuth consent often lands on myaccount.google.com after the signin step.
+      (u.hostname.endsWith('.google.com') && /\/(signin|oauth|o\/oauth2)/.test(u.pathname))
+    )
+  } catch {
+    return false
+  }
 }
 
 function normalizeUrl(raw: string): string {
@@ -188,6 +198,8 @@ export default function WebPreview({ url, onUrlChange }: WebPreviewProps): React
     void ref.current?.loadURL(next).catch(() => {})
   }
 
+  const googleAuthBlocked = isGoogleAuthUrl(current)
+
   return (
     <div className="web-preview">
       <div className="web-bar">
@@ -237,13 +249,37 @@ export default function WebPreview({ url, onUrlChange }: WebPreviewProps): React
           <ExternalLink size={14} />
         </button>
       </div>
+      {googleAuthBlocked && (
+        <div className="web-auth-banner">
+          <ShieldAlert size={14} />
+          <span>
+            O Google bloqueia login dentro de apps embedded. Faça o login no Chrome — o cookie do
+            serviço (Gmail, Drive, etc.) volta a funcionar aqui depois.
+          </span>
+          <button
+            type="button"
+            className="web-auth-btn"
+            onClick={() => void window.deck.app.openExternal(current)}
+          >
+            Abrir no Chrome
+          </button>
+        </div>
+      )}
       {createElement('webview', {
         ref: ref as never,
         // Always start blank — the did-attach listener loads the real URL once the webview
         // is actually ready. Setting src to the real URL on initial render races with the
         // partition setup and tends to leave the page blank (the "nova aba" bug).
         src: 'about:blank',
-        partition: 'persist:deckweb'
+        partition: 'persist:deckweb',
+        // allowpopups lets window.open spawn real windows (instead of returning null); the
+        // setWindowOpenHandler in main routes them — popup-windows become a BrowserWindow on
+        // the same partition, tab-style opens become a new web card. Needed for OAuth flows,
+        // 3-D Secure popups, and captcha challenges that depend on window.opener.
+        allowpopups: 'true',
+        // Removes the AutomationControlled blink feature → navigator.webdriver is false and
+        // a handful of fingerprinting signals look like a regular Chrome (not a driven one).
+        disableblinkfeatures: 'AutomationControlled'
       })}
     </div>
   )

@@ -84,6 +84,16 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
     },
 
     {
+      label: 'Settings',
+      submenu: [
+        {
+          label: 'CLIs de IA…',
+          click: () => sendToRenderer('menu:open-cli-settings')
+        }
+      ]
+    },
+
+    {
       label: 'View',
       submenu: [
         { role: 'reload' },

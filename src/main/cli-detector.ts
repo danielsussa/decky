@@ -8,6 +8,7 @@ import {
   type CliSpec,
   type DetectedCli
 } from '../shared/cli-spec'
+import { getCustomPathSync } from './cli-paths'
 
 export type { DetectedCli }
 
@@ -15,6 +16,11 @@ let cache: DetectedCli[] | null = null
 
 /** Resolve a single CLI's absolute path, or null if not installed. */
 function resolveBin(spec: CliSpec): string | null {
+  // User override (env var or persisted setting) wins over auto-detection so wrapper
+  // scripts and custom installs work without changing PATH.
+  const override = getCustomPathSync(spec.kind)
+  if (override) return override
+
   try {
     // Login shell picks up user-installed locations (oh-my-zsh, asdf, mise, etc.).
     const out = execSync(`zsh -lc "which ${spec.bin}"`, {

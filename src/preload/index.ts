@@ -194,6 +194,38 @@ const deckApi = {
       ipcRenderer.on('notify:focus-session', listener)
       return () => ipcRenderer.removeListener('notify:focus-session', listener)
     }
+  },
+  widget: {
+    // Main forwards every widget:call here. The renderer dispatches into the widget registry
+    // and acks via reply(reqId, ...). One-shot per reqId — there is no streaming.
+    onCall: (
+      callback: (msg: {
+        reqId: string
+        kind: 'invoke' | 'get' | 'list'
+        cardId?: string
+        widgetId?: string
+        op?: string
+        args?: unknown
+        key?: string
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _: unknown,
+        msg: {
+          reqId: string
+          kind: 'invoke' | 'get' | 'list'
+          cardId?: string
+          widgetId?: string
+          op?: string
+          args?: unknown
+          key?: string
+        }
+      ): void => callback(msg)
+      ipcRenderer.on('widget:call', listener)
+      return () => ipcRenderer.removeListener('widget:call', listener)
+    },
+    reply: (payload: { reqId: string; result?: unknown; error?: string }): void =>
+      ipcRenderer.send('widget:call-reply', payload)
   }
 }
 

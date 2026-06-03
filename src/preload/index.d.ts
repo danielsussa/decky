@@ -105,6 +105,20 @@ export interface DeckAPI {
     show: (payload: { id: string; title: string; body?: string }) => Promise<void>
     onFocusSession: (callback: (msg: { id: string }) => void) => () => void
   }
+  widget: {
+    onCall: (
+      callback: (msg: {
+        reqId: string
+        kind: 'invoke' | 'get' | 'list'
+        cardId?: string
+        widgetId?: string
+        op?: string
+        args?: unknown
+        key?: string
+      }) => void
+    ) => () => void
+    reply: (payload: { reqId: string; result?: unknown; error?: string }) => void
+  }
 }
 
 declare global {

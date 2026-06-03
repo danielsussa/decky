@@ -24,6 +24,32 @@ Este shell pode estar rodando dentro do **decky** (casca Electron com painel de 
 - **Biblioteca de cards**: os cards que você cria são arquivos \`.md\` reais no \`.decky/cards/\` do projeto (a env var \`$DECKY_CARDS_DIR\` tem o caminho absoluto), compartilhados entre todas as sessions do workspace. Antes de gerar um doc do zero, dê um Glob \`$DECKY_CARDS_DIR/**/*.md\` e reaproveite/edite o existente. \`$DECKY_CARDS_DIR/PINNED.md\` lista os cards fixados (contexto sempre relevante).
 - Se o MCP \`decky\` não estiver disponível (ex.: shell fora do decky, ou decky não iniciado), use \`Read\` normalmente — sem reclamar.
 
+### Widgets em cards (I/O imperativo)
+
+Alguns cards têm **widgets vivos** — elementos interativos com estado React próprio (flow diagram, checklist, e o que mais for adicionado). Pra mutar widget, use \`card_invoke\` / \`card_get\` em vez de editar o \`.md\` — o widget continua *mounted*, animações fluem, sem reparse do markdown.
+
+**Descobrir o catálogo**: chame \`list_widgets()\` — retorna \`{ types, active }\`.
+- \`types\` é o catálogo: cada tipo de widget se auto-documenta com \`fence\` (sintaxe da fence no markdown), \`specSchema\` (formato do JSON), \`ops\` (mutações disponíveis com schema dos args) e \`getters\` (leitura de estado).
+- \`active\` lista os widgets já montados nos cards abertos: \`{cardId, widgetId, type}\`.
+
+**Sempre chame \`list_widgets\` antes de adivinhar ops ou montar fence** — o catálogo é a verdade. O bloco aqui no CLAUDE.md não cita widget específico de propósito, pra não envelhecer.
+
+**Criar widget num card**: dentro do \`.md\`, uma fence com o \`type\` (achado no catálogo) + JSON contendo um \`id\`. Ex genérico:
+
+\`\`\`<type>
+{ "id": "meu-widget", ... }
+\`\`\`
+
+O \`id\` é como você endereça via \`card_invoke(cardId, widgetId, op, args)\` — \`cardId\` é o id do card (.md), \`widgetId\` é o \`id\` no JSON. Sem \`id\` no JSON o widget não se registra e \`card_invoke\` falha com "widget not found".
+
+**Quando usar cada interface**:
+
+- **Editar \`.md\`** (via \`Edit\` tool) — texto estático, headings, parágrafos, OU criar widget novo / mudar shape inicial do widget. O renderer anima fade-in só nos blocos top-level que mudaram (não reparseia o resto).
+- **\`card_invoke\`** — mutar estado de widget JÁ montado. Estado é **ephemeral** — sobrevive até o card recarregar; pra persistir, edite o .md depois.
+- **\`card_get\`** — ler estado VIVO (ex: posições atuais dos nós depois do usuário arrastar; items checked depois de clique no checkbox).
+
+**Anti-padrão**: editar o \`.md\` pra mutar algo que é estado de widget (toggle checkbox, ativar nó). Funciona mas é coarse, perde a animação, e o usuário enxerga "arquivo mudou" em vez de "item foi tocado". Use \`card_invoke\` com a op apropriada (consulte \`list_widgets\`).
+
 ### Prévia antes de enviar mensagem (WhatsApp, email, etc)
 
 Sempre que o usuário pedir para enviar uma mensagem por qualquer canal (WhatsApp, email, SMS, DM — via \`me\`/handoff ou qualquer outro caminho), **NÃO envie direto**. Primeiro renderize um card no decky (painel à direita) com prévia visual da mensagem (destinatário + assunto/contexto + texto), e só envie depois que o usuário apertar SEND. Apertar SEND é o sinal explícito de autorização — evita disparar mensagem com texto errado, destinatário errado, ou quando o usuário mudou de ideia.

@@ -33,22 +33,30 @@ export default function MermaidBlock({ code }: MermaidBlockProps): React.JSX.Ele
     ensureInit()
     let cancelled = false
     const id = `m${reactId}`
-    mermaid
-      .render(id, code)
-      .then(({ svg }) => {
-        if (!cancelled) {
-          setSvg(svg)
-          setError(null)
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err))
-          setSvg(null)
-        }
-      })
+    // MarkdownPreview animates content reveal frame-by-frame, which would otherwise call
+    // mermaid.render() on dozens of incomplete prefixes per edit — each failing parse flips
+    // the SVG to an error and back, producing flicker. Debounce so we only render after the
+    // code prop stabilizes. Keeps the previously-rendered SVG visible during the window.
+    const timer = setTimeout(() => {
+      if (cancelled) return
+      mermaid
+        .render(id, code)
+        .then(({ svg }) => {
+          if (!cancelled) {
+            setSvg(svg)
+            setError(null)
+          }
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setError(err instanceof Error ? err.message : String(err))
+            setSvg(null)
+          }
+        })
+    }, 80)
     return () => {
       cancelled = true
+      clearTimeout(timer)
     }
   }, [code, reactId])
 

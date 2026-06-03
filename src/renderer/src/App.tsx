@@ -11,6 +11,12 @@ import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
 import FirstRunModal from './components/FirstRunModal'
 import type { PreviewSource } from '../../shared/preview'
+import {
+  invokeWidget,
+  getWidget,
+  listWidgetTypes,
+  listActiveWidgets
+} from './lib/widget-registry'
 import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '../../shared/cli-spec'
 import {
   applyTheme,
@@ -503,7 +509,8 @@ function App(): React.JSX.Element {
   // Drives a thin accent strip on top so the user knows which area their keys land in.
   // Tracked via a global focusin + pointerdown listener (see effect below).
   const [focusedPanel, setFocusedPanel] = useState<'terminal' | 'tree' | 'preview' | null>(null)
-  // Dev-only rebuild button (packaged macOS app + ~/.decky/dev.json marker). See dev-rebuild.ts.
+  // Dev-only rebuild (packaged macOS app + ~/.decky/dev.json marker). Triggered from the
+  // command palette (Cmd/Ctrl+P) or the dev keyboard accel. See dev-rebuild.ts.
   const [devInfo, setDevInfo] = useState<{ enabled: boolean; accel: string }>({
     enabled: false,
     accel: ''
@@ -1530,6 +1537,36 @@ function App(): React.JSX.Element {
     })
   }, [])
 
+  // Dispatch widget RPC calls from main into the renderer-side widget registry. The bridge
+  // in main parks an HTTP response until reply() comes back — so the registry can throw,
+  // return a value, or resolve a Promise and we just forward the outcome.
+  useEffect(() => {
+    return window.deck.widget.onCall(async (msg) => {
+      try {
+        let result: unknown
+        if (msg.kind === 'invoke') {
+          result = await invokeWidget(
+            msg.cardId ?? '',
+            msg.widgetId ?? '',
+            msg.op ?? '',
+            msg.args
+          )
+        } else if (msg.kind === 'get') {
+          result = getWidget(msg.cardId ?? '', msg.widgetId ?? '', msg.key ?? '')
+        } else {
+          // list — catalog of registered widget types + currently-mounted instances
+          result = { types: listWidgetTypes(), active: listActiveWidgets() }
+        }
+        window.deck.widget.reply({ reqId: msg.reqId, result })
+      } catch (err) {
+        window.deck.widget.reply({
+          reqId: msg.reqId,
+          error: err instanceof Error ? err.message : String(err)
+        })
+      }
+    })
+  }, [])
+
   // Write a manifest of pinned cards so any session's bot can read it as shared context.
   useEffect(() => {
     if (!wsLoaded || !workspace) return
@@ -2009,7 +2046,24 @@ function App(): React.JSX.Element {
       label: p.paletteLabel,
       hint: 'painel',
       run: () => openPanel(p.id)
-    }))
+    })),
+    ...(devInfo.enabled
+      ? [
+          {
+            id: 'dev:rebuild',
+            label:
+              rebuildState === 'ready'
+                ? '↻ Relaunch (build pronto)'
+                : rebuildState === 'running'
+                  ? 'Rebuilding…'
+                  : rebuildState === 'error'
+                    ? 'Rebuild & relaunch (tentar de novo)'
+                    : 'Rebuild & relaunch',
+            hint: `dev · ${accelLabel(devInfo.accel)}`,
+            run: () => void doRebuild()
+          }
+        ]
+      : [])
   ]
 
   const handleCliSave = async (kind: CliKind): Promise<void> => {
@@ -2165,29 +2219,31 @@ function App(): React.JSX.Element {
       {paletteOpen && (
         <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
       )}
-      {devInfo.enabled && (
-        <div className="dev-rebuild">
-          {(rebuildState === 'running' || rebuildState === 'error') && rebuildLog && (
-            <pre className="dev-rebuild-log">{rebuildLog}</pre>
-          )}
-          <button
-            className={`dev-rebuild-btn dev-rebuild-${rebuildState}`}
-            onClick={() => void doRebuild()}
-            disabled={rebuildState === 'running'}
-            title={
-              rebuildState === 'ready'
-                ? `Restart into new build (${accelLabel(devInfo.accel)})`
-                : `Rebuild & relaunch (${accelLabel(devInfo.accel)})`
-            }
-          >
+      {devInfo.enabled && rebuildState !== 'idle' && (
+        <div
+          className={`dev-rebuild-status dev-rebuild-${rebuildState}`}
+          onClick={() => {
+            if (rebuildState === 'ready' || rebuildState === 'error') void doRebuild()
+          }}
+          role={rebuildState === 'ready' || rebuildState === 'error' ? 'button' : undefined}
+          title={
+            rebuildState === 'ready'
+              ? 'Clique pra relaunch'
+              : rebuildState === 'error'
+                ? 'Clique pra tentar de novo'
+                : undefined
+          }
+        >
+          <span>
             {rebuildState === 'running'
               ? 'Rebuilding…'
               : rebuildState === 'ready'
-                ? '↻ Restart'
-                : rebuildState === 'error'
-                  ? 'Rebuild failed — retry'
-                  : `⟳ Rebuild`}
-          </button>
+                ? '↻ Build pronto — clique pra relaunch'
+                : 'Rebuild falhou — clique pra tentar de novo'}
+          </span>
+          {(rebuildState === 'running' || rebuildState === 'error') && rebuildLog && (
+            <pre className="dev-rebuild-log">{rebuildLog}</pre>
+          )}
         </div>
       )}
     </div>

@@ -6,6 +6,7 @@ import { BrowserWindow } from 'electron'
 import type { PreviewSource, PreviewSourceWire } from '../shared/preview'
 import { isGeneratedCardPath } from './paths'
 import { getCardsForSession, getAllCards, registerPreviewResolution } from './card-mirror'
+import { awaitWidgetCall } from './widget-bridge'
 
 const PORT = Number(process.env.DECKY_PREVIEW_PORT) || 6790
 const HOST = '127.0.0.1'
@@ -353,6 +354,67 @@ async function handleRequest(
       pendingForms.delete(body.formId)
       pending.resolve({ status: 'cancelled' })
       sendJson(res, 200, { ok: true })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
+    return
+  }
+
+  // GET /widgets/list — catalog of registered widget types + currently-mounted instances.
+  // Used by MCP `list_widgets` so the AI can discover available widgets without hardcoded docs.
+  if (req.method === 'GET' && url === '/widgets/list') {
+    const outcome = await awaitWidgetCall(getWindow, { kind: 'list' })
+    if (outcome.error) {
+      sendJson(res, 502, { error: outcome.error })
+      return
+    }
+    sendJson(res, 200, { result: outcome.result })
+    return
+  }
+
+  // Widget RPC — `card_invoke` / `card_get` from MCP land here. We forward to the renderer
+  // via IPC (widget:call) and park a resolver until widget:call-reply comes back. The renderer
+  // dispatches into the live widget registry (see lib/widget-registry.ts).
+  if (req.method === 'POST' && (url === '/widget/invoke' || url === '/widget/get')) {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as {
+        cardId?: unknown
+        widgetId?: unknown
+        op?: unknown
+        args?: unknown
+        key?: unknown
+      }
+      if (typeof body.cardId !== 'string' || !body.cardId) {
+        sendJson(res, 400, { error: 'cardId required' })
+        return
+      }
+      if (typeof body.widgetId !== 'string' || !body.widgetId) {
+        sendJson(res, 400, { error: 'widgetId required' })
+        return
+      }
+      const isInvoke = url === '/widget/invoke'
+      if (isInvoke && typeof body.op !== 'string') {
+        sendJson(res, 400, { error: 'op required for /widget/invoke' })
+        return
+      }
+      if (!isInvoke && typeof body.key !== 'string') {
+        sendJson(res, 400, { error: 'key required for /widget/get' })
+        return
+      }
+      const outcome = await awaitWidgetCall(getWindow, {
+        kind: isInvoke ? 'invoke' : 'get',
+        cardId: body.cardId,
+        widgetId: body.widgetId,
+        op: isInvoke ? (body.op as string) : undefined,
+        args: isInvoke ? body.args : undefined,
+        key: isInvoke ? undefined : (body.key as string)
+      })
+      if (outcome.error) {
+        sendJson(res, 502, { error: outcome.error })
+        return
+      }
+      sendJson(res, 200, { result: outcome.result })
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
     }

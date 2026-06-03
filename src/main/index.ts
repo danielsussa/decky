@@ -15,6 +15,7 @@ import {
 import { registerWorkspaceHandlers } from './workspace-store'
 import { registerCardsHandlers } from './cards-store'
 import { registerCardMirrorHandlers } from './card-mirror'
+import { registerWidgetBridge } from './widget-bridge'
 import { migrateGlobalState } from './migrate'
 import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from './mcp-installer'
@@ -173,6 +174,7 @@ app.whenReady().then(async () => {
   registerWorkspaceHandlers()
   registerCardsHandlers()
   registerCardMirrorHandlers(() => mainWindow)
+  registerWidgetBridge(() => mainWindow)
   registerFileWatchHandlers(() => mainWindow)
   registerDevRebuildHandlers(() => mainWindow)
   registerGitHandlers()

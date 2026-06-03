@@ -182,6 +182,44 @@ const TOOLS = [
     }
   },
   {
+    name: 'list_widgets',
+    description:
+      'List all widget TYPES registered in decky (with their fence syntax, ops, getters, and JSON spec shape) and all widget INSTANCES currently mounted in open cards. Call this BEFORE card_invoke / card_get when you need to know what widgets are available, what ops they expose, or what their spec looks like — instead of guessing or relying on stale docs. Returns: { types: WidgetTypeDoc[], active: { cardId, widgetId, type }[] }.',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  {
+    name: 'card_invoke',
+    description:
+      'Call an operation on a live widget embedded in a card (e.g. a Flow, Checklist). Use this — NOT a file edit — to mutate widget state imperatively: setActive, addNode, toggle, pulseFor, etc. The widget stays mounted, animations are smooth, no markdown reparse. The widget must be mounted (the card containing it must be open) and must have a stable id in its spec (e.g. ```flow\\n{"id":"checkout-flow", ...}). Operation names are widget-specific — see the widget\'s docs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cardId: { type: 'string', description: 'Card id (filename slug) the widget is mounted in.' },
+        widgetId: { type: 'string', description: 'Widget id from the widget\'s spec.' },
+        op: { type: 'string', description: 'Operation name (e.g. "setActive", "addEdge").' },
+        args: { type: 'object', description: 'Operation arguments (object — widget-specific keys).', additionalProperties: true }
+      },
+      required: ['cardId', 'widgetId', 'op']
+    }
+  },
+  {
+    name: 'card_get',
+    description:
+      'Read a value from a live widget (e.g. current node positions after the user dragged them, checked items in a checklist). Returns the current in-memory state — useful for picking up user interactions before persisting.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cardId: { type: 'string', description: 'Card id the widget is mounted in.' },
+        widgetId: { type: 'string', description: 'Widget id.' },
+        key: { type: 'string', description: 'Getter name (e.g. "nodes", "edges", "positions").' }
+      },
+      required: ['cardId', 'widgetId', 'key']
+    }
+  },
+  {
     name: 'session_set_title',
     description:
       'Label the current decky session tab so the user can tell tabs apart. Call this when starting a new task or when the current focus changes meaningfully (e.g. "fixing auth bug", "drafting PR description"). Keep it short (under 40 chars).',
@@ -360,6 +398,42 @@ async function handleCall(name, args) {
       return JSON.stringify({ status: 'cancelled' })
     }
     return JSON.stringify({ status: 'timeout' })
+  }
+
+  if (name === 'list_widgets') {
+    const data = await get('/widgets/list')
+    return JSON.stringify(data && 'result' in data ? data.result : null, null, 2)
+  }
+
+  if (name === 'card_invoke') {
+    if (typeof a.cardId !== 'string' || !a.cardId) throw new Error('card_invoke: cardId required')
+    if (typeof a.widgetId !== 'string' || !a.widgetId) throw new Error('card_invoke: widgetId required')
+    if (typeof a.op !== 'string' || !a.op) throw new Error('card_invoke: op required')
+    // Some MCP clients JSON-stringify object arguments when the schema doesn't fully describe
+    // them — be permissive and reparse if we got a string.
+    let invokeArgs = a.args
+    if (typeof invokeArgs === 'string') {
+      try {
+        invokeArgs = JSON.parse(invokeArgs)
+      } catch {
+        // Leave as-is if it's not JSON — the widget op can still inspect a raw string.
+      }
+    }
+    const r = await post('/widget/invoke', {
+      cardId: a.cardId,
+      widgetId: a.widgetId,
+      op: a.op,
+      args: invokeArgs
+    })
+    return JSON.stringify(r && 'result' in r ? r.result : null)
+  }
+
+  if (name === 'card_get') {
+    if (typeof a.cardId !== 'string' || !a.cardId) throw new Error('card_get: cardId required')
+    if (typeof a.widgetId !== 'string' || !a.widgetId) throw new Error('card_get: widgetId required')
+    if (typeof a.key !== 'string' || !a.key) throw new Error('card_get: key required')
+    const r = await post('/widget/get', { cardId: a.cardId, widgetId: a.widgetId, key: a.key })
+    return JSON.stringify(r && 'result' in r ? r.result : null)
   }
 
   if (name === 'session_set_title') {

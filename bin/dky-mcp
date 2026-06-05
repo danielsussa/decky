@@ -230,6 +230,75 @@ const TOOLS = [
       },
       required: ['title']
     }
+  },
+  {
+    name: 'browser_navigate',
+    description:
+      'Open a web page in the decky panel and point the agent at it. If a web card is focused (or `card` is given) it navigates that card; otherwise it OPENS A NEW web card. Accepts a bare domain or a search term, like an address bar. Use this to start any browsing flow — then browser_snapshot/read/click/type drive the page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL, domain, or search query' },
+        card: { type: 'string', description: 'Optional web card id (default: the focused web card)' }
+      },
+      required: ['url']
+    }
+  },
+  {
+    name: 'browser_snapshot',
+    description:
+      'Return the focused web card as a list of visible interactive elements, each with a stable `ref`, role, and accessible name. Call this before browser_click/browser_type to get fresh refs.',
+    inputSchema: {
+      type: 'object',
+      properties: { card: { type: 'string', description: 'Optional web card id' } }
+    }
+  },
+  {
+    name: 'browser_click',
+    description: 'Click the element with the given `ref` from the latest browser_snapshot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'element ref, e.g. "e7"' },
+        card: { type: 'string', description: 'Optional web card id' }
+      },
+      required: ['ref']
+    }
+  },
+  {
+    name: 'browser_type',
+    description:
+      'Focus the element with the given `ref` and set its text (input, textarea, or contenteditable).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'element ref, e.g. "e3"' },
+        text: { type: 'string', description: 'text to type' },
+        card: { type: 'string', description: 'Optional web card id' }
+      },
+      required: ['ref', 'text']
+    }
+  },
+  {
+    name: 'browser_read',
+    description: 'Return the focused web card URL, title, and its visible text content (truncated).',
+    inputSchema: {
+      type: 'object',
+      properties: { card: { type: 'string', description: 'Optional web card id' } }
+    }
+  },
+  {
+    name: 'browser_eval',
+    description:
+      'Diagnostic: run arbitrary JavaScript in the focused web card and return its JSON-serializable result.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'JS expression to evaluate' },
+        card: { type: 'string', description: 'Optional web card id' }
+      },
+      required: ['code']
+    }
   }
 ]
 
@@ -446,6 +515,35 @@ async function handleCall(name, args) {
     }
     await post(`/sessions/${encodeURIComponent(sessionId)}/title`, { title: a.title })
     return `session ${sessionId} titled "${a.title}"`
+  }
+
+  // Browser-control tools — drive the focused web card via POST /web/act. Each returns the raw
+  // JSON result as text so the agent gets structured data (snapshot elements, page text, etc.).
+  if (name === 'browser_navigate') {
+    if (typeof a.url !== 'string') throw new Error('browser_navigate: url required')
+    return JSON.stringify(await post('/web/act', { action: 'navigate', url: a.url, cardId: a.card }))
+  }
+  if (name === 'browser_snapshot') {
+    return JSON.stringify(await post('/web/act', { action: 'snapshot', cardId: a.card }))
+  }
+  if (name === 'browser_click') {
+    if (typeof a.ref !== 'string') throw new Error('browser_click: ref required')
+    return JSON.stringify(await post('/web/act', { action: 'click', ref: a.ref, cardId: a.card }))
+  }
+  if (name === 'browser_type') {
+    if (typeof a.ref !== 'string' || typeof a.text !== 'string') {
+      throw new Error('browser_type: ref and text required')
+    }
+    return JSON.stringify(
+      await post('/web/act', { action: 'type', ref: a.ref, text: a.text, cardId: a.card })
+    )
+  }
+  if (name === 'browser_read') {
+    return JSON.stringify(await post('/web/act', { action: 'read', cardId: a.card }))
+  }
+  if (name === 'browser_eval') {
+    if (typeof a.code !== 'string') throw new Error('browser_eval: code required')
+    return JSON.stringify(await post('/web/act', { action: 'eval', code: a.code, cardId: a.card }))
   }
 
   throw new Error(`unknown tool: ${name}`)

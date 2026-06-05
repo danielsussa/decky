@@ -109,6 +109,37 @@ export interface DeckAPI {
     show: (payload: { id: string; title: string; body?: string }) => Promise<void>
     onFocusSession: (callback: (msg: { id: string }) => void) => () => void
   }
+  web: {
+    create: (cardId: string, url: string) => Promise<true>
+    destroy: (cardId: string) => Promise<true>
+    setBounds: (
+      cardId: string,
+      bounds: { x: number; y: number; width: number; height: number }
+    ) => void
+    hide: (cardId: string) => void
+    navigate: (cardId: string, url: string) => void
+    back: (cardId: string) => void
+    forward: (cardId: string) => void
+    reload: (cardId: string) => void
+    stop: (cardId: string) => void
+    getState: (cardId: string) => Promise<{
+      url: string
+      title: string
+      loading: boolean
+      canBack: boolean
+      canFwd: boolean
+    } | null>
+    onState: (
+      callback: (msg: {
+        cardId: string
+        url: string
+        title: string
+        loading: boolean
+        canBack: boolean
+        canFwd: boolean
+      }) => void
+    ) => () => void
+  }
   widget: {
     onCall: (
       callback: (msg: {

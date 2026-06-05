@@ -32,7 +32,13 @@ export default function Preview({
       />
     )
   if (source.type === 'json') return <JsonPreview value={source.value} />
-  if (source.type === 'web') return <WebPreview url={source.url} onUrlChange={onWebUrlChange} />
+  if (source.type === 'web') {
+    // cardId is required for WebContentsView routing — a web card without one wouldn't have
+    // a stable handle for main to address. In practice every web card is created with one
+    // (see App.tsx panel/session card construction). Show an empty fallback if it ever isn't.
+    if (!cardId) return <div className="preview-empty"><p>card sem id — recrie a aba</p></div>
+    return <WebPreview cardId={cardId} url={source.url} onUrlChange={onWebUrlChange} />
+  }
   if (source.type === 'diff') return <DiffPreview content={source.content} />
   if (source.type === 'editor') return <EditorPreview content={source.content} path={source.path} />
   if (source.type === 'xlsx') return <XlsxPreview path={source.path} />

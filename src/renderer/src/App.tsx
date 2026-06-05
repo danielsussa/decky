@@ -11,6 +11,7 @@ import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
 import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import FirstRunModal from './components/FirstRunModal'
+import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
 import type { PreviewSource } from '../../shared/preview'
 import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
 import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '../../shared/cli-spec'
@@ -1194,6 +1195,7 @@ function App(): React.JSX.Element {
         }
       > = {}
       const allSessionIds = new Set<string>([
+        ...sessions.map((s) => s.id),
         ...Object.keys(cardsBySession),
         ...Object.keys(focusedCardBySession),
         ...Object.keys(previewsByCard)
@@ -1223,7 +1225,7 @@ function App(): React.JSX.Element {
       window.deck.cards.syncState(out)
     }, 80)
     return () => clearTimeout(t)
-  }, [cardsBySession, focusedCardBySession, previewsByCard, pinned])
+  }, [sessions, cardsBySession, focusedCardBySession, previewsByCard, pinned])
 
   // Drop a stale Cmd+Arrow preview the moment the active workspace actually changes —
   // Enter commits via setWorkspace, but other paths (mouse, close, palette) get here too.
@@ -2198,7 +2200,15 @@ function App(): React.JSX.Element {
     return fresh
   }
 
+  // Overlays that cover the canvas area force every web card's native overlay to hide
+  // (a WebContentsView paints above the React shell, so without this it would obscure the
+  // command palette, FirstRunModal, etc.). Keep this short and additive — anything truly
+  // overlay-shaped goes in here.
+  const overlayActive =
+    paletteOpen || ((firstRunPending || cliSettingsOpen) && detectedClis !== null)
+
   return (
+    <OverlayActiveProvider active={overlayActive}>
     <div className="deck">
       {(firstRunPending || cliSettingsOpen) && detectedClis !== null && (
         <FirstRunModal
@@ -2304,16 +2314,21 @@ function App(): React.JSX.Element {
                         key={s.id}
                         className={`session-pane ${isActive ? 'session-pane-active' : 'session-pane-inactive'}`}
                       >
-                        <DeckTabs
-                          focusedId={focusedCardBySession[s.id] ?? null}
-                          onFocusChange={(id) =>
-                            setFocusedCardBySession((prev) => ({ ...prev, [s.id]: id }))
-                          }
-                          onClose={closeCard}
-                          onTogglePin={togglePin}
-                          onReorder={reorderCards}
-                          cards={deckCardsBySession[s.id] ?? []}
-                        />
+                        {/* SessionVisible drives WebContentsView paint for every web card under
+                            this session. visibility:hidden keeps the React tree mounted; the
+                            native overlay's "hide" runs through this context, not CSS. */}
+                        <SessionVisibleProvider visible={isActive}>
+                          <DeckTabs
+                            focusedId={focusedCardBySession[s.id] ?? null}
+                            onFocusChange={(id) =>
+                              setFocusedCardBySession((prev) => ({ ...prev, [s.id]: id }))
+                            }
+                            onClose={closeCard}
+                            onTogglePin={togglePin}
+                            onReorder={reorderCards}
+                            cards={deckCardsBySession[s.id] ?? []}
+                          />
+                        </SessionVisibleProvider>
                       </div>
                     )
                   })}
@@ -2362,6 +2377,7 @@ function App(): React.JSX.Element {
         </div>
       )}
     </div>
+    </OverlayActiveProvider>
   )
 }
 

@@ -2,11 +2,12 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { readFile, stat } from 'node:fs/promises'
 import { basename, isAbsolute, resolve as resolvePath } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, type WebContents } from 'electron'
 import type { PreviewSource, PreviewSourceWire } from '../shared/preview'
 import { isGeneratedCardPath } from './paths'
 import { getCardsForSession, getAllCards, registerPreviewResolution } from './card-mirror'
 import { awaitWidgetCall } from './widget-bridge'
+import { getWebViewsManager } from './web-views'
 
 const PORT = Number(process.env.DECKY_PREVIEW_PORT) || 6790
 const HOST = '127.0.0.1'
@@ -193,6 +194,166 @@ async function readBody(req: IncomingMessage): Promise<string> {
   })
 }
 
+// ── Browser-control layer (agent drives the focused web card) ────────────────
+// Same model as decky-browser's agent-mcp: snapshot tags visible interactive elements with a
+// stable `data-mcp-ref`; click/type address by that ref. dky-mcp's browser_* tools POST here.
+const SNAPSHOT_JS = `(() => {
+  const SEL = 'a[href],button,input,textarea,select,[role=button],[role=link],[role=textbox],[role=checkbox],[role=tab],[contenteditable=true],[onclick]';
+  for (const el of document.querySelectorAll('[data-mcp-ref]')) el.removeAttribute('data-mcp-ref');
+  const out = []; let i = 0;
+  for (const el of document.querySelectorAll(SEL)) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    const s = getComputedStyle(el);
+    if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') continue;
+    const ref = 'e' + (++i);
+    el.setAttribute('data-mcp-ref', ref);
+    const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.value ||
+      (el.innerText || '').trim() || el.getAttribute('title') || el.getAttribute('name') || '').trim().slice(0, 80);
+    out.push({ ref, role: el.getAttribute('role') || el.tagName.toLowerCase(), name,
+      type: el.getAttribute('type') || undefined });
+  }
+  return { url: location.href, title: document.title, elements: out };
+})()`
+
+const READ_JS = `(() => ({
+  url: location.href, title: document.title,
+  text: (document.body ? document.body.innerText : '').replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, 8000)
+}))()`
+
+function clickJs(ref: string): string {
+  const refLit = JSON.stringify(ref)
+  return `(() => {
+    const el = document.querySelector('[data-mcp-ref=' + ${JSON.stringify(refLit)} + ']');
+    if (!el) return { ok: false, error: 'ref not found: ' + ${refLit} };
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    el.click();
+    return { ok: true };
+  })()`
+}
+
+function typeJs(ref: string, text: string): string {
+  const refLit = JSON.stringify(ref)
+  const textLit = JSON.stringify(text)
+  return `(() => {
+    const el = document.querySelector('[data-mcp-ref=' + ${JSON.stringify(refLit)} + ']');
+    if (!el) return { ok: false, error: 'ref not found: ' + ${refLit} };
+    el.focus();
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') {
+      const proto = tag === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (setter && setter.set) setter.set.call(el, ${textLit}); else el.value = ${textLit};
+    } else if (el.isContentEditable) {
+      el.textContent = ${textLit};
+    } else {
+      return { ok: false, error: 'element is not typable' };
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { ok: true };
+  })()`
+}
+
+function normalizeWebUrl(raw: string): string {
+  const s = (raw || '').trim()
+  if (!s) return s
+  if (/^(https?|file|about|data):/i.test(s)) return s
+  if (/^localhost(:\d+)?(\/|$)/i.test(s) || /^127\.0\.0\.1(:\d+)?(\/|$)/i.test(s)) return `http://${s}`
+  if (/^[^\s]+\.[^\s]{2,}/.test(s) && !/\s/.test(s)) return `https://${s}`
+  return `https://www.google.com/search?q=${encodeURIComponent(s)}`
+}
+
+// Resolve which web card the action targets: an explicit cardId, else the session's focused card
+// (if it's a web card), else the single open web card. Throws a guiding error otherwise.
+function resolveWebCard(sessionId: string, explicitCardId?: string): { cardId: string; wc: WebContents } {
+  const manager = getWebViewsManager()
+  if (!manager) throw new Error('no web views ready — open a web card first')
+  let cardId = explicitCardId
+  if (!cardId) {
+    const m = getCardsForSession(sessionId)
+    const focused = m.cards.find((c) => c.id === m.focused)
+    if (focused && focused.type === 'web') cardId = focused.id
+    else {
+      const webCards = m.cards.filter((c) => c.type === 'web')
+      if (webCards.length === 1) cardId = webCards[0].id
+    }
+  }
+  if (!cardId) throw new Error('no focused web card — open a web card (or pass cardId)')
+  const wc = manager.webContentsFor(cardId)
+  if (!wc) throw new Error(`no web card with id "${cardId}"`)
+  return { cardId, wc }
+}
+
+interface WebActBody {
+  action?: string
+  cardId?: string
+  url?: string
+  ref?: string
+  text?: string
+  code?: string
+}
+
+// Open a new web card by broadcasting a `web` preview source — the same path POST /preview uses.
+// The renderer creates + focuses the card and mounts its WebContentsView (which navigates to the
+// url). Returns the resolved cardId once the renderer acks.
+async function createWebCard(
+  getWindow: () => BrowserWindow | null,
+  sessionId: string,
+  url: string
+): Promise<string> {
+  const source: PreviewSource = { type: 'web', url }
+  previews.set(sessionId, source)
+  const reqId = randomUUID()
+  const resolved = await new Promise<{ cardId: string }>((resolve) => {
+    registerPreviewResolution(reqId, (info) => resolve({ cardId: info.cardId }))
+    broadcastPreview(getWindow, sessionId, null, source, reqId)
+  })
+  return resolved.cardId
+}
+
+async function runWebAction(
+  getWindow: () => BrowserWindow | null,
+  sessionId: string,
+  body: WebActBody
+): Promise<unknown> {
+  // navigate is the one action that can run with NO web card open — it opens one. (The agent
+  // needs this to start a browsing flow from scratch; the other actions require an existing card.)
+  if (body.action === 'navigate') {
+    const url = normalizeWebUrl(String(body.url ?? ''))
+    let target: { cardId: string; wc: WebContents } | null = null
+    try {
+      target = resolveWebCard(sessionId, body.cardId)
+    } catch {
+      target = null
+    }
+    if (target) {
+      await target.wc.loadURL(url).catch(() => {})
+      return { ok: true, cardId: target.cardId, url: target.wc.getURL(), title: target.wc.getTitle() }
+    }
+    // Explicit cardId that doesn't exist is an error; no cardId → open a fresh web card.
+    if (body.cardId) throw new Error(`no web card with id "${body.cardId}"`)
+    const cardId = await createWebCard(getWindow, sessionId, url)
+    return { ok: true, created: true, cardId, url }
+  }
+
+  const { wc } = resolveWebCard(sessionId, body.cardId)
+  switch (body.action) {
+    case 'snapshot':
+      return wc.executeJavaScript(SNAPSHOT_JS)
+    case 'read':
+      return wc.executeJavaScript(READ_JS)
+    case 'click':
+      return wc.executeJavaScript(clickJs(String(body.ref ?? '')), true)
+    case 'type':
+      return wc.executeJavaScript(typeJs(String(body.ref ?? ''), String(body.text ?? '')), true)
+    case 'eval':
+      return wc.executeJavaScript(String(body.code ?? ''))
+    default:
+      throw new Error(`unknown web action: ${body.action}`)
+  }
+}
+
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -276,6 +437,19 @@ async function handleRequest(
 
   if (req.method === 'GET' && url === '/health') {
     sendJson(res, 200, { ok: true, pid: process.pid })
+    return
+  }
+
+  // Browser-control layer: dky-mcp's browser_* tools POST here to drive the focused web card.
+  if (req.method === 'POST' && url === '/web/act') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as WebActBody
+      const result = await runWebAction(getWindow, sessionId, body)
+      sendJson(res, 200, result)
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
     return
   }
 

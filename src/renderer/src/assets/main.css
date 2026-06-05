@@ -2533,10 +2533,12 @@ textarea.form-input {
   border-color: var(--accent);
 }
 
-.web-preview webview {
+/* Sentinel div whose bounding rect is the area the native WebContentsView paints over.
+   The view is a native overlay positioned by main from this rect — the div itself is just
+   a spacer, the actual page renders above it. */
+.web-canvas {
   flex: 1;
   width: 100%;
-  border: none;
   background: var(--bg-0);
 }
 
@@ -2696,20 +2698,19 @@ textarea.form-input {
 /* Dev-only "rebuild & relaunch" affordance (packaged macOS app + ~/.decky/dev.json). */
 .dev-rebuild-status {
   position: fixed;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 50;
+  top: 8px;
+  left: 8px;
+  z-index: 9999;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   font: 12px var(--mono);
   color: var(--text-1);
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 6px 12px;
+  padding: 4px 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   max-width: min(560px, 90vw);
 }

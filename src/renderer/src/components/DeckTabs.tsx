@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Pin } from 'lucide-react'
 import type { DeckCard } from './DeckGrid'
+import { PaneVisibleProvider } from '../web-visibility'
 
 interface DeckTabsProps {
   cards: DeckCard[]
@@ -110,7 +111,10 @@ export default function DeckTabs({
             key={c.id}
             className={`deck-tab-pane ${c.id === activeId ? 'deck-tab-pane-active' : 'deck-tab-pane-inactive'}`}
           >
-            {c.render()}
+            {/* PaneVisible drives whether a WebContentsView inside this pane paints. The pane
+                is always mounted (visibility:hidden keeps <iframe> guests alive), but a
+                WebContentsView is a native overlay — its hide is bounds-driven, not CSS. */}
+            <PaneVisibleProvider visible={c.id === activeId}>{c.render()}</PaneVisibleProvider>
           </div>
         ))}
       </div>

@@ -29,6 +29,7 @@ import { registerDevRebuildHandlers } from './dev-rebuild'
 import { registerGitHandlers } from './git-stats'
 import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
 import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
+import { setupWebViews } from './web-views'
 
 // Privileged scheme registration must happen before app is ready.
 registerAssetScheme()
@@ -180,8 +181,17 @@ app.whenReady().then(async () => {
   registerDevRebuildHandlers(() => mainWindow)
   registerGitHandlers()
   setupAssetProtocol()
+  // Global default UA: strip the Electron/app token so any web surface that falls back to it
+  // (a popup in the instant before the deckweb partition UA applies) still reads as plain Chrome.
+  // The per-partition setUserAgent in setupWebSession is the main path; this is the safety net.
+  app.userAgentFallback = app.userAgentFallback
+    .replace(`Electron/${process.versions.electron}`, '')
+    .replace(`${app.getName()}/${app.getVersion()}`, '')
+    .replace(/\s+/g, ' ')
+    .trim()
   setupWebSession(() => mainWindow)
   attachWebContentsPopupRouter(() => mainWindow)
+  setupWebViews(() => mainWindow)
   startPreviewServer(() => mainWindow)
 
   ipcMain.handle('dialog:pick-folder', async () => {

@@ -45,7 +45,11 @@ function clientHintsHeaders(): Record<string, string> {
   // Platform version — Chrome reports the OS version. macOS: 14.5.0 fits as a recent default;
   // close enough for fingerprint matching since we can't always introspect the real one cheaply.
   const platformVersion =
-    process.platform === 'darwin' ? '"14.5.0"' : process.platform === 'win32' ? '"15.0.0"' : '"6.5.0"'
+    process.platform === 'darwin'
+      ? '"14.5.0"'
+      : process.platform === 'win32'
+        ? '"15.0.0"'
+        : '"6.5.0"'
   return {
     'Sec-CH-UA': `"Chromium";v="${v}", "Not:A-Brand";v="24", "Google Chrome";v="${v}"`,
     'Sec-CH-UA-Mobile': '?0',
@@ -116,12 +120,21 @@ function resolveWebviewPreload(): string | null {
 export function setupWebSession(getMainWindow: () => BrowserWindow | null): void {
   const ses = session.fromPartition(WEB_PARTITION)
 
-  // Inject the stealth preload into every guest page in this partition BEFORE its scripts
-  // run — only path to spoof navigator.userAgentData (a JS API, not a header) so Google's
-  // account login check sees a "Google Chrome" brand instead of bare Chromium.
+  // Inject the stealth preload into every page in this partition BEFORE its scripts run.
+  // Critical: ses.setPreloads (legacy API) only loads into <webview>-type webContents — it
+  // does NOT load into top-level WebContentsView (which is what each web card now is).
+  // Use registerPreloadScript({ type: 'frame', ... }) so the preload reaches every frame in
+  // the partition: WebContentsView tabs, <webview> guests (if any survive), and OAuth
+  // popups spawned from this partition. Fall back to setPreloads only for older Electron.
   const preloadPath = resolveWebviewPreload()
   if (preloadPath) {
-    ses.setPreloads([preloadPath])
+    const reg = (ses as unknown as { registerPreloadScript?: (s: object) => void })
+      .registerPreloadScript
+    if (typeof reg === 'function') {
+      reg.call(ses, { type: 'frame', filePath: preloadPath })
+    } else {
+      ;(ses as unknown as { setPreloads: (p: string[]) => void }).setPreloads([preloadPath])
+    }
   } else {
     console.warn('[web-session] webview-preload.js not found — stealth JS spoofs disabled')
   }
@@ -136,16 +149,29 @@ export function setupWebSession(getMainWindow: () => BrowserWindow | null): void
   // Some endpoints sniff per-request headers in addition to the UA. Enforce UA, Accept-Language,
   // and the Sec-CH-UA client hints together — Google's account login specifically gates on the
   // "Google Chrome" brand inside Sec-CH-UA, so a clean UA alone isn't enough.
+  // Set headers case-insensitively: Chromium populates requestHeaders with ITS OWN casing
+  // (e.g. `sec-ch-ua`), so a plain assignment under a different case (`Sec-CH-UA`) leaves the
+  // original entry in place and Chromium keeps its own value. Delete every case-variant before
+  // setting — otherwise the "Google Chrome" brand silently never lands.
+  const setHeader = (headers: Record<string, string>, name: string, value: string): void => {
+    const lower = name.toLowerCase()
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === lower) delete headers[k]
+    }
+    headers[name] = value
+  }
+
   const hints = clientHintsHeaders()
   ses.webRequest.onBeforeSendHeaders((details, cb) => {
-    details.requestHeaders['User-Agent'] = ua
-    details.requestHeaders['Accept-Language'] = `${lang},${lang.split('-')[0]};q=0.9,en;q=0.8`
+    const h = details.requestHeaders
+    setHeader(h, 'User-Agent', ua)
+    setHeader(h, 'Accept-Language', `${lang},${lang.split('-')[0]};q=0.9,en;q=0.8`)
     // Only set hints on secure contexts — browsers don't send Sec-CH-* over plain http,
     // mirroring that avoids accidentally outing us as non-standard on http endpoints.
     if (details.url.startsWith('https://')) {
-      for (const [k, v] of Object.entries(hints)) details.requestHeaders[k] = v
+      for (const [k, v] of Object.entries(hints)) setHeader(h, k, v)
     }
-    cb({ requestHeaders: details.requestHeaders })
+    cb({ requestHeaders: h })
   })
 
   // 2. Permissions — same UX as Chrome: ask the user the first time an origin requests a given
@@ -188,7 +214,10 @@ export function setupWebSession(getMainWindow: () => BrowserWindow | null): void
   // 3. Downloads — Chrome's default is "save to ~/Downloads, no prompt". Match that. We hold a
   //    reference to the item so its event listeners stay alive until completion.
   ses.on('will-download', (_event, item) => {
-    const target = join(app.getPath('downloads') || join(homedir(), 'Downloads'), item.getFilename())
+    const target = join(
+      app.getPath('downloads') || join(homedir(), 'Downloads'),
+      item.getFilename()
+    )
     item.setSavePath(target)
     item.once('done', (_e, state) => {
       if (state === 'completed') {
@@ -206,15 +235,20 @@ export function setupWebSession(getMainWindow: () => BrowserWindow | null): void
   return undefined
 }
 
-// Webview popups need wiring in main: setWindowOpenHandler must be installed on the GUEST
+// Popups need wiring in main: setWindowOpenHandler must be installed on the GUEST
 // webContents (not the host page), so it has to happen via app.on('web-contents-created').
 // We treat real popup windows (window.open with size features) as native BrowserWindows on
 // the same partition (so cookies/login carry over and `opener` is preserved for OAuth /
 // 3-D Secure flows); everything else (target=_blank, plain window.open) is forwarded to
 // the renderer as a new web card via the existing 'app:open-url' channel.
+//
+// Match any guest in our web partition — covers both the legacy <webview> tag and the
+// per-card WebContentsViews. The app's own shell window has its own session so it never
+// matches; child windows we spawn (OAuth popups) explicitly use this partition too.
 export function attachWebContentsPopupRouter(getMainWindow: () => BrowserWindow | null): void {
+  const webSession = session.fromPartition(WEB_PARTITION)
   app.on('web-contents-created', (_event, contents) => {
-    if (contents.getType() !== 'webview') return
+    if (contents.session !== webSession) return
     contents.setWindowOpenHandler((details) => {
       const popup = looksLikePopupWindow(details.features || '')
       if (!popup) {
@@ -224,6 +258,9 @@ export function attachWebContentsPopupRouter(getMainWindow: () => BrowserWindow 
       }
       // Real popup: allow Electron to spawn a BrowserWindow, but force same partition so
       // session/cookies carry over, and keep the native window chrome minimal (no menu bar).
+      // contextIsolation OFF — the partition's stealth preload must patch userAgentData in
+      // the popup's main world (Google OAuth popup hits the same userAgentData check the main
+      // page does; with isolation on the page sees bare "Chromium" and the popup is refused).
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
@@ -231,7 +268,8 @@ export function attachWebContentsPopupRouter(getMainWindow: () => BrowserWindow 
           webPreferences: {
             partition: WEB_PARTITION,
             sandbox: true,
-            contextIsolation: true
+            nodeIntegration: false,
+            contextIsolation: false
           }
         }
       }

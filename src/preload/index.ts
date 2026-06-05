@@ -203,6 +203,49 @@ const deckApi = {
       return () => ipcRenderer.removeListener('notify:focus-session', listener)
     }
   },
+  web: {
+    // Each web card maps 1:1 to a WebContentsView owned by main. The renderer creates the
+    // view on mount, streams bounds whenever its sentinel rect changes, hides it (zero-sized
+    // bounds) when the pane / session / overlay state says it shouldn't be visible, and
+    // destroys it on unmount.
+    create: (cardId: string, url: string): Promise<true> =>
+      ipcRenderer.invoke('web:create', { cardId, url }),
+    destroy: (cardId: string): Promise<true> => ipcRenderer.invoke('web:destroy', cardId),
+    setBounds: (
+      cardId: string,
+      bounds: { x: number; y: number; width: number; height: number }
+    ): void => ipcRenderer.send('web:set-bounds', { cardId, bounds }),
+    hide: (cardId: string): void => ipcRenderer.send('web:hide', cardId),
+    navigate: (cardId: string, url: string): void =>
+      ipcRenderer.send('web:navigate', { cardId, url }),
+    back: (cardId: string): void => ipcRenderer.send('web:back', cardId),
+    forward: (cardId: string): void => ipcRenderer.send('web:forward', cardId),
+    reload: (cardId: string): void => ipcRenderer.send('web:reload', cardId),
+    stop: (cardId: string): void => ipcRenderer.send('web:stop', cardId),
+    getState: (
+      cardId: string
+    ): Promise<{
+      url: string
+      title: string
+      loading: boolean
+      canBack: boolean
+      canFwd: boolean
+    } | null> => ipcRenderer.invoke('web:get-state', cardId),
+    onState: (
+      callback: (msg: {
+        cardId: string
+        url: string
+        title: string
+        loading: boolean
+        canBack: boolean
+        canFwd: boolean
+      }) => void
+    ): (() => void) => {
+      const listener = (_: unknown, msg: Parameters<typeof callback>[0]): void => callback(msg)
+      ipcRenderer.on('web:state', listener)
+      return () => ipcRenderer.removeListener('web:state', listener)
+    }
+  },
   widget: {
     // Main forwards every widget:call here. The renderer dispatches into the widget registry
     // and acks via reply(reqId, ...). One-shot per reqId — there is no streaming.

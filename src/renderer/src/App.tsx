@@ -9,14 +9,10 @@ import TerminalHost from './components/TerminalHost'
 import type { Session } from './types'
 import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
+import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import FirstRunModal from './components/FirstRunModal'
 import type { PreviewSource } from '../../shared/preview'
-import {
-  invokeWidget,
-  getWidget,
-  listWidgetTypes,
-  listActiveWidgets
-} from './lib/widget-registry'
+import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
 import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '../../shared/cli-spec'
 import {
   applyTheme,
@@ -53,10 +49,11 @@ const SWITCH_REPAINT_GUARD_MS = 1500
 
 // System (session-independent) panels that open as center tabs from the command
 // palette. Their card ids are prefixed so they never collide with bot cards.
-type PanelId = 'shortcuts'
+type PanelId = 'shortcuts' | 'pages'
 const PANEL_PREFIX = '__panel:'
 const PANELS: { id: PanelId; title: string; paletteLabel: string }[] = [
-  { id: 'shortcuts', title: 'Atalhos', paletteLabel: 'Atalhos de teclado' }
+  { id: 'shortcuts', title: 'Atalhos', paletteLabel: 'Atalhos de teclado' },
+  { id: 'pages', title: 'Páginas', paletteLabel: 'Páginas do workspace' }
 ]
 
 const HOME = '/Users/danielkanczuk'
@@ -728,7 +725,11 @@ function App(): React.JSX.Element {
             return { ...prev, [sessionId]: [...list, finalTarget] }
           })
         }
-        setFocusedCardBySession((prev) => ({ ...prev, [sessionId]: target! }))
+        if (noFocusIdsRef.current.has(target)) {
+          noFocusIdsRef.current.delete(target)
+        } else {
+          setFocusedCardBySession((prev) => ({ ...prev, [sessionId]: target! }))
+        }
 
         // Ack back to main so the HTTP /preview response can echo cardId+path to the MCP
         // caller. Inline markdown waits for the file write to know the real path; other types
@@ -820,7 +821,9 @@ function App(): React.JSX.Element {
     // a NEW tab is created (without it, the preview-server's broadcast handler would route to
     // whichever card is focused and overwrite it — fine for `preview_show`, bad for a click).
     const onOpenPath = (ev: Event): void => {
-      const detail = (ev as CustomEvent<{ path: string; cwd?: string; sessionId: string }>).detail
+      const detail = (
+        ev as CustomEvent<{ path: string; cwd?: string; sessionId: string; focus?: boolean }>
+      ).detail
       if (!detail?.path || !detail.sessionId) return
       let abs = detail.path
       if (!abs.startsWith('/') && detail.cwd) abs = detail.cwd.replace(/\/+$/, '') + '/' + abs
@@ -843,7 +846,9 @@ function App(): React.JSX.Element {
         }
       }
       if (match) {
-        setFocusedCardBySession((p) => ({ ...p, [detail.sessionId]: match! }))
+        if (detail.focus !== false) {
+          setFocusedCardBySession((p) => ({ ...p, [detail.sessionId]: match! }))
+        }
         return
       }
       const ext = abs.split('.').pop()?.toLowerCase() ?? ''
@@ -853,6 +858,7 @@ function App(): React.JSX.Element {
       else if (ext === 'xlsx') wire = { type: 'xlsx', path: abs }
       else wire = { type: 'editor', path: abs }
       const newCardId = `file-${Date.now().toString(36)}`
+      if (detail.focus === false) noFocusIdsRef.current.add(newCardId)
       void fetch('http://127.0.0.1:6790/preview', {
         method: 'POST',
         headers: {
@@ -864,6 +870,34 @@ function App(): React.JSX.Element {
       }).catch((err) => console.warn('[decky:open-path] preview POST failed', err))
     }
     window.addEventListener('decky:open-path', onOpenPath)
+    // Focus the card that currently shows a given path (own session or pinned). Used by
+    // the "expand subject" flow once the agent has filled the placeholder file.
+    const onFocusPath = (ev: Event): void => {
+      const detail = (ev as CustomEvent<{ path: string; sessionId: string }>).detail
+      if (!detail?.path || !detail.sessionId) return
+      const state = stateRef.current
+      const sessionCards = state.previewsByCard[detail.sessionId] ?? {}
+      const existing = state.cardsBySession[detail.sessionId] ?? []
+      let match: string | undefined
+      for (const id of existing) {
+        if (sourcePath(sessionCards[id]) === detail.path) {
+          match = id
+          break
+        }
+      }
+      if (!match) {
+        for (const [id, p] of Object.entries(state.pinned)) {
+          if (sourcePath(p) === detail.path) {
+            match = id
+            break
+          }
+        }
+      }
+      if (match) {
+        setFocusedCardBySession((p) => ({ ...p, [detail.sessionId]: match! }))
+      }
+    }
+    window.addEventListener('decky:focus-path', onFocusPath)
     // Main forwards any link / window.open from the renderer here (markdown card links,
     // terminal weblinks, etc.) — re-fire on the same channel a web-card popup uses.
     const unsubOpenUrl = window.deck.app.onOpenUrl((url) => {
@@ -916,6 +950,7 @@ function App(): React.JSX.Element {
       unsubNewSession()
       window.removeEventListener('decky:web-open', onWebOpen)
       window.removeEventListener('decky:open-path', onOpenPath)
+      window.removeEventListener('decky:focus-path', onFocusPath)
       unsubOpenUrl()
       unsubCloseTab()
       unsubCliSettings()
@@ -1492,6 +1527,11 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [])
 
+  // Cards that should NOT auto-focus on next broadcast. The "expand subject" flow opens a
+  // placeholder card in the background (so the user can keep reading the original) — once
+  // content arrives, a separate decky:focus-path event focuses it.
+  const noFocusIdsRef = useRef<Set<string>>(new Set())
+
   // Keep fs watchers in sync with the file-backed cards (markdown + editor sources).
   const watchedPathsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
@@ -1545,12 +1585,7 @@ function App(): React.JSX.Element {
       try {
         let result: unknown
         if (msg.kind === 'invoke') {
-          result = await invokeWidget(
-            msg.cardId ?? '',
-            msg.widgetId ?? '',
-            msg.op ?? '',
-            msg.args
-          )
+          result = await invokeWidget(msg.cardId ?? '', msg.widgetId ?? '', msg.op ?? '', msg.args)
         } else if (msg.kind === 'get') {
           result = getWidget(msg.cardId ?? '', msg.widgetId ?? '', msg.key ?? '')
         } else {
@@ -1795,10 +1830,13 @@ function App(): React.JSX.Element {
     const cliKind: CliKind = s.cliKind ?? 'claude'
     const detected = detectedClis?.find((c) => c.kind === cliKind)
     if (!detected) return undefined
-    return [detected.bin, ...buildArgs(cliKind, {
-      sessionId: s.claudeSessionId,
-      systemPrompt: DECKY_SESSION_PROMPT
-    })]
+    return [
+      detected.bin,
+      ...buildArgs(cliKind, {
+        sessionId: s.claudeSessionId,
+        systemPrompt: DECKY_SESSION_PROMPT
+      })
+    ]
   }
 
   const openPanel = (pid: PanelId): void => {
@@ -1928,9 +1966,76 @@ function App(): React.JSX.Element {
     persistKeymap(next)
   }
 
+  // Open a workspace page (markdown file under .decky/cards/) as a card in the active session.
+  // Reuses the same flow as Cmd+clicking a path in the terminal: POST to /preview with a fresh
+  // card id so a NEW tab is created — unless the file is already open as a card, in which case
+  // the existing one is focused. Falls back to a no-op if there's no active session.
+  const openPagePath = useCallback((page: WorkspacePage): void => {
+    const aId = stateRef.current.activeId
+    if (!aId) return
+    window.dispatchEvent(
+      new CustomEvent('decky:open-path', {
+        detail: { path: page.path, sessionId: aId }
+      })
+    )
+  }, [])
+
+  // Delete a workspace page from disk, AND close any open card (own or pinned, across all
+  // sessions) currently showing that file. Without the close-on-delete sweep the open card
+  // would keep its stale content and any rewatch would silently fail on the missing file.
+  const deletePagePath = useCallback(async (page: WorkspacePage): Promise<boolean> => {
+    const ws = stateRef.current.workspace
+    if (!ws) return false
+    const ok = await window.deck.cards.delete(ws, page.id)
+    if (!ok) return false
+    // Unpin any pinned card pointing at this path.
+    setPinned((prev) => {
+      let changed = false
+      const next: typeof prev = {}
+      for (const [id, src] of Object.entries(prev)) {
+        if (sourcePath(src) === page.path) {
+          changed = true
+          continue
+        }
+        next[id] = src
+      }
+      return changed ? next : prev
+    })
+    // Drop the card from every session that had it open as an own card.
+    setCardsBySession((prev) => {
+      let changed = false
+      const next: typeof prev = {}
+      for (const [sid, ids] of Object.entries(prev)) {
+        const sessPreviews = stateRef.current.previewsByCard[sid] ?? {}
+        const kept = ids.filter((id) => sourcePath(sessPreviews[id]) !== page.path)
+        if (kept.length !== ids.length) changed = true
+        next[sid] = kept
+      }
+      return changed ? next : prev
+    })
+    setPreviewsByCard((prev) => {
+      let changed = false
+      const next: typeof prev = {}
+      for (const [sid, cards] of Object.entries(prev)) {
+        const kept: Record<string, PreviewSource> = {}
+        for (const [cid, src] of Object.entries(cards)) {
+          if (sourcePath(src) === page.path) {
+            changed = true
+            continue
+          }
+          kept[cid] = src
+        }
+        next[sid] = kept
+      }
+      return changed ? next : prev
+    })
+    return true
+  }, [])
+
   const renderPanel = (pid: PanelId): React.JSX.Element => {
-    // Only 'shortcuts' for now; switch here as more panels are added.
-    void pid
+    if (pid === 'pages') {
+      return <PagesPanel workspace={workspace} onOpen={openPagePath} onDelete={deletePagePath} />
+    }
     return (
       <ShortcutsPanel
         resolved={resolvedKeymap}
@@ -1985,7 +2090,14 @@ function App(): React.JSX.Element {
         id,
         title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
         pinned: isPinned,
-        render: () => <Preview source={source} cardId={id} onWebUrlChange={onWebUrlChange} />
+        render: () => (
+          <Preview
+            source={source}
+            cardId={id}
+            sessionId={sessionId}
+            onWebUrlChange={onWebUrlChange}
+          />
+        )
       }
     })
   }
@@ -2166,7 +2278,9 @@ function App(): React.JSX.Element {
                   />
                   {gitStats.branch && (
                     <span className="git-branch" title={`branch ${gitStats.branch}`}>
-                      <span className="git-branch-icon" aria-hidden="true">⎇</span>
+                      <span className="git-branch-icon" aria-hidden="true">
+                        ⎇
+                      </span>
                       {gitStats.branch}
                     </span>
                   )}
@@ -2235,13 +2349,14 @@ function App(): React.JSX.Element {
           }
         >
           <span>
+            {rebuildState === 'running' && <span className="dev-rebuild-spinner" aria-hidden />}
             {rebuildState === 'running'
               ? 'Rebuilding…'
               : rebuildState === 'ready'
                 ? '↻ Build pronto — clique pra relaunch'
                 : 'Rebuild falhou — clique pra tentar de novo'}
           </span>
-          {(rebuildState === 'running' || rebuildState === 'error') && rebuildLog && (
+          {rebuildState === 'error' && rebuildLog && (
             <pre className="dev-rebuild-log">{rebuildLog}</pre>
           )}
         </div>

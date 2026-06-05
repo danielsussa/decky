@@ -639,6 +639,61 @@ code {
   user-select: text;
 }
 
+.md-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  padding: 4px;
+  font-size: 13px;
+}
+
+.md-context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  color: var(--text-1);
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.md-context-menu-item:hover {
+  background: var(--bg-2);
+}
+
+/* CSS Highlights API — marks the text the user just asked to expand while the agent works.
+   ::highlight() pseudos don't support `animation`, so the pulse is driven by animating a
+   custom property on :root (@property gives it a <color> syntax so it interpolates). The
+   :root animation only runs while .md-expanding-active is set on <body> so we don't waste
+   CPU when nothing is expanding. Cleared in MarkdownPreview's [content] effect once the
+   agent rewrites the selection as a link. */
+@property --md-expanding-bg {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgba(255, 200, 0, 0.18);
+}
+
+::highlight(expanding) {
+  background-color: var(--md-expanding-bg);
+  text-decoration: underline wavy rgba(255, 200, 0, 0.7);
+}
+
+body.md-expanding-active {
+  animation: md-expanding-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes md-expanding-pulse {
+  0%, 100% { --md-expanding-bg: rgba(255, 200, 0, 0.18); }
+  50%      { --md-expanding-bg: rgba(255, 200, 0, 0.50); }
+}
+
 .md-body h1,
 .md-body h2,
 .md-body h3,
@@ -2248,6 +2303,178 @@ textarea.form-input {
   padding: 4px 0 12px;
 }
 
+/* ── Pages panel (workspace cards listing, opens as a center tab) ───────── */
+.pages-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-0);
+}
+
+.pages-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+  flex-shrink: 0;
+}
+
+.pages-search {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-1);
+  font-size: 12px;
+  padding: 6px 9px;
+  outline: none;
+}
+
+.pages-search:focus {
+  border-color: var(--accent);
+}
+
+.pages-refresh {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  border-radius: 5px;
+  cursor: pointer;
+  width: 30px;
+  font-size: 14px;
+}
+
+.pages-refresh:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+
+.pages-empty {
+  padding: 24px 16px;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.pages-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.pages-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.pages-row:hover {
+  background: var(--bg-1);
+}
+
+.pages-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  padding: 4px 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.pages-title {
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.pages-row-main:hover .pages-title {
+  color: var(--accent);
+}
+
+.pages-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-2);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.pages-id {
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pages-mtime {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.pages-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.pages-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-1);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.pages-btn:hover:not(:disabled) {
+  background: var(--bg-2);
+}
+
+.pages-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pages-btn-danger-outline {
+  color: #c46a6a;
+  border-color: color-mix(in srgb, #c46a6a 40%, var(--border));
+}
+
+.pages-btn-danger-outline:hover:not(:disabled) {
+  background: color-mix(in srgb, #c46a6a 15%, transparent);
+  color: #e07b7b;
+}
+
+.pages-btn-danger {
+  background: #b85454;
+  color: #fff;
+  border-color: #b85454;
+}
+
+.pages-btn-danger:hover:not(:disabled) {
+  background: #c46060;
+  border-color: #c46060;
+}
+
 /* ── Web preview (embedded browser tab) ─────────────────────────────────── */
 .web-preview {
   display: flex;
@@ -2494,6 +2721,27 @@ textarea.form-input {
 .dev-rebuild-running {
   border-color: var(--accent);
   cursor: progress;
+}
+
+.dev-rebuild-running > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dev-rebuild-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: dev-rebuild-spin 0.7s linear infinite;
+}
+
+@keyframes dev-rebuild-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .dev-rebuild-ready {

@@ -74,7 +74,15 @@ const deckApi = {
     // Push the renderer's full per-session card mirror to main (id/path/title/type/focused).
     // Main exposes this via HTTP for the MCP list_cards tool. Called debounced.
     syncState: (sessions: Record<string, unknown>): void =>
-      ipcRenderer.send('cards:state-sync', { sessions })
+      ipcRenderer.send('cards:state-sync', { sessions }),
+    // List every .md page under <workspace>/.decky/cards/ (recursive). Drives the
+    // "Páginas do workspace" panel.
+    list: (
+      workspace: string
+    ): Promise<{ id: string; path: string; title: string; mtime: number }[]> =>
+      ipcRenderer.invoke('cards:list', workspace),
+    delete: (workspace: string, cardId: string): Promise<boolean> =>
+      ipcRenderer.invoke('cards:delete', workspace, cardId)
   },
   file: {
     watch: (path: string): Promise<true> => ipcRenderer.invoke('file:watch', path),

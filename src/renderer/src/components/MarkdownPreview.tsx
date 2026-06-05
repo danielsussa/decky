@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -33,6 +33,51 @@ function resolveAssetSrc(src: string | undefined, cardPath: string | undefined):
   return `decky-asset://card/${encoded}`
 }
 
+// Resolve a relative .md link to an absolute filesystem path against the card's directory.
+// Returns undefined for absolute URLs, anchor-only hrefs, or when the card path is unknown.
+function resolveMdLink(href: string | undefined, cardPath: string | undefined): string | undefined {
+  if (!href) return undefined
+  if (/^([a-z][a-z0-9+.-]*:|#|\/\/)/i.test(href)) return undefined
+  if (!cardPath) return undefined
+  const noFrag = href.replace(/[#?].*$/, '')
+  if (!/\.(md|markdown)$/i.test(noFrag)) return undefined
+  const lastSlash = cardPath.lastIndexOf('/')
+  const baseDir = lastSlash >= 0 ? cardPath.slice(0, lastSlash) : ''
+  const joined = noFrag.startsWith('/') ? noFrag : `${baseDir}/${noFrag}`
+  const parts = joined.split('/').reduce<string[]>((acc, part) => {
+    if (part === '..') acc.pop()
+    else if (part !== '.' && part !== '') acc.push(part)
+    return acc
+  }, [])
+  return '/' + parts.join('/')
+}
+
+// Find every occurrence of `needle` inside text nodes under `container` and return one
+// Range per match. Per-text-node search means matches that straddle inline markup
+// (e.g. "foo **bar** baz") won't be found — the caller falls back to the user's original
+// selection range in that case.
+function findAllOccurrences(container: HTMLElement, needle: string): Range[] {
+  if (!needle) return []
+  const ranges: Range[] = []
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
+  let node: Node | null = walker.nextNode()
+  while (node) {
+    const text = node.nodeValue ?? ''
+    let from = 0
+    while (from <= text.length) {
+      const idx = text.indexOf(needle, from)
+      if (idx < 0) break
+      const r = document.createRange()
+      r.setStart(node, idx)
+      r.setEnd(node, idx + needle.length)
+      ranges.push(r)
+      from = idx + needle.length
+    }
+    node = walker.nextNode()
+  }
+  return ranges
+}
+
 // rehype-highlight runs BEFORE this component override and wraps code content in nested
 // <span> elements for syntax highlighting. By the time `code()` receives `children`, it's
 // no longer the raw source — it's a React tree. `String(tree)` returns "[object Object]",
@@ -50,7 +95,13 @@ function extractText(node: React.ReactNode): string {
 
 // Intercept fenced widget blocks. Other code blocks fall through to rehype-highlight.
 // The img override rewrites relative <img src> against the card's path (see resolveAssetSrc).
-function makeComponents(cardPath: string | undefined, cardId: string | undefined): Components {
+// The a override turns relative .md links into card opens via decky:open-path (same channel
+// the terminal's Cmd+click on a file ref uses).
+function makeComponents(
+  cardPath: string | undefined,
+  cardId: string | undefined,
+  sessionId: string | undefined
+): Components {
   return {
     code(props) {
       const { className, children, ...rest } = props
@@ -81,6 +132,21 @@ function makeComponents(cardPath: string | undefined, cardId: string | undefined
       const src = typeof props.src === 'string' ? props.src : undefined
       const resolved = resolveAssetSrc(src, cardPath)
       return <img {...props} src={resolved} />
+    },
+    a(props) {
+      const href = typeof props.href === 'string' ? props.href : undefined
+      const target = resolveMdLink(href, cardPath)
+      if (!target || !sessionId) return <a {...props} />
+      const onClick = (ev: React.MouseEvent<HTMLAnchorElement>): void => {
+        // Let modifier-clicks / middle-click fall through to default (which routes through
+        // will-navigate → routeToInternal, fine for the rare "open in external" case).
+        if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return
+        ev.preventDefault()
+        window.dispatchEvent(
+          new CustomEvent('decky:open-path', { detail: { path: target, sessionId } })
+        )
+      }
+      return <a {...props} onClick={onClick} />
     }
   }
 }
@@ -88,6 +154,7 @@ function makeComponents(cardPath: string | undefined, cardId: string | undefined
 interface MarkdownPreviewProps {
   content: string
   cardId?: string
+  sessionId?: string
   path?: string
 }
 
@@ -111,13 +178,17 @@ const seenBlockKeys = new Set<string>()
 function MarkdownPreviewInner({
   content,
   cardId,
+  sessionId,
   path
 }: MarkdownPreviewProps): React.JSX.Element {
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const blocks = useMemo(() => splitIntoBlocks(content), [content])
 
   // Stable identity so ReactMarkdown doesn't see a "new" components prop on every render.
-  const components = useMemo(() => makeComponents(path, cardId), [path, cardId])
+  const components = useMemo(
+    () => makeComponents(path, cardId, sessionId),
+    [path, cardId, sessionId]
+  )
 
   // Restore the saved scroll position when this card mounts/refocuses. Runs whenever the
   // block list changes — the card may grow over several renders, so we re-check until the
@@ -138,9 +209,128 @@ function MarkdownPreviewInner({
     if (el) scrollByCard.set(cardId, el.scrollTop)
   }
 
+  // Right-click on selected text inside the .md-body opens a small floating menu.
+  // For now the only action is "Expandir assunto": pre-create the sibling .md, open it as a
+  // new card, highlight the selection here while the agent fills it in.
+  const [menu, setMenu] = useState<{
+    x: number
+    y: number
+    selection: string
+    range: Range
+  } | null>(null)
+  const onContextMenu = (ev: React.MouseEvent<HTMLDivElement>): void => {
+    if (!sessionId || !path) return
+    const winSel = window.getSelection()
+    const sel = winSel?.toString().trim() ?? ''
+    if (!sel || !winSel || winSel.rangeCount === 0) return
+    ev.preventDefault()
+    setMenu({
+      x: ev.clientX,
+      y: ev.clientY,
+      selection: sel,
+      range: winSel.getRangeAt(0).cloneRange()
+    })
+  }
+  useEffect(() => {
+    if (!menu) return
+    const close = (): void => setMenu(null)
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenu(null)
+    }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
+
+  const expandSubject = async (selection: string, range: Range): Promise<void> => {
+    if (!sessionId || !path) return
+    setMenu(null)
+    const lastSlash = path.lastIndexOf('/')
+    const baseDir = lastSlash >= 0 ? path.slice(0, lastSlash) : ''
+    const slugBase = selection
+      .normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40)
+    const slug = `${slugBase || 'expansao'}-${Math.random().toString(36).slice(2, 6)}`
+    const relPath = `${slug}.md`
+    const absPath = `${baseDir}/${relPath}`
+
+    // Highlight every occurrence of the selected text within this card. Walking text nodes
+    // ourselves (instead of just adding the original range) means a selection like "carro"
+    // that appears 3× in the card pulses in all 3 spots, and it also dodges a stale-range
+    // bug where the captured Range sometimes ended up pointing at the last occurrence after
+    // a memoized re-render. Fall back to the captured range if no per-text-node match
+    // (e.g. selection spans bold/italic so the plain text only exists across nodes).
+    const existing = CSS.highlights.get('expanding') as Highlight | undefined
+    const hl = existing ?? new Highlight()
+    if (!existing) CSS.highlights.set('expanding', hl)
+    const ranges = bodyRef.current ? findAllOccurrences(bodyRef.current, selection) : []
+    if (ranges.length === 0) ranges.push(range)
+    for (const r of ranges) hl.add(r)
+    document.body.classList.add('md-expanding-active')
+
+    // Empty placeholder so the new card opens immediately (preview-server reads the file on POST).
+    // The agent fills it with Write right after.
+    try {
+      await window.deck.file.write(absPath, '')
+    } catch (err) {
+      console.warn('[expand] placeholder write failed', err)
+    }
+    // focus: false → the new card opens as a background tab so the user stays on the
+    // original (still pulsing) while the agent generates content. Focus is handed off
+    // below once the agent's write fires file:changed with non-empty content.
+    window.dispatchEvent(
+      new CustomEvent('decky:open-path', { detail: { path: absPath, sessionId, focus: false } })
+    )
+    void window.deck.file.watch(absPath)
+    const unsubscribe = window.deck.file.onChanged(({ path: changedPath }) => {
+      if (changedPath !== absPath) return
+      void window.deck.file.readText(absPath).then((text) => {
+        if (text == null || text.trim().length === 0) return
+        window.dispatchEvent(
+          new CustomEvent('decky:focus-path', { detail: { path: absPath, sessionId } })
+        )
+        unsubscribe()
+      })
+    })
+
+    const prompt =
+      `Expandir o assunto destacado no card "${path}".\n` +
+      `\n` +
+      `Trecho selecionado (delimitado por <<< >>>):\n` +
+      `<<<\n${selection}\n>>>\n` +
+      `\n` +
+      `Já preparei o arquivo de destino vazio em "${absPath}" e ele já está aberto como card novo. Faça:\n` +
+      `1. Escreva o conteúdo do aprofundamento nesse arquivo com Write — escopo coerente com o card pai, sem repetir o que já está lá.\n` +
+      `2. Edite o card original ("${path}") com Edit, substituindo EXATAMENTE o trecho selecionado por: [${selection}](${relPath})\n` +
+      `3. NÃO chame preview_show — o card já está aberto.`
+    // Bracketed paste so claude CLI ingests the multi-line prompt as one block instead of
+    // submitting on every newline. The trailing \r after \e[201~ ends paste mode and submits.
+    const wrapped = `\x1b[200~${prompt}\x1b[201~\r`
+    window.deck.pty.write(sessionId, wrapped)
+  }
+
+  // Clear the "expanding" highlight when this card's content ACTUALLY changes (not on first
+  // mount or tab-switch remount, which would wipe another card's in-flight highlight). The
+  // content change is our signal that the agent just inserted the link.
+  const prevContentRef = useRef(content)
+  useEffect(() => {
+    if (prevContentRef.current === content) return
+    prevContentRef.current = content
+    const hl = CSS.highlights.get('expanding') as Highlight | undefined
+    if (hl && hl.size > 0) hl.clear()
+    if (!hl || hl.size === 0) document.body.classList.remove('md-expanding-active')
+  }, [content])
+
   return (
     <div className="md-preview">
-      <div className="md-body" ref={bodyRef} onScroll={onScroll}>
+      <div className="md-body" ref={bodyRef} onScroll={onScroll} onContextMenu={onContextMenu}>
         {blocks.map((block) => {
           const isNew = !seenBlockKeys.has(block.key)
           // Mark this key as seen synchronously so that an immediate re-render of the same
@@ -163,6 +353,21 @@ function MarkdownPreviewInner({
           )
         })}
       </div>
+      {menu && (
+        <div
+          className="md-context-menu"
+          style={{ left: menu.x, top: menu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="md-context-menu-item"
+            onClick={() => void expandSubject(menu.selection, menu.range)}
+          >
+            Expandir assunto
+          </button>
+        </div>
+      )}
     </div>
   )
 }

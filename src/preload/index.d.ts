@@ -42,6 +42,10 @@ export interface DeckAPI {
   cards: {
     write: (workspace: string, cardId: string, content: string) => Promise<string | null>
     syncState: (sessions: Record<string, unknown>) => void
+    list: (
+      workspace: string
+    ) => Promise<{ id: string; path: string; title: string; mtime: number }[]>
+    delete: (workspace: string, cardId: string) => Promise<boolean>
   }
   file: {
     watch: (path: string) => Promise<true>

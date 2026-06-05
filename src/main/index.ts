@@ -20,6 +20,7 @@ import { migrateGlobalState } from './migrate'
 import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from './mcp-installer'
 import { ensureDeckInstruction } from './claude-md-installer'
+import { ensureDeckyHooks } from './hooks-installer'
 import { resolveClaudeBin, readAiTitle } from './claude-bin'
 import { initCliPaths } from './cli-paths'
 import { registerStateHandlers } from './state-store'
@@ -260,6 +261,9 @@ app.whenReady().then(async () => {
   })
   void ensureDeckInstruction().catch((err) => {
     console.warn('[claude-md-installer] failed to write CLAUDE.md:', err)
+  })
+  void ensureDeckyHooks().catch((err) => {
+    console.warn('[hooks-installer] failed to write settings.json:', err)
   })
 
   // Packaged macOS apps use build/icon.icns; in dev the dock falls back to the

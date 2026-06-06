@@ -1,3 +1,5 @@
+import { diag, installCrashLogging } from './diag'
+installCrashLogging()
 import { app, shell, BrowserWindow, ipcMain, Menu, Notification, dialog } from 'electron'
 import { join } from 'path'
 import { existsSync, statSync } from 'node:fs'
@@ -14,6 +16,7 @@ import {
 } from './preview-server'
 import { registerWorkspaceHandlers } from './workspace-store'
 import { registerCardsHandlers } from './cards-store'
+import { startDeckyHandoffBackend } from './handoff-backend'
 import { registerCardMirrorHandlers } from './card-mirror'
 import { registerWidgetBridge } from './widget-bridge'
 import { migrateGlobalState } from './migrate'
@@ -67,7 +70,9 @@ function routeFolderToWindow(dir: string | null): void {
   if (dir) mainWindow.webContents.send('session:add', { cwd: dir, kind: 'claude' })
 }
 
+diag('requesting single-instance lock')
 const gotLock = app.requestSingleInstanceLock()
+diag(`gotLock=${gotLock}`)
 if (!gotLock) {
   // Another instance already holds the lock — the running one will get our argv via
   // 'second-instance' and route the folder into its window, so we exit. Log it: this is the
@@ -149,11 +154,14 @@ function createWindow(): void {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(async () => {
+  diag('whenReady fired')
   // Migrate pre-rename data (~/.deck → ~/.decky) BEFORE the renderer reads any state.
   await migrateGlobalState()
+  diag('migrateGlobalState done')
 
   // Hydrate custom CLI paths before any cli:list call can race the renderer mount.
   await initCliPaths()
+  diag('initCliPaths done')
 
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
@@ -192,7 +200,11 @@ app.whenReady().then(async () => {
   setupWebSession(() => mainWindow)
   attachWebContentsPopupRouter(() => mainWindow)
   setupWebViews(() => mainWindow)
+  diag('handlers registered, starting preview server')
   startPreviewServer(() => mainWindow)
+  // Backend do handoff (opt-in via DECKY_HANDOFF): socket falando o protocolo contra o card web
+  // focado, pro sdk/adapters/MCP do handoff dirigirem o mesmo card logado que o usuário vê.
+  if (process.env.DECKY_HANDOFF) startDeckyHandoffBackend()
 
   ipcMain.handle('dialog:pick-folder', async () => {
     const opts: Electron.OpenDialogOptions = {
@@ -280,13 +292,18 @@ app.whenReady().then(async () => {
   // default Electron icon unless we set it explicitly.
   if (process.platform === 'darwin') app.dock?.setIcon(icon)
 
+  diag('creating window')
   createWindow()
+  diag('createWindow returned')
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+  diag('whenReady handler completed')
+}).catch((err) => {
+  diag(`whenReady REJECTED: ${err?.stack || err}`)
 })
 
 // Quit when all windows are closed, except on macOS. There, it's common

@@ -397,3 +397,75 @@ function spoofUserAgentData() {
     document.addEventListener('DOMContentLoaded', setColorSchemeMeta, { once: true })
   }
 })()
+
+// __meTracker — instrumentação de "página pronta" pro waitForSettled do handoff (conta fetch/XHR
+// em voo + marca última mutação de DOM). Lido pelo backend @handoff/runtime-electron. Roda no main
+// world (contextIsolation off) pra enxergar fetch/XHR reais.
+// ⚠️ DUP: sincronizado com TRACKER_SCRIPT de @handoff/runtime-electron (runtime/electron/src/tracker.ts).
+;(() => {
+  if (window.__meTracker) return
+  let inFlight = 0
+  let lastMutation = Date.now()
+  const origFetch = window.fetch ? window.fetch.bind(window) : null
+  if (origFetch) {
+    window.fetch = function (input, init) {
+      if (init && init.keepalive) return origFetch(input, init)
+      inFlight++
+      const done = () => {
+        inFlight--
+      }
+      return origFetch(input, init).then(
+        (r) => {
+          done()
+          return r
+        },
+        (e) => {
+          done()
+          throw e
+        }
+      )
+    }
+  }
+  const XHR = XMLHttpRequest.prototype
+  const origSend = XHR.send
+  XHR.send = function (...args) {
+    if (!this.__meCounted) {
+      this.__meCounted = true
+      inFlight++
+      const dec = () => {
+        inFlight--
+      }
+      this.addEventListener('loadend', dec, { once: true })
+    }
+    return origSend.apply(this, args)
+  }
+  const startObserver = () => {
+    if (!document.documentElement) {
+      setTimeout(startObserver, 10)
+      return
+    }
+    try {
+      const obs = new MutationObserver(() => {
+        lastMutation = Date.now()
+      })
+      obs.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+  startObserver()
+  window.__meTracker = {
+    get inFlight() {
+      return inFlight
+    },
+    get lastMutation() {
+      return lastMutation
+    },
+    debug: () => ({ inFlight, lastMutation })
+  }
+})()

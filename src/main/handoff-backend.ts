@@ -7,24 +7,55 @@ import { getWebViewsManager } from './web-views'
 import { getAllCards } from './card-mirror'
 import { startHandoffServer } from '@handoff/runtime-electron'
 
-// Card web focado em qualquer sessão; fallback: único card web aberto no total. (O socket do
-// handoff é global; o decky é multi-sessão — então busca o foco onde ele estiver.)
+// Sticky pointer pra WebContents que estamos dirigindo. Uma vez que o agente começa, mantém
+// o MESMO card mesmo se o foco mudar (editor, outra aba, outra sessão do decky). Sobrevive
+// re-renders e troca de foco. Só "perde" o alvo se o card for fechado (WC destroyed).
+let stickyWc: WebContents | null = null
+
+// Resolução, sticky-first: enquanto o WC alvo estiver vivo, continua nele. Se não tiver
+// alvo (boot inicial OU o card sticky foi fechado), elege um: preferência por foco, depois
+// único card web global, depois qualquer card web aberto.
 function activeWebCardWc(): WebContents | null {
+  // (1) Sticky: continua dirigindo o mesmo WC. Independe de foco — só quebra se for destruído.
+  if (stickyWc && !stickyWc.isDestroyed()) return stickyWc
+
   const manager = getWebViewsManager()
   if (!manager) return null
   const sessions = Object.values(getAllCards())
+
+  // (2) Bootstrap: card web focado em alguma sessão.
   for (const s of sessions) {
     const f = s.cards.find((c) => c.id === s.focused)
     if (f && f.type === 'web' && manager.has(f.id)) {
       const wc = manager.webContentsFor(f.id)
-      if (wc) return wc
+      if (wc) {
+        stickyWc = wc
+        return wc
+      }
     }
   }
   const webIds = new Set<string>()
   for (const s of sessions) for (const c of s.cards) if (c.type === 'web') webIds.add(c.id)
+  // (3) Único card web global.
   if (webIds.size === 1) {
     const only = [...webIds][0]
-    if (manager.has(only)) return manager.webContentsFor(only)
+    if (manager.has(only)) {
+      const wc = manager.webContentsFor(only)
+      if (wc) {
+        stickyWc = wc
+        return wc
+      }
+    }
+  }
+  // (4) Qualquer card web aberto (escolha estável: primeiro id).
+  for (const id of webIds) {
+    if (manager.has(id)) {
+      const wc = manager.webContentsFor(id)
+      if (wc) {
+        stickyWc = wc
+        return wc
+      }
+    }
   }
   return null
 }

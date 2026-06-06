@@ -202,9 +202,9 @@ app.whenReady().then(async () => {
   setupWebViews(() => mainWindow)
   diag('handlers registered, starting preview server')
   startPreviewServer(() => mainWindow)
-  // Backend do handoff (opt-in via DECKY_HANDOFF): socket falando o protocolo contra o card web
-  // focado, pro sdk/adapters/MCP do handoff dirigirem o mesmo card logado que o usuário vê.
-  if (process.env.DECKY_HANDOFF) startDeckyHandoffBackend()
+  // Backend do handoff: socket falando o protocolo contra o card web focado, pro sdk/adapters/MCP
+  // do handoff dirigirem o mesmo card logado que o usuário vê. Opt-OUT via DECKY_NO_HANDOFF=1.
+  if (!process.env.DECKY_NO_HANDOFF) startDeckyHandoffBackend()
 
   ipcMain.handle('dialog:pick-folder', async () => {
     const opts: Electron.OpenDialogOptions = {

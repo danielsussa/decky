@@ -1,8 +1,9 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { PreviewSource } from '../shared/preview'
 import type { CliKind, DetectedCli, CliInstallHint } from '../shared/cli-spec'
+import type { Locale } from '../shared/locale'
 
-export type { PreviewSource, CliKind, DetectedCli, CliInstallHint }
+export type { PreviewSource, CliKind, DetectedCli, CliInstallHint, Locale }
 
 export type PtyDataMsg = { id: string; data: string }
 export type PtyExitMsg = { id: string; code: number }
@@ -45,6 +46,35 @@ export interface DeckAPI {
     list: (
       workspace: string
     ) => Promise<{ id: string; path: string; title: string; mtime: number }[]>
+    search: (
+      workspace: string,
+      query: string,
+      limit?: number
+    ) => Promise<
+      {
+        id: string
+        path: string
+        title: string
+        snippet: string
+        line: number
+        score: number
+        mtime: number
+      }[]
+    >
+    resolveWikilink: (workspace: string, name: string) => Promise<string | null>
+    backlinks: (
+      workspace: string,
+      cardPath: string
+    ) => Promise<
+      {
+        id: string
+        path: string
+        title: string
+        snippet: string
+        line: number
+        mtime: number
+      }[]
+    >
     delete: (workspace: string, cardId: string) => Promise<boolean>
   }
   file: {
@@ -84,12 +114,14 @@ export interface DeckAPI {
     onUuidConflict: (callback: (msg: { id: string }) => void) => () => void
   }
   app: {
+    locale: Locale
     getStartupCwd: () => Promise<string>
     pickFolder: () => Promise<string | null>
     pickFile: (title?: string) => Promise<string | null>
     onMenuNewSession: (callback: () => void) => () => void
     onMenuCloseTab: (callback: () => void) => () => void
     onMenuOpenCliSettings: (callback: () => void) => () => void
+    onMenuDevRebuild: (callback: () => void) => () => void
     onFlush: (callback: () => void) => () => void
     flushDone: () => void
     onOpenUrl: (callback: (url: string) => void) => () => void
@@ -104,6 +136,9 @@ export interface DeckAPI {
   state: {
     get: <T = unknown>(key: string) => Promise<T | null>
     set: (key: string, value: unknown) => Promise<true>
+  }
+  theme: {
+    setMode: (mode: 'dark' | 'light') => Promise<true>
   }
   notify: {
     show: (payload: { id: string; title: string; body?: string }) => Promise<void>
@@ -139,6 +174,8 @@ export interface DeckAPI {
         canFwd: boolean
       }) => void
     ) => () => void
+    getControlling: (cardId: string) => Promise<boolean>
+    onControlling: (callback: (msg: { cardId: string; controlling: boolean }) => void) => () => void
   }
   widget: {
     onCall: (

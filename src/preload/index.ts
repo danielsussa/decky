@@ -3,6 +3,12 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 import type { PreviewSource } from '../shared/preview'
 import type { CliKind, DetectedCli, CliInstallHint } from '../shared/cli-spec'
+import { DEFAULT_LOCALE, LOCALE_ARG_PREFIX, normalizeLocale, type Locale } from '../shared/locale'
+
+const resolvedLocale: Locale = (() => {
+  const arg = process.argv.find((a) => a.startsWith(LOCALE_ARG_PREFIX))
+  return arg ? normalizeLocale(arg.slice(LOCALE_ARG_PREFIX.length)) : DEFAULT_LOCALE
+})()
 
 type PtyDataMsg = { id: string; data: string }
 type PtyExitMsg = { id: string; code: number }
@@ -81,6 +87,41 @@ const deckApi = {
       workspace: string
     ): Promise<{ id: string; path: string; title: string; mtime: number }[]> =>
       ipcRenderer.invoke('cards:list', workspace),
+    // Full-text search across <workspace>/.decky/cards/ (recursive). Empty query
+    // returns the most-recently-modified cards by mtime.
+    search: (
+      workspace: string,
+      query: string,
+      limit?: number
+    ): Promise<
+      {
+        id: string
+        path: string
+        title: string
+        snippet: string
+        line: number
+        score: number
+        mtime: number
+      }[]
+    > => ipcRenderer.invoke('cards:search', workspace, query, limit),
+    // Resolve a [[name]] wikilink to an absolute card path under <workspace>/.decky/cards/.
+    // Returns null if no card matches by full id or basename.
+    resolveWikilink: (workspace: string, name: string): Promise<string | null> =>
+      ipcRenderer.invoke('cards:resolve-wikilink', workspace, name),
+    // List every card whose body contains [[<id>]] or [[<basename>]] pointing at cardPath.
+    backlinks: (
+      workspace: string,
+      cardPath: string
+    ): Promise<
+      {
+        id: string
+        path: string
+        title: string
+        snippet: string
+        line: number
+        mtime: number
+      }[]
+    > => ipcRenderer.invoke('cards:backlinks', workspace, cardPath),
     delete: (workspace: string, cardId: string): Promise<boolean> =>
       ipcRenderer.invoke('cards:delete', workspace, cardId)
   },
@@ -144,6 +185,7 @@ const deckApi = {
     }
   },
   app: {
+    locale: resolvedLocale,
     getStartupCwd: (): Promise<string> => ipcRenderer.invoke('app:get-startup-cwd'),
     pickFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:pick-folder'),
     pickFile: (title?: string): Promise<string | null> =>
@@ -162,6 +204,11 @@ const deckApi = {
       const listener = (): void => callback()
       ipcRenderer.on('menu:open-cli-settings', listener)
       return () => ipcRenderer.removeListener('menu:open-cli-settings', listener)
+    },
+    onMenuDevRebuild: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('menu:dev-rebuild', listener)
+      return () => ipcRenderer.removeListener('menu:dev-rebuild', listener)
     },
     // Quit-time flush: main sends 'app:flush' and holds the exit until we reply 'app:flush-done'.
     onFlush: (callback: () => void): (() => void) => {
@@ -193,6 +240,12 @@ const deckApi = {
   state: {
     get: <T = unknown>(key: string): Promise<T | null> => ipcRenderer.invoke('state:get', key),
     set: (key: string, value: unknown): Promise<true> => ipcRenderer.invoke('state:set', key, value)
+  },
+  theme: {
+    // Tells main to set Electron's nativeTheme.themeSource so every embedded webContents
+    // (each web card) reports the matching prefers-color-scheme. Call on every renderer
+    // mode toggle.
+    setMode: (mode: 'dark' | 'light'): Promise<true> => ipcRenderer.invoke('theme:set-mode', mode)
   },
   notify: {
     show: (payload: { id: string; title: string; body?: string }): Promise<void> =>
@@ -244,6 +297,17 @@ const deckApi = {
       const listener = (_: unknown, msg: Parameters<typeof callback>[0]): void => callback(msg)
       ipcRenderer.on('web:state', listener)
       return () => ipcRenderer.removeListener('web:state', listener)
+    },
+    // Estado vivo "agente está dirigindo este card". O backend do handoff (handoff-backend.ts)
+    // liga/desliga; o renderer reage com animação + bounds shrunk pra mostrar a borda.
+    getControlling: (cardId: string): Promise<boolean> =>
+      ipcRenderer.invoke('web:get-controlling', cardId),
+    onControlling: (
+      callback: (msg: { cardId: string; controlling: boolean }) => void
+    ): (() => void) => {
+      const listener = (_: unknown, msg: Parameters<typeof callback>[0]): void => callback(msg)
+      ipcRenderer.on('web:controlling', listener)
+      return () => ipcRenderer.removeListener('web:controlling', listener)
     }
   },
   widget: {

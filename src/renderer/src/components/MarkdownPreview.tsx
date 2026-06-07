@@ -7,14 +7,28 @@ import 'highlight.js/styles/github-dark.css'
 import MermaidBlock from './MermaidBlock'
 import FlowBlock from './FlowBlock'
 import ChecklistBlock from './ChecklistBlock'
+import BacklinksFooter from './BacklinksFooter'
+import remarkWikilinks from '../lib/remark-wikilinks'
 import { splitIntoBlocks } from '../lib/markdown-blocks'
+
+// Card paths live under `<workspace>/.decky/cards/...`. Strip the suffix to recover the
+// workspace root — saves us threading a `workspace` prop through Preview/DeckGrid for
+// wikilink resolution and backlinks lookups.
+function workspaceFromCardPath(cardPath: string | undefined): string | undefined {
+  if (!cardPath) return undefined
+  const idx = cardPath.indexOf('/.decky/cards/')
+  return idx > 0 ? cardPath.slice(0, idx) : undefined
+}
 
 // Resolve <img src> against the .md file's directory. ReactMarkdown alone treats relative
 // src as relative to the renderer page URL (http://localhost:xxxx in dev, file://app/... in
 // prod), neither of which knows where the card .md lives. We rewrite relative srcs to the
 // decky-asset:// protocol (see main/asset-protocol.ts) so they resolve to the actual file
 // on disk under the card's directory.
-function resolveAssetSrc(src: string | undefined, cardPath: string | undefined): string | undefined {
+function resolveAssetSrc(
+  src: string | undefined,
+  cardPath: string | undefined
+): string | undefined {
   if (!src) return src
   if (/^(https?:|data:|decky-asset:|blob:|file:)/i.test(src)) return src
   if (!cardPath) return src
@@ -110,16 +124,11 @@ function makeComponents(
         return <MermaidBlock code={extractText(children).replace(/\n$/, '')} />
       }
       if (classes.includes('language-flow')) {
-        return (
-          <FlowBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
-        )
+        return <FlowBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
       }
       if (classes.includes('language-checklist')) {
         return (
-          <ChecklistBlock
-            code={extractText(children).replace(/\n$/, '')}
-            cardId={cardId ?? ''}
-          />
+          <ChecklistBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
         )
       }
       return (
@@ -135,12 +144,55 @@ function makeComponents(
     },
     a(props) {
       const href = typeof props.href === 'string' ? props.href : undefined
+      // Wikilink injected by remarkWikilinks: `wikilink:<name>`. Resolve via IPC to an
+      // absolute card path, then route through the same decky:open-path channel as the
+      // regular .md link override below.
+      if (href && href.startsWith('wikilink:') && sessionId) {
+        const name = href.slice('wikilink:'.length)
+        const workspace = workspaceFromCardPath(cardPath)
+        const onClick = (ev: React.MouseEvent<HTMLAnchorElement>): void => {
+          if (
+            ev.defaultPrevented ||
+            ev.button !== 0 ||
+            ev.metaKey ||
+            ev.ctrlKey ||
+            ev.shiftKey ||
+            ev.altKey
+          )
+            return
+          ev.preventDefault()
+          if (!workspace) return
+          void window.deck.cards.resolveWikilink(workspace, name).then((target) => {
+            if (!target) return
+            window.dispatchEvent(
+              new CustomEvent('decky:open-path', { detail: { path: target, sessionId } })
+            )
+          })
+        }
+        return (
+          <a
+            {...props}
+            href="#"
+            className="wikilink"
+            title={`abrir card [[${name}]]`}
+            onClick={onClick}
+          />
+        )
+      }
       const target = resolveMdLink(href, cardPath)
       if (!target || !sessionId) return <a {...props} />
       const onClick = (ev: React.MouseEvent<HTMLAnchorElement>): void => {
         // Let modifier-clicks / middle-click fall through to default (which routes through
         // will-navigate → routeToInternal, fine for the rare "open in external" case).
-        if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return
+        if (
+          ev.defaultPrevented ||
+          ev.button !== 0 ||
+          ev.metaKey ||
+          ev.ctrlKey ||
+          ev.shiftKey ||
+          ev.altKey
+        )
+          return
         ev.preventDefault()
         window.dispatchEvent(
           new CustomEvent('decky:open-path', { detail: { path: target, sessionId } })
@@ -343,7 +395,7 @@ function MarkdownPreviewInner({
               data-block-type={block.type}
             >
               <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
+                remarkPlugins={[remarkGfm, remarkWikilinks]}
                 rehypePlugins={[rehypeRaw, rehypeHighlight]}
                 components={components}
               >
@@ -352,6 +404,7 @@ function MarkdownPreviewInner({
             </div>
           )
         })}
+        {path && sessionId && <BacklinksFooter cardPath={path} sessionId={sessionId} />}
       </div>
       {menu && (
         <div

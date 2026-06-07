@@ -4,10 +4,13 @@ import { basename, isAbsolute, resolve as resolvePath } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { BrowserWindow, type WebContents } from 'electron'
 import type { PreviewSource, PreviewSourceWire } from '../shared/preview'
-import { isGeneratedCardPath } from './paths'
+import { isGeneratedCardPath, workspaceCardsDir } from './paths'
 import { getCardsForSession, getAllCards, registerPreviewResolution } from './card-mirror'
+import { searchCards } from './cards-search'
+import { computeBacklinks } from './cards-wikilinks'
 import { awaitWidgetCall } from './widget-bridge'
 import { getWebViewsManager } from './web-views'
+import { trackActivityStart, trackActivityEnd } from './handoff-activity'
 
 const PORT = Number(process.env.DECKY_PREVIEW_PORT) || 6790
 const HOST = '127.0.0.1'
@@ -259,14 +262,18 @@ function normalizeWebUrl(raw: string): string {
   const s = (raw || '').trim()
   if (!s) return s
   if (/^(https?|file|about|data):/i.test(s)) return s
-  if (/^localhost(:\d+)?(\/|$)/i.test(s) || /^127\.0\.0\.1(:\d+)?(\/|$)/i.test(s)) return `http://${s}`
+  if (/^localhost(:\d+)?(\/|$)/i.test(s) || /^127\.0\.0\.1(:\d+)?(\/|$)/i.test(s))
+    return `http://${s}`
   if (/^[^\s]+\.[^\s]{2,}/.test(s) && !/\s/.test(s)) return `https://${s}`
   return `https://www.google.com/search?q=${encodeURIComponent(s)}`
 }
 
 // Resolve which web card the action targets: an explicit cardId, else the session's focused card
 // (if it's a web card), else the single open web card. Throws a guiding error otherwise.
-function resolveWebCard(sessionId: string, explicitCardId?: string): { cardId: string; wc: WebContents } {
+function resolveWebCard(
+  sessionId: string,
+  explicitCardId?: string
+): { cardId: string; wc: WebContents } {
   const manager = getWebViewsManager()
   if (!manager) throw new Error('no web views ready — open a web card first')
   let cardId = explicitCardId
@@ -328,8 +335,20 @@ async function runWebAction(
       target = null
     }
     if (target) {
-      await target.wc.loadURL(url).catch(() => {})
-      return { ok: true, cardId: target.cardId, url: target.wc.getURL(), title: target.wc.getTitle() }
+      // Caminho que dirige um card já aberto — sinaliza atividade pro tracker. Cria card
+      // novo NÃO sinaliza (não há controle de algo que ainda não existe).
+      trackActivityStart(target.wc)
+      try {
+        await target.wc.loadURL(url).catch(() => {})
+        return {
+          ok: true,
+          cardId: target.cardId,
+          url: target.wc.getURL(),
+          title: target.wc.getTitle()
+        }
+      } finally {
+        trackActivityEnd()
+      }
     }
     // Explicit cardId that doesn't exist is an error; no cardId → open a fresh web card.
     if (body.cardId) throw new Error(`no web card with id "${body.cardId}"`)
@@ -338,19 +357,29 @@ async function runWebAction(
   }
 
   const { wc } = resolveWebCard(sessionId, body.cardId)
-  switch (body.action) {
-    case 'snapshot':
-      return wc.executeJavaScript(SNAPSHOT_JS)
-    case 'read':
-      return wc.executeJavaScript(READ_JS)
-    case 'click':
-      return wc.executeJavaScript(clickJs(String(body.ref ?? '')), true)
-    case 'type':
-      return wc.executeJavaScript(typeJs(String(body.ref ?? ''), String(body.text ?? '')), true)
-    case 'eval':
-      return wc.executeJavaScript(String(body.code ?? ''))
-    default:
-      throw new Error(`unknown web action: ${body.action}`)
+  // Demais ações sempre mexem ou lêem o DOM vivo do card — sinaliza atividade. O tracker
+  // tem debounce no end, então uma rajada vira UM estado contínuo de "controlado".
+  trackActivityStart(wc)
+  try {
+    switch (body.action) {
+      case 'snapshot':
+        return await wc.executeJavaScript(SNAPSHOT_JS)
+      case 'read':
+        return await wc.executeJavaScript(READ_JS)
+      case 'click':
+        return await wc.executeJavaScript(clickJs(String(body.ref ?? '')), true)
+      case 'type':
+        return await wc.executeJavaScript(
+          typeJs(String(body.ref ?? ''), String(body.text ?? '')),
+          true
+        )
+      case 'eval':
+        return await wc.executeJavaScript(String(body.code ?? ''))
+      default:
+        throw new Error(`unknown web action: ${body.action}`)
+    }
+  } finally {
+    trackActivityEnd()
   }
 }
 
@@ -432,6 +461,63 @@ async function handleRequest(
 
   if (req.method === 'GET' && url === '/sessions/cards') {
     sendJson(res, 200, getAllCards())
+    return
+  }
+
+  // POST /cards/search — full-text search the session's workspace card library.
+  // Body: { query: string, limit?: number }. Resolves the workspace path from the
+  // session mirror (cwd) and runs the shared searchCards helper.
+  if (req.method === 'POST' && url === '/cards/search') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as { query?: unknown; limit?: unknown }
+      const query = typeof body.query === 'string' ? body.query : ''
+      const limit = typeof body.limit === 'number' ? body.limit : 20
+      const mirror = getCardsForSession(sessionId)
+      if (!mirror.cwd) {
+        sendJson(res, 400, {
+          error: 'no workspace known for this session — open a card in the workspace first'
+        })
+        return
+      }
+      const hits = await searchCards(workspaceCardsDir(mirror.cwd), query, limit)
+      sendJson(res, 200, { hits })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
+    return
+  }
+
+  // POST /cards/backlinks — reverse links for a given card. Body: { cardPath?: string }.
+  // Without cardPath we default to the session's focused card so the MCP tool can be called
+  // with zero args ("who refs the card I'm staring at?").
+  if (req.method === 'POST' && url === '/cards/backlinks') {
+    try {
+      const raw = await readBody(req)
+      const body = raw ? (JSON.parse(raw) as { cardPath?: unknown }) : {}
+      const mirror = getCardsForSession(sessionId)
+      if (!mirror.cwd) {
+        sendJson(res, 400, {
+          error: 'no workspace known for this session — open a card in the workspace first'
+        })
+        return
+      }
+      let cardPath = typeof body.cardPath === 'string' ? body.cardPath : ''
+      if (!cardPath) {
+        const focused = mirror.cards.find((c) => c.id === mirror.focused)
+        if (focused && focused.type === 'markdown' && focused.path) cardPath = focused.path
+      }
+      if (!cardPath) {
+        sendJson(res, 400, {
+          error: 'no cardPath given and no focused markdown card in this session'
+        })
+        return
+      }
+      const hits = await computeBacklinks(workspaceCardsDir(mirror.cwd), cardPath)
+      sendJson(res, 200, { cardPath, hits })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
     return
   }
 

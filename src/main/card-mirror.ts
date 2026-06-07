@@ -28,6 +28,9 @@ export type MirrorCard = {
 export type MirrorSession = {
   cards: MirrorCard[]
   focused: string | null
+  // Workspace cwd of the session. Used by `/cards/search` to resolve
+  // <workspace>/.decky/cards/ for the MCP search_cards tool.
+  cwd?: string
 }
 
 const bySession = new Map<string, MirrorSession>()
@@ -70,7 +73,8 @@ export function registerCardMirrorHandlers(_getWindow: () => BrowserWindow | nul
       if (!s) continue
       bySession.set(id, {
         cards: Array.isArray(s.cards) ? s.cards : [],
-        focused: typeof s.focused === 'string' ? s.focused : null
+        focused: typeof s.focused === 'string' ? s.focused : null,
+        cwd: typeof s.cwd === 'string' ? s.cwd : undefined
       })
     }
   })

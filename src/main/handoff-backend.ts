@@ -6,6 +6,7 @@ import type { WebContents } from 'electron'
 import { getWebViewsManager } from './web-views'
 import { getAllCards } from './card-mirror'
 import { startHandoffServer } from '@handoff/runtime-electron'
+import { trackActivityStart, trackActivityEnd } from './handoff-activity'
 
 // Sticky pointer pra WebContents que estamos dirigindo. Uma vez que o agente começa, mantém
 // o MESMO card mesmo se o foco mudar (editor, outra aba, outra sessão do decky). Sobrevive
@@ -70,10 +71,19 @@ function normalizeUrl(raw: string): string {
   return `https://www.google.com/search?q=${encodeURIComponent(s)}`
 }
 
+// O tracker debounced de "controlando" vive em handoff-activity.ts — compartilhado com o
+// preview-server (/web/act), porque os dois caminhos dirigem o mesmo WC e o usuário precisa
+// ver o feedback visual independente de qual cliente está dirigindo.
+function onActivity(kind: 'start' | 'end', wc: WebContents | null): void {
+  if (kind === 'start') trackActivityStart(wc)
+  else trackActivityEnd()
+}
+
 export function startDeckyHandoffBackend(): void {
   startHandoffServer({
     getActiveWebContents: activeWebCardWc,
-    normalizeUrl
+    normalizeUrl,
+    onActivity
   })
   console.log('[handoff] decky backend on — dirige o card web focado')
 }

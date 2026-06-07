@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Pin } from 'lucide-react'
 import type { DeckCard } from './DeckGrid'
 import { PaneVisibleProvider } from '../web-visibility'
@@ -23,6 +23,24 @@ export default function DeckTabs({
   const activeId = focusedId && cards.some((c) => c.id === focusedId) ? focusedId : cards[0]?.id
   const [dragId, setDragId] = useState<string | null>(null)
   const [overId, setOverId] = useState<string | null>(null)
+  // cardIds atualmente sendo dirigidos pelo handoff/MCP. A indicação visual fica na tab
+  // (label pulsando na cor accent) — substitui a borda em volta do canvas. Os cards web
+  // só emitem 'web:controlling' (web-views.ts setControlling), então uma tab não-web nunca
+  // entra nesse set.
+  const [controlledIds, setControlledIds] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    const off = window.deck.web.onControlling((msg) => {
+      setControlledIds((prev) => {
+        const has = prev.has(msg.cardId)
+        if (msg.controlling === has) return prev
+        const next = new Set(prev)
+        if (msg.controlling) next.add(msg.cardId)
+        else next.delete(msg.cardId)
+        return next
+      })
+    })
+    return off
+  }, [])
 
   const endDrag = (): void => {
     setDragId(null)
@@ -58,7 +76,7 @@ export default function DeckTabs({
         {cards.map((c) => (
           <div
             key={c.id}
-            className={`deck-tab ${c.id === activeId ? 'deck-tab-active' : ''} ${c.pinned ? 'deck-tab-ispinned' : ''} ${overId === c.id && dragId !== c.id ? 'deck-tab-dragover' : ''} ${dragId === c.id ? 'deck-tab-dragging' : ''}`}
+            className={`deck-tab ${c.id === activeId ? 'deck-tab-active' : ''} ${c.pinned ? 'deck-tab-ispinned' : ''} ${overId === c.id && dragId !== c.id ? 'deck-tab-dragover' : ''} ${dragId === c.id ? 'deck-tab-dragging' : ''} ${controlledIds.has(c.id) ? 'deck-tab-controlling' : ''}`}
             role="button"
             tabIndex={0}
             title={

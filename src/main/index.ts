@@ -1,11 +1,21 @@
 import { diag, installCrashLogging } from './diag'
 installCrashLogging()
-import { app, shell, BrowserWindow, ipcMain, Menu, Notification, dialog } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  Notification,
+  dialog,
+  nativeTheme
+} from 'electron'
 import { join } from 'path'
 import { existsSync, statSync } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { buildMenu } from './menu'
+import { LOCALE_ARG_PREFIX, normalizeLocale } from '../shared/locale'
 import { registerPtyHandlers, killAllPtys } from './pty'
 import {
   startPreviewServer,
@@ -16,6 +26,9 @@ import {
 } from './preview-server'
 import { registerWorkspaceHandlers } from './workspace-store'
 import { registerCardsHandlers } from './cards-store'
+import { searchCards } from './cards-search'
+import { resolveWikilink, computeBacklinks } from './cards-wikilinks'
+import { workspaceCardsDir } from './paths'
 import { startDeckyHandoffBackend } from './handoff-backend'
 import { registerCardMirrorHandlers } from './card-mirror'
 import { registerWidgetBridge } from './widget-bridge'
@@ -26,9 +39,10 @@ import { ensureDeckInstruction } from './claude-md-installer'
 import { ensureDeckyHooks } from './hooks-installer'
 import { resolveClaudeBin, readAiTitle } from './claude-bin'
 import { initCliPaths } from './cli-paths'
-import { registerStateHandlers } from './state-store'
+import { registerStateHandlers, getState } from './state-store'
 import { registerCliHandlers } from './cli-handlers'
 import { registerDevRebuildHandlers } from './dev-rebuild'
+import { getBuildInfo } from './build-info'
 import { registerGitHandlers } from './git-stats'
 import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
 import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
@@ -100,7 +114,10 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
-      webviewTag: true
+      webviewTag: true,
+      // Surfaced sync to the renderer via preload (window.deck.app.locale) — no IPC round-trip,
+      // no boot flicker. Resolved from app.getLocale() and normalized to a supported language.
+      additionalArguments: [`${LOCALE_ARG_PREFIX}${normalizeLocale(app.getLocale())}`]
     }
   })
 
@@ -153,89 +170,109 @@ function createWindow(): void {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(async () => {
-  diag('whenReady fired')
-  // Migrate pre-rename data (~/.deck → ~/.decky) BEFORE the renderer reads any state.
-  await migrateGlobalState()
-  diag('migrateGlobalState done')
+app
+  .whenReady()
+  .then(async () => {
+    diag('whenReady fired')
+    const build = getBuildInfo()
+    diag(`build ${build.label}`)
+    // macOS "About decky" panel: applicationVersion is the semver line, the `version` slot below
+    // it carries our git label so a glance answers "qual commit é esse bundle?".
+    app.setAboutPanelOptions({
+      applicationName: app.getName(),
+      applicationVersion: app.getVersion(),
+      version: build.label,
+      copyright: `© ${new Date().getUTCFullYear()} Daniel Kanczuk`
+    })
+    // Migrate pre-rename data (~/.deck → ~/.decky) BEFORE the renderer reads any state.
+    await migrateGlobalState()
+    diag('migrateGlobalState done')
 
-  // Hydrate custom CLI paths before any cli:list call can race the renderer mount.
-  await initCliPaths()
-  diag('initCliPaths done')
+    // Hydrate custom CLI paths before any cli:list call can race the renderer mount.
+    await initCliPaths()
+    diag('initCliPaths done')
 
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+    // Set app user model id for windows
+    electronApp.setAppUserModelId('com.electron')
 
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-  })
+    // Default open or close DevTools by F12 in development
+    // and ignore CommandOrControl + R in production.
+    // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
+    app.on('browser-window-created', (_, window) => {
+      optimizer.watchWindowShortcuts(window)
+    })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
+    // IPC test
+    ipcMain.on('ping', () => console.log('pong'))
 
-  Menu.setApplicationMenu(buildMenu(() => mainWindow))
+    Menu.setApplicationMenu(buildMenu(() => mainWindow))
 
-  registerPtyHandlers(() => mainWindow)
-  registerStateHandlers()
-  registerCliHandlers()
-  registerWorkspaceHandlers()
-  registerCardsHandlers()
-  registerCardMirrorHandlers(() => mainWindow)
-  registerWidgetBridge(() => mainWindow)
-  registerFileWatchHandlers(() => mainWindow)
-  registerDevRebuildHandlers(() => mainWindow)
-  registerGitHandlers()
-  setupAssetProtocol()
-  // Global default UA: strip the Electron/app token so any web surface that falls back to it
-  // (a popup in the instant before the deckweb partition UA applies) still reads as plain Chrome.
-  // The per-partition setUserAgent in setupWebSession is the main path; this is the safety net.
-  app.userAgentFallback = app.userAgentFallback
-    .replace(`Electron/${process.versions.electron}`, '')
-    .replace(`${app.getName()}/${app.getVersion()}`, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-  setupWebSession(() => mainWindow)
-  attachWebContentsPopupRouter(() => mainWindow)
-  setupWebViews(() => mainWindow)
-  diag('handlers registered, starting preview server')
-  startPreviewServer(() => mainWindow)
-  // Backend do handoff: socket falando o protocolo contra o card web focado, pro sdk/adapters/MCP
-  // do handoff dirigirem o mesmo card logado que o usuário vê. Opt-OUT via DECKY_NO_HANDOFF=1.
-  if (!process.env.DECKY_NO_HANDOFF) startDeckyHandoffBackend()
+    registerPtyHandlers(() => mainWindow)
+    registerStateHandlers()
+    registerCliHandlers()
+    registerWorkspaceHandlers()
+    registerCardsHandlers()
+    registerCardMirrorHandlers(() => mainWindow)
+    registerWidgetBridge(() => mainWindow)
+    registerFileWatchHandlers(() => mainWindow)
+    registerDevRebuildHandlers(() => mainWindow)
+    registerGitHandlers()
+    setupAssetProtocol()
+    // Global default UA: strip the Electron/app token so any web surface that falls back to it
+    // (a popup in the instant before the deckweb partition UA applies) still reads as plain Chrome.
+    // The per-partition setUserAgent in setupWebSession is the main path; this is the safety net.
+    app.userAgentFallback = app.userAgentFallback
+      .replace(`Electron/${process.versions.electron}`, '')
+      .replace(`${app.getName()}/${app.getVersion()}`, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    // Drive prefers-color-scheme inside every embedded webContents from decky's own theme mode
+    // (persisted as 'themeMode' in state-store; toggled in the renderer). Set the initial value
+    // from disk so the first web card created during startup already gets the right scheme,
+    // then keep it in sync via the 'theme:set-mode' IPC the renderer calls on every toggle.
+    const initialMode = await getState<'dark' | 'light'>('themeMode')
+    nativeTheme.themeSource = initialMode === 'light' ? 'light' : 'dark'
+    ipcMain.handle('theme:set-mode', (_e, mode: 'dark' | 'light') => {
+      nativeTheme.themeSource = mode === 'light' ? 'light' : 'dark'
+      return true
+    })
+    setupWebSession(() => mainWindow)
+    attachWebContentsPopupRouter(() => mainWindow)
+    setupWebViews(() => mainWindow)
+    diag('handlers registered, starting preview server')
+    startPreviewServer(() => mainWindow)
+    // Backend do handoff: socket falando o protocolo contra o card web focado, pro sdk/adapters/MCP
+    // do handoff dirigirem o mesmo card logado que o usuário vê. Opt-OUT via DECKY_NO_HANDOFF=1.
+    if (!process.env.DECKY_NO_HANDOFF) startDeckyHandoffBackend()
 
-  ipcMain.handle('dialog:pick-folder', async () => {
-    const opts: Electron.OpenDialogOptions = {
-      properties: ['openDirectory', 'createDirectory'],
-      title: 'Adicionar pasta de trabalho'
-    }
-    const res = mainWindow
-      ? await dialog.showOpenDialog(mainWindow, opts)
-      : await dialog.showOpenDialog(opts)
-    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
-  })
+    ipcMain.handle('dialog:pick-folder', async () => {
+      const opts: Electron.OpenDialogOptions = {
+        properties: ['openDirectory', 'createDirectory'],
+        title: 'Adicionar pasta de trabalho'
+      }
+      const res = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, opts)
+        : await dialog.showOpenDialog(opts)
+      return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
+    })
 
-  ipcMain.handle('dialog:pick-file', async (_e, title?: string) => {
-    const opts: Electron.OpenDialogOptions = {
-      // showHiddenFiles so users can navigate into ~/.local/bin etc.
-      properties: ['openFile', 'showHiddenFiles', 'treatPackageAsDirectory'],
-      title: title ?? 'Escolher executável'
-    }
-    const res = mainWindow
-      ? await dialog.showOpenDialog(mainWindow, opts)
-      : await dialog.showOpenDialog(opts)
-    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
-  })
+    ipcMain.handle('dialog:pick-file', async (_e, title?: string) => {
+      const opts: Electron.OpenDialogOptions = {
+        // showHiddenFiles so users can navigate into ~/.local/bin etc.
+        properties: ['openFile', 'showHiddenFiles', 'treatPackageAsDirectory'],
+        title: title ?? 'Escolher executável'
+      }
+      const res = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, opts)
+        : await dialog.showOpenDialog(opts)
+      return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
+    })
 
-  // Native desktop notification for "sessão terminou de processar". Renderer fires this when a
-  // session transitions from working → idle and the user isn't looking (different session OR
-  // window unfocused). Clicking the notification brings the app forward and tells the renderer
-  // which session to switch to.
-  ipcMain.handle(
-    'notify:show',
-    (_e, payload: { id: string; title: string; body?: string }) => {
+    // Native desktop notification for "sessão terminou de processar". Renderer fires this when a
+    // session transitions from working → idle and the user isn't looking (different session OR
+    // window unfocused). Clicking the notification brings the app forward and tells the renderer
+    // which session to switch to.
+    ipcMain.handle('notify:show', (_e, payload: { id: string; title: string; body?: string }) => {
       const supported = Notification.isSupported()
       console.log('[notify] handler called', { supported, payload })
       if (!supported) return
@@ -257,54 +294,72 @@ app.whenReady().then(async () => {
         win.webContents.send('notify:focus-session', { id: payload.id })
       })
       n.show()
-    }
-  )
+    })
 
-  ipcMain.handle('preview:get-all', () => getPreviewSources())
-  ipcMain.handle('preview:rehydrate', (_e, byCard, workspace?: string) =>
-    rehydratePreviews(byCard, workspace)
-  )
-  ipcMain.handle('claude:get-bin', () => resolveClaudeBin())
-  ipcMain.handle('claude:ai-title', (_e, cwd: string, uuid: string) => readAiTitle(cwd, uuid))
-  ipcMain.handle('sessions:get-titles', () => getSessionTitles())
-  ipcMain.handle('app:get-startup-cwd', () => process.cwd())
-  // Explicit "open in the OS browser" affordance — used by the external-link button on the
-  // web card, since every other window.open in the renderer now routes to an internal card.
-  ipcMain.handle('app:open-external', (_e, url: string) => shell.openExternal(url))
+    // Full-text search the workspace's card library (recursive over <workspace>/.decky/cards/).
+    // Drives the in-app Cmd+Shift+F palette; the MCP `search_cards` tool uses the same helper
+    // via the HTTP server (POST /cards/search).
+    ipcMain.handle('cards:search', (_e, workspace: string, query: string, limit?: number) =>
+      searchCards(workspaceCardsDir(workspace), query ?? '', typeof limit === 'number' ? limit : 20)
+    )
 
-  // Packaged: getAppPath() is .../app.asar, but claude spawns dk-mcp with a plain
-  // `node` (no asar support), so point at the unpacked copy (see asarUnpack bin/**).
-  const appBase = app.isPackaged
-    ? app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked')
-    : app.getAppPath()
-  const dkMcpPath = join(appBase, 'bin', 'dky-mcp')
-  void ensureDeckMcpRegistered(dkMcpPath).catch((err) => {
-    console.warn('[mcp-installer] failed to register:', err)
+    // Resolve `[[name]]` from a card body to its absolute .md path. Renderer calls this on
+    // wikilink click so it can fire `decky:open-path`.
+    ipcMain.handle('cards:resolve-wikilink', (_e, workspace: string, name: string) =>
+      resolveWikilink(workspaceCardsDir(workspace), name)
+    )
+
+    // Reverse-link lookup for BacklinksFooter + the MCP `card_backlinks` tool.
+    ipcMain.handle('cards:backlinks', (_e, workspace: string, cardPath: string) =>
+      computeBacklinks(workspaceCardsDir(workspace), cardPath)
+    )
+
+    ipcMain.handle('preview:get-all', () => getPreviewSources())
+    ipcMain.handle('preview:rehydrate', (_e, byCard, workspace?: string) =>
+      rehydratePreviews(byCard, workspace)
+    )
+    ipcMain.handle('claude:get-bin', () => resolveClaudeBin())
+    ipcMain.handle('claude:ai-title', (_e, cwd: string, uuid: string) => readAiTitle(cwd, uuid))
+    ipcMain.handle('sessions:get-titles', () => getSessionTitles())
+    ipcMain.handle('app:get-startup-cwd', () => process.cwd())
+    // Explicit "open in the OS browser" affordance — used by the external-link button on the
+    // web card, since every other window.open in the renderer now routes to an internal card.
+    ipcMain.handle('app:open-external', (_e, url: string) => shell.openExternal(url))
+
+    // Packaged: getAppPath() is .../app.asar, but claude spawns dk-mcp with a plain
+    // `node` (no asar support), so point at the unpacked copy (see asarUnpack bin/**).
+    const appBase = app.isPackaged
+      ? app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked')
+      : app.getAppPath()
+    const dkMcpPath = join(appBase, 'bin', 'dky-mcp')
+    void ensureDeckMcpRegistered(dkMcpPath).catch((err) => {
+      console.warn('[mcp-installer] failed to register:', err)
+    })
+    void ensureDeckInstruction().catch((err) => {
+      console.warn('[claude-md-installer] failed to write CLAUDE.md:', err)
+    })
+    void ensureDeckyHooks().catch((err) => {
+      console.warn('[hooks-installer] failed to write settings.json:', err)
+    })
+
+    // Packaged macOS apps use build/icon.icns; in dev the dock falls back to the
+    // default Electron icon unless we set it explicitly.
+    if (process.platform === 'darwin') app.dock?.setIcon(icon)
+
+    diag('creating window')
+    createWindow()
+    diag('createWindow returned')
+
+    app.on('activate', function () {
+      // On macOS it's common to re-create a window in the app when the
+      // dock icon is clicked and there are no other windows open.
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+    diag('whenReady handler completed')
   })
-  void ensureDeckInstruction().catch((err) => {
-    console.warn('[claude-md-installer] failed to write CLAUDE.md:', err)
+  .catch((err) => {
+    diag(`whenReady REJECTED: ${err?.stack || err}`)
   })
-  void ensureDeckyHooks().catch((err) => {
-    console.warn('[hooks-installer] failed to write settings.json:', err)
-  })
-
-  // Packaged macOS apps use build/icon.icns; in dev the dock falls back to the
-  // default Electron icon unless we set it explicitly.
-  if (process.platform === 'darwin') app.dock?.setIcon(icon)
-
-  diag('creating window')
-  createWindow()
-  diag('createWindow returned')
-
-  app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
-  diag('whenReady handler completed')
-}).catch((err) => {
-  diag(`whenReady REJECTED: ${err?.stack || err}`)
-})
 
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits

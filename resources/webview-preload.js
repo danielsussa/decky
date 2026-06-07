@@ -334,68 +334,9 @@ function spoofUserAgentData() {
     console.warn('[decky webview preload] window.chrome mock failed', err)
   }
 
-  // Force light color-scheme inside guest pages. The host Electron window runs in macOS dark
-  // mode, so Chromium hands `prefers-color-scheme: dark` to every guest. Marketing pages
-  // (e.g. workspace.google.com/gmail) ship a half-baked dark variant that leaves headlines
-  // dark-on-dark. Overriding both matchMedia and the meta makes guests render their light
-  // theme regardless of host appearance.
-  try {
-    const origMatchMedia = window.matchMedia.bind(window)
-    window.matchMedia = (query) => {
-      const mql = origMatchMedia(query)
-      if (typeof query === 'string' && /prefers-color-scheme:\s*dark/i.test(query)) {
-        return {
-          media: query,
-          matches: false,
-          onchange: null,
-          addListener: () => {},
-          removeListener: () => {},
-          addEventListener: () => {},
-          removeEventListener: () => {},
-          dispatchEvent: () => false
-        }
-      }
-      if (typeof query === 'string' && /prefers-color-scheme:\s*light/i.test(query)) {
-        return {
-          media: query,
-          matches: true,
-          onchange: null,
-          addListener: () => {},
-          removeListener: () => {},
-          addEventListener: () => {},
-          removeEventListener: () => {},
-          dispatchEvent: () => false
-        }
-      }
-      return mql
-    }
-  } catch (err) {
-    console.warn('[decky webview preload] matchMedia override failed', err)
-  }
-
-  // Meta covers the CSS `color-scheme` property path — UA form controls, scrollbars, and
-  // any @media query that doesn't go through matchMedia. Inject as early as possible
-  // (documentElement may exist before <head>).
-  const setColorSchemeMeta = () => {
-    try {
-      const root = document.documentElement
-      if (!root) return false
-      const existing = document.querySelector('meta[name="color-scheme"]')
-      if (existing) existing.setAttribute('content', 'light')
-      else {
-        const meta = document.createElement('meta')
-        meta.name = 'color-scheme'
-        meta.content = 'light'
-        root.appendChild(meta)
-      }
-      return true
-    } catch {
-      return false
-    }
-  }
-  if (!setColorSchemeMeta()) {
-    document.addEventListener('DOMContentLoaded', setColorSchemeMeta, { once: true })
-  }
+  // Color-scheme: let nativeTheme.themeSource (set in main) drive what pages see via
+  // prefers-color-scheme. No matchMedia override, no forced meta — sites get dark when the
+  // host is dark, and decide for themselves what to render.
 })()
 
 // __meTracker — instrumentação de "página pronta" pro waitForSettled do handoff (conta fetch/XHR

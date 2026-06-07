@@ -9,11 +9,13 @@ import TerminalHost from './components/TerminalHost'
 import type { Session } from './types'
 import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
+import CardSearch from './components/CardSearch'
 import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import FirstRunModal from './components/FirstRunModal'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
 import type { PreviewSource } from '../../shared/preview'
 import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
+import { t } from './lib/i18n'
 import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '../../shared/cli-spec'
 import {
   applyTheme,
@@ -25,10 +27,8 @@ import {
 } from '../../shared/themes'
 import {
   ACTIONS,
-  accelLabel,
   eventToAccel,
   isMac,
-  matchesAccel,
   resolveKeymap,
   type ActionId,
   type Keymap
@@ -502,6 +502,9 @@ function App(): React.JSX.Element {
   const [keymapOverrides, setKeymapOverrides] = useState<Keymap>({})
   // Command palette (Cmd/Ctrl+P) + which system panels are open as center tabs.
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // "Find in cards" palette (Cmd/Ctrl+Shift+F) — full-text search of the workspace
+  // card library at <workspace>/.decky/cards/.
+  const [cardSearchOpen, setCardSearchOpen] = useState(false)
   const [openPanels, setOpenPanels] = useState<PanelId[]>([])
   // Which sub-panel (terminal / sessions tree / cards preview) currently holds focus.
   // Drives a thin accent strip on top so the user knows which area their keys land in.
@@ -515,6 +518,7 @@ function App(): React.JSX.Element {
   })
   const [rebuildState, setRebuildState] = useState<'idle' | 'running' | 'ready' | 'error'>('idle')
   const [rebuildLog, setRebuildLog] = useState('')
+  const [rebuildElapsedSec, setRebuildElapsedSec] = useState(0)
   const rebuildStateRef = useRef(rebuildState)
   rebuildStateRef.current = rebuildState
 
@@ -560,6 +564,7 @@ function App(): React.JSX.Element {
   // sessions/wsSessionsCache (needed to switch workspace when the session lives elsewhere).
   const focusSessionRef = useRef<(id: string) => void>(() => {})
   const paletteOpenRef = useRef(false)
+  const cardSearchOpenRef = useRef(false)
   // Set true while ShortcutsPanel records a chord, so the global nav handler
   // stands down and lets the panel's own capture listener grab the keys.
   const captureLockRef = useRef(false)
@@ -599,10 +604,26 @@ function App(): React.JSX.Element {
     }
     if (rebuildStateRef.current === 'running') return
     setRebuildLog('')
+    setRebuildElapsedSec(0)
     setRebuildState('running')
+    const start = Date.now()
     const res = await window.deck.dev.rebuild()
+    // Stamp the precise final duration (the 1s-tick interval would otherwise leave us up to
+    // a second short of the real build time on the persistent ready/error label).
+    setRebuildElapsedSec(Math.floor((Date.now() - start) / 1000))
     setRebuildState(res.ok ? 'ready' : 'error')
   }, [])
+
+  // Tick a seconds counter while a rebuild is running so the user sees how long it's taking.
+  useEffect(() => {
+    if (rebuildState !== 'running') return
+    const start = Date.now()
+    setRebuildElapsedSec(0)
+    const id = window.setInterval(() => {
+      setRebuildElapsedSec(Math.floor((Date.now() - start) / 1000))
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [rebuildState])
 
   // Dev rebuild: resolve availability + stream build output; bind the keyboard shortcut.
   useEffect(() => {
@@ -614,17 +635,10 @@ function App(): React.JSX.Element {
     })
   }, [])
 
-  useEffect(() => {
-    if (!devInfo.enabled || !devInfo.accel) return
-    const onKey = (e: KeyboardEvent): void => {
-      if (!matchesAccel(e, devInfo.accel)) return
-      e.preventDefault()
-      e.stopPropagation()
-      void doRebuild()
-    }
-    window.addEventListener('keydown', onKey, { capture: true })
-    return () => window.removeEventListener('keydown', onKey, { capture: true })
-  }, [devInfo.enabled, devInfo.accel, doRebuild])
+  // View → Rebuild & relaunch (native top menu, dev-only). The native menu owns the Cmd+Shift+B
+  // accelerator now — Electron intercepts the key before it reaches webContents, so no renderer
+  // keydown listener is needed. See main/menu.ts.
+  useEffect(() => window.deck.app.onMenuDevRebuild(() => void doRebuild()), [doRebuild])
 
   // Mount: resolve env + subscriptions.
   useEffect(() => {
@@ -1192,6 +1206,7 @@ function App(): React.JSX.Element {
             pinned: boolean
           }[]
           focused: string | null
+          cwd?: string
         }
       > = {}
       const allSessionIds = new Set<string>([
@@ -1200,6 +1215,11 @@ function App(): React.JSX.Element {
         ...Object.keys(focusedCardBySession),
         ...Object.keys(previewsByCard)
       ])
+      // Session.cwd is the workspace path — used by the MCP `search_cards` tool to
+      // resolve <workspace>/.decky/cards/. Look up in both the active workspace's
+      // sessions and the global live pool (cross-workspace).
+      const cwdFor = (sid: string): string | undefined =>
+        sessions.find((s) => s.id === sid)?.cwd ?? liveSessions.find((s) => s.id === sid)?.cwd
       for (const sid of allSessionIds) {
         const own = ownIds(sid).filter((id) => !pinned[id])
         const ids = [...pinnedIds, ...own]
@@ -1220,12 +1240,12 @@ function App(): React.JSX.Element {
             pinned: isPinned
           }
         })
-        out[sid] = { cards, focused: focusedCardBySession[sid] ?? null }
+        out[sid] = { cards, focused: focusedCardBySession[sid] ?? null, cwd: cwdFor(sid) }
       }
       window.deck.cards.syncState(out)
     }, 80)
     return () => clearTimeout(t)
-  }, [sessions, cardsBySession, focusedCardBySession, previewsByCard, pinned])
+  }, [sessions, liveSessions, cardsBySession, focusedCardBySession, previewsByCard, pinned])
 
   // Drop a stale Cmd+Arrow preview the moment the active workspace actually changes —
   // Enter commits via setWorkspace, but other paths (mouse, close, palette) get here too.
@@ -1302,6 +1322,12 @@ function App(): React.JSX.Element {
     (path: string | null | undefined): Theme => themeFromAssignments(path, workspaceThemes),
     [workspaceThemes]
   )
+
+  // Mirror the global mode into main so embedded web cards (WebContentsView) get the matching
+  // prefers-color-scheme. nativeTheme is per-process; the renderer is the source of truth.
+  useEffect(() => {
+    void window.deck.theme.setMode(mode)
+  }, [mode])
 
   // Each workspace gets a color identity from the persisted assignment (1 of 15 themes, greedy
   // collision-avoidance at registration); the mode (dark/light) is a global toggle. Both reapply
@@ -1409,8 +1435,17 @@ function App(): React.JSX.Element {
         setPaletteOpen((v) => !v)
         return
       }
-      // Let the palette / a recording shortcut field handle their own keys.
-      if (captureLockRef.current || paletteOpenRef.current) return
+      // Cmd/Ctrl+Shift+F → "find in cards" palette (full-text search of the workspace
+      // card library). KeyboardEvent.key is 'F' with shift held, but allow 'f' too as
+      // a safety net for layouts that don't uppercase.
+      if (openMod && e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        e.stopPropagation()
+        setCardSearchOpen((v) => !v)
+        return
+      }
+      // Let the palette / find-in-cards / a recording shortcut field handle their own keys.
+      if (captureLockRef.current || paletteOpenRef.current || cardSearchOpenRef.current) return
       // While a Cmd+Arrow preview cursor is parked in another workspace, Cmd/Ctrl+Enter
       // commits the switch and Escape cancels — plain Enter is left for the terminal.
       const preview = navRef.current.previewedNav
@@ -1734,6 +1769,13 @@ function App(): React.JSX.Element {
       }
       return next
     })
+    // Destrói os WebContentsViews dos cards web desta session antes de dropar o mapa — eles
+    // vivem em main, indexados por cardId, e sobrevivem unmount do React de propósito (workspace
+    // switch). Fechar a session é o sinal de "estes cards não voltam", então liberamos memória.
+    const sessPreviews = previewsByCard[id] ?? {}
+    for (const [cid, src] of Object.entries(sessPreviews)) {
+      if (src?.type === 'web') window.deck.web.destroy(cid)
+    }
     // Drop the closed session's entries from the cross-workspace maps so they don't linger
     // as dead memory (and don't get re-saved into the workspace file on the next debounce).
     setCardsBySession((prev) => {
@@ -1853,12 +1895,19 @@ function App(): React.JSX.Element {
       setOpenPanels((prev) => prev.filter((p) => p !== pid))
       return
     }
+    // Cards web vivem em main (WebContentsView indexado por cardId) e sobrevivem unmount do
+    // React — workspace switch só esconde, não destrói. AQUI é o close de verdade: o usuário
+    // clicou no × da aba ou tirou do pinned, então o view tem que morrer pra liberar memória.
+    const wasWeb =
+      pinned[id]?.type === 'web' ||
+      (activeId ? previewsByCard[activeId]?.[id]?.type === 'web' : false)
     if (pinned[id]) {
       setPinned((prev) => {
         const next = { ...prev }
         delete next[id]
         return next
       })
+      if (wasWeb) window.deck.web.destroy(id)
       return
     }
     if (!activeId) return
@@ -1871,6 +1920,7 @@ function App(): React.JSX.Element {
       delete cards[id]
       return { ...prev, [activeId]: cards }
     })
+    if (wasWeb) window.deck.web.destroy(id)
   }
 
   // Click on the header git stats: read the uncommitted diff and route it to a stable
@@ -1955,6 +2005,7 @@ function App(): React.JSX.Element {
   const resolvedKeymap = resolveKeymap(keymapOverrides)
   keymapRef.current = resolvedKeymap
   paletteOpenRef.current = paletteOpen
+  cardSearchOpenRef.current = cardSearchOpen
 
   const persistKeymap = (next: Keymap): void => {
     setKeymapOverrides(next)
@@ -2103,10 +2154,13 @@ function App(): React.JSX.Element {
       }
     })
   }
-  // Per-session deckCards (system panels are appended only on the active session — they're
-  // global UI, no need to render once per session).
+  // Per-session deckCards. Built for EVERY live session (LRU pool, cross-workspace) — not
+  // just the active workspace's sessions — pra que trocar de workspace seja idempotente:
+  // sessions visitadas recentemente continuam mounted (com visibility:hidden) preservando
+  // estado React dos cards (scroll, JSON expandido, etc) e o WebContentsView de cards web.
+  // System panels ficam só na session ativa — são UI global, não precisam ser duplicados.
   const deckCardsBySession: Record<string, DeckCardData[]> = {}
-  for (const s of sessions) {
+  for (const s of hostSessions) {
     const own = buildContentCards(s.id)
     deckCardsBySession[s.id] = s.id === activeId ? [...panelCards, ...own] : own
   }
@@ -2135,6 +2189,7 @@ function App(): React.JSX.Element {
     previewedNav
   }
 
+  const currentThemeId = workspace ? workspaceThemes[workspace] : null
   const paletteCommands: Command[] = [
     {
       id: 'theme:toggle-mode',
@@ -2142,6 +2197,14 @@ function App(): React.JSX.Element {
       hint: 'aparência',
       run: toggleMode
     },
+    ...(workspace
+      ? THEMES.filter((t) => t.id !== currentThemeId).map((t) => ({
+          id: `theme:color:${t.id}`,
+          label: `Cor: ${t.name}`,
+          hint: 'tema do workspace',
+          run: () => setWorkspaceThemes((prev) => ({ ...prev, [workspace]: t.id }))
+        }))
+      : []),
     { id: 'web:new', label: 'Nova aba de browser', hint: 'abre um webview', run: openWebTab },
     {
       id: 'notify:test',
@@ -2160,24 +2223,8 @@ function App(): React.JSX.Element {
       label: p.paletteLabel,
       hint: 'painel',
       run: () => openPanel(p.id)
-    })),
-    ...(devInfo.enabled
-      ? [
-          {
-            id: 'dev:rebuild',
-            label:
-              rebuildState === 'ready'
-                ? '↻ Relaunch (build pronto)'
-                : rebuildState === 'running'
-                  ? 'Rebuilding…'
-                  : rebuildState === 'error'
-                    ? 'Rebuild & relaunch (tentar de novo)'
-                    : 'Rebuild & relaunch',
-            hint: `dev · ${accelLabel(devInfo.accel)}`,
-            run: () => void doRebuild()
-          }
-        ]
-      : [])
+    }))
+    // dev:rebuild lives in the right-click menu on the top "decky" panel header now.
   ]
 
   const handleCliSave = async (kind: CliKind): Promise<void> => {
@@ -2303,11 +2350,12 @@ function App(): React.JSX.Element {
               data-focused={focusedPanel === 'preview'}
             >
               {DECKY_LAYOUT === 'tabs' ? (
-                // One DeckTabs per session of the active workspace, stacked in the same area —
-                // active one is visible, others are visibility:hidden. Keeping inactive panes
-                // mounted preserves <webview>/iframe guests (no full reload on session switch).
+                // One DeckTabs per LIVE session (LRU pool, cross-workspace) — not só do workspace
+                // ativo. Active one is visible, others are visibility:hidden. Keeping inactive
+                // panes mounted preserves React state (scroll, JSON expandido) + WebContentsView
+                // pra sessions de OUTROS workspaces — trocar workspace e voltar é idempotente.
                 <div className="session-pane-stack">
-                  {sessions.map((s) => {
+                  {hostSessions.map((s) => {
                     const isActive = s.id === activeId
                     return (
                       <div
@@ -2348,6 +2396,21 @@ function App(): React.JSX.Element {
       {paletteOpen && (
         <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
       )}
+      {cardSearchOpen && workspace && (
+        <CardSearch
+          workspace={workspace}
+          onPick={(hit) => {
+            const aId = stateRef.current.activeId
+            if (!aId) return
+            window.dispatchEvent(
+              new CustomEvent('decky:open-path', {
+                detail: { path: hit.path, sessionId: aId }
+              })
+            )
+          }}
+          onClose={() => setCardSearchOpen(false)}
+        />
+      )}
       {devInfo.enabled && rebuildState !== 'idle' && (
         <div
           className={`dev-rebuild-status dev-rebuild-${rebuildState}`}
@@ -2357,19 +2420,32 @@ function App(): React.JSX.Element {
           role={rebuildState === 'ready' || rebuildState === 'error' ? 'button' : undefined}
           title={
             rebuildState === 'ready'
-              ? 'Clique pra relaunch'
+              ? t('rebuild.readyTooltip')
               : rebuildState === 'error'
-                ? 'Clique pra tentar de novo'
+                ? t('rebuild.errorTooltip')
                 : undefined
           }
         >
           <span>
             {rebuildState === 'running' && <span className="dev-rebuild-spinner" aria-hidden />}
-            {rebuildState === 'running'
-              ? 'Rebuilding…'
-              : rebuildState === 'ready'
-                ? '↻ Build pronto — clique pra relaunch'
-                : 'Rebuild falhou — clique pra tentar de novo'}
+            {rebuildState === 'running' ? (
+              <>
+                {t('rebuild.running')}
+                <span className="dev-rebuild-elapsed">{rebuildElapsedSec}s</span>
+              </>
+            ) : rebuildState === 'ready' ? (
+              <>
+                {t('rebuild.readyPrefix')}
+                <span className="dev-rebuild-elapsed">{rebuildElapsedSec}s</span>
+                {t('rebuild.readySuffix')}
+              </>
+            ) : (
+              <>
+                {t('rebuild.errorPrefix')}
+                <span className="dev-rebuild-elapsed">{rebuildElapsedSec}s</span>
+                {t('rebuild.errorSuffix')}
+              </>
+            )}
           </span>
           {rebuildState === 'error' && rebuildLog && (
             <pre className="dev-rebuild-log">{rebuildLog}</pre>

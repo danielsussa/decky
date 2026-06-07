@@ -11,14 +11,47 @@
 // The committed bin/dky-mcp stays the readable source — dev runs it directly from the repo where
 // node_modules is present, so it never needs bundling.
 const path = require('node:path')
-const { chmodSync, mkdirSync } = require('node:fs')
+const { chmodSync, existsSync, mkdirSync, readFileSync } = require('node:fs')
 const esbuild = require('esbuild')
+
+// Guard against the recurring package.json-corruption bug: a stray renderer save has, more than
+// once, written the tail of the built index.html on top of package.json, leaving invalid JSON.
+// electron-builder copies that verbatim into app.asar; Electron then can't read `main` and the
+// app dies instantly on launch ("opens and does nothing", no startup log). Validate here — BEFORE
+// signing/install — so a corrupt package.json aborts the build loudly instead of shipping a brick.
+function assertValidPackageJson(projectDir) {
+  const pkgPath = path.join(projectDir, 'package.json')
+  let raw
+  try {
+    raw = readFileSync(pkgPath, 'utf-8')
+  } catch (err) {
+    throw new Error(`[afterPack] cannot read ${pkgPath}: ${err.message}`)
+  }
+  let pkg
+  try {
+    pkg = JSON.parse(raw)
+  } catch (err) {
+    throw new Error(
+      `[afterPack] package.json is CORRUPT (invalid JSON) — refusing to ship a bundle that won't ` +
+        `launch. Restore it (\`git checkout -- package.json\`) and rebuild. Parse error: ${err.message}`
+    )
+  }
+  if (!pkg.main) {
+    throw new Error('[afterPack] package.json is missing the "main" entry — bundle would not launch.')
+  }
+}
 
 exports.default = async function afterPack(context) {
   const projectDir = context.packager.info.projectDir
+  assertValidPackageJson(projectDir)
   const resourcesDir = context.packager.getResourcesDir(context.appOutDir)
   const src = path.join(projectDir, 'bin', 'dky-mcp')
-  const out = path.join(resourcesDir, 'app.asar.unpacked', 'bin', 'dky-mcp')
+  // Two layouts depending on asar: with asar (default), the file lives under
+  // app.asar.unpacked/ (per asarUnpack: bin/**). With asar disabled (dev-unpack target),
+  // it's just under app/.
+  const asarUnpackedDir = path.join(resourcesDir, 'app.asar.unpacked')
+  const baseDir = existsSync(asarUnpackedDir) ? asarUnpackedDir : path.join(resourcesDir, 'app')
+  const out = path.join(baseDir, 'bin', 'dky-mcp')
 
   mkdirSync(path.dirname(out), { recursive: true })
   await esbuild.build({

@@ -19,7 +19,12 @@ function normalizeUrl(raw: string): string {
   if (/^https?:\/\//i.test(s) || /^(file|about|data):/i.test(s)) return s
   if (/^localhost(:\d+)?(\/|$)/i.test(s) || /^127\.0\.0\.1(:\d+)?(\/|$)/i.test(s))
     return `http://${s}`
-  return `https://${s}`
+  // Heurística "parece host?": sem espaços E tem ponto antes da primeira barra
+  // (ex: "google.com", "foo.com/path"). Caso contrário, trata como query do Google.
+  const head = s.split('/')[0]
+  const looksLikeHost = !/\s/.test(s) && /\./.test(head)
+  if (looksLikeHost) return `https://${s}`
+  return `https://www.google.com/search?q=${encodeURIComponent(s)}`
 }
 
 // The web card is now backed by a top-level WebContentsView in main, not a <webview> tag —
@@ -75,12 +80,17 @@ export default function WebPreview({
     return off
   }, [cardId])
 
-  // Create/destroy the view in main with the component's lifecycle. Initial URL is the prop;
-  // subsequent prop changes navigate via the dedicated effect below.
+  // Create-or-attach the view in main. The WebContentsView's lifetime is decoupled from this
+  // React component: trocar workspace unmonta o WebPreview, mas o view PERMANECE vivo em main
+  // (indexado por cardId) com a página intacta — pra voltar pro workspace anterior ser idempotente
+  // (sem reload, sem perder login/scroll). A destruição REAL roda só quando o usuário fecha o card
+  // explicitamente (App.closeCard / handleClose), não no unmount do React.
+  // No unmount aqui, só hide() — o view fica órfão (sem WebPreview rendering bounds), então
+  // tem que sair de tela; senão fica pendurado com bounds antigas sobre o outro workspace.
   useEffect(() => {
     void window.deck.web.create(cardId, url)
     return () => {
-      window.deck.web.destroy(cardId)
+      window.deck.web.hide(cardId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardId])

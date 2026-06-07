@@ -7,6 +7,12 @@
 
 const BASE = process.env.DECKY_URL || 'http://127.0.0.1:6790'
 
+// Live View (preview_me) — desativado por hora. Web cards (WebContentsView) cobrem
+// o caso "ver browser" pra navegação do usuário; o espelhamento iframe do daemon do `me`
+// fica fora da superfície MCP até decidirmos se vale unificar. Código do MePreview/rota
+// `type:'me'` permanece intacto — só o ponto de entrada (tool) é cortado.
+const LIVE_VIEW_ENABLED = false
+
 // Cards (tabs) in the center panel are created on demand by you, the session bot.
 // A session starts with NO cards. Each preview_* call lands in a card.
 const CARD_DESC =
@@ -113,6 +119,40 @@ const TOOLS = [
     description:
       'List the cards (tabs) the user currently has open in the decky preview panel for this session: id, title, type, file path (when materialized), focused flag, and pinned flag. CALL THIS before "update the card" / "fix the typo in that list" / any request that references a card you did not just create — it is the only way to learn what the user is looking at. For markdown cards you can then Edit the returned `path` directly; the card live-reloads on save. Returns the focused card id as well.',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'search_cards',
+    description:
+      'Full-text search the workspace card library at $DECKY_CARDS_DIR (recursive over all .md). USE THIS — NOT manual Glob+Grep — when the user references prior work you did not just create ("aquele card sobre X", "achei que tinha algo de Y", "lembra do plano de Z"). Returns the top matches with id, abs path, title, snippet, line, score, mtime. Empty/missing query returns the most-recently-modified cards by mtime — useful as a "what was I working on?" probe. After finding a card, open it for the user with `preview_show(path)`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'Case-insensitive substring. Omit or pass empty to get the 20 most recent cards by mtime.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Max results (default 20).'
+        }
+      }
+    }
+  },
+  {
+    name: 'card_backlinks',
+    description:
+      'List every card in the workspace whose body contains `[[<id>]]` or `[[<basename>]]` pointing at the given card. Use this to answer "who references this?" / "where else is this card linked from?" without manual Grep. Without `card_path`, defaults to the currently focused markdown card in this session. Returns id, abs path, title, snippet, line, mtime — sorted by mtime desc.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        card_path: {
+          type: 'string',
+          description:
+            'Absolute path of the target card .md. Omit to default to the focused markdown card in this session.'
+        }
+      }
+    }
   },
   {
     name: 'prompt_form',
@@ -393,6 +433,7 @@ async function handleCall(name, args) {
   }
 
   if (name === 'preview_me') {
+    if (!LIVE_VIEW_ENABLED) throw new Error('preview_me is disabled')
     const r = await post('/preview', { type: 'me', ...(a.url ? { url: a.url } : {}) }, a.card)
     return describeResolved('switched to me live view as', r)
   }
@@ -430,6 +471,45 @@ async function handleCall(name, args) {
       return `- ${c.id} (${c.type}) "${c.title}"${loc}${suffix}`
     })
     return lines.join('\n')
+  }
+
+  if (name === 'search_cards') {
+    const query = typeof a.query === 'string' ? a.query : ''
+    const limit = typeof a.limit === 'number' ? a.limit : 20
+    const data = await post('/cards/search', { query, limit })
+    const hits = (data && data.hits) || []
+    if (hits.length === 0) {
+      return query.trim()
+        ? `no cards matched "${query}"`
+        : 'no cards in this workspace yet'
+    }
+    const lines = hits.map((h) => {
+      const head = query.trim()
+        ? `- ${h.id} (score ${h.score}, line ${h.line}) "${h.title}" → ${h.path}`
+        : `- ${h.id} "${h.title}" → ${h.path}`
+      const snip = h.snippet ? `\n    ${h.snippet.replace(/\n/g, '\n    ')}` : ''
+      return head + snip
+    })
+    return lines.join('\n')
+  }
+
+  if (name === 'card_backlinks') {
+    const cardPath = typeof a.card_path === 'string' ? a.card_path : ''
+    const data = await post('/cards/backlinks', cardPath ? { cardPath } : {})
+    const hits = (data && data.hits) || []
+    const target = (data && data.cardPath) || cardPath
+    if (hits.length === 0) {
+      return target
+        ? `no cards reference ${target}`
+        : 'no backlinks found'
+    }
+    const head = target ? `backlinks → ${target}\n` : ''
+    const lines = hits.map((h) => {
+      const main = `- ${h.id} (line ${h.line}) "${h.title}" → ${h.path}`
+      const snip = h.snippet ? `\n    ${h.snippet.replace(/\n/g, '\n    ')}` : ''
+      return main + snip
+    })
+    return head + lines.join('\n')
   }
 
   if (name === 'prompt_form') {
@@ -561,7 +641,9 @@ async function handleCall(name, args) {
     { capabilities: { tools: {} } }
   )
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: TOOLS.filter((t) => LIVE_VIEW_ENABLED || t.name !== 'preview_me')
+  }))
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params

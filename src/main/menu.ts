@@ -1,7 +1,11 @@
 import { Menu, dialog, BrowserWindow, app, type MenuItemConstructorOptions } from 'electron'
+import { getDevInfo } from './dev-rebuild'
+import { getBuildInfo } from './build-info'
 
 export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
   const isMac = process.platform === 'darwin'
+  const devInfo = getDevInfo()
+  const build = getBuildInfo()
 
   const sendToRenderer = (channel: string, payload?: unknown): void => {
     const win = getWindow()
@@ -100,7 +104,18 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
         { role: 'forceReload' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
-        { role: 'togglefullscreen' }
+        { role: 'togglefullscreen' },
+        ...(devInfo.enabled
+          ? ([
+              { type: 'separator' },
+              {
+                // Append the running build sha so a glance answers "this app is at HEAD or behind?".
+                label: `Rebuild & relaunch  (${build.sha})`,
+                accelerator: devInfo.accel,
+                click: () => sendToRenderer('menu:dev-rebuild')
+              }
+            ] satisfies MenuItemConstructorOptions[])
+          : [])
       ]
     },
 

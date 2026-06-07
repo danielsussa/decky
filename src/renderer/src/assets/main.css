@@ -736,6 +736,28 @@ body.md-expanding-active {
   text-decoration: underline;
 }
 
+/* Wikilinks ([[name]]) — distinct from regular links: lavender + brackets prefix/suffix
+   so the source syntax is visually preserved even though we render the bare name. */
+.md-body a.wikilink {
+  color: #c4a8ff;
+  text-decoration: none;
+  padding: 0 1px;
+  border-radius: 3px;
+  transition: background 120ms ease;
+}
+.md-body a.wikilink::before {
+  content: '[[';
+  opacity: 0.45;
+}
+.md-body a.wikilink::after {
+  content: ']]';
+  opacity: 0.45;
+}
+.md-body a.wikilink:hover {
+  background: rgba(196, 168, 255, 0.12);
+  text-decoration: none;
+}
+
 .md-body ul,
 .md-body ol {
   padding-left: 1.6em;
@@ -2296,6 +2318,138 @@ textarea.form-input {
   color: rgba(255, 255, 255, 0.75);
 }
 
+/* "Find in cards" palette — multi-line items (title + path + snippet). Overrides
+   the single-row .palette-item flex so wrapping looks intentional. */
+.card-search-item {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 4px;
+}
+.card-search-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.card-search-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.card-search-head .palette-item-label {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-search-head .palette-item-hint {
+  flex-shrink: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.card-search-snippet {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  line-height: 1.4;
+}
+.palette-item-sel .card-search-snippet {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* ── Backlinks footer (lives at the bottom of every markdown card) ──────── */
+.backlinks-footer {
+  margin: 32px 0 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-1, rgba(255, 255, 255, 0.08));
+  font-size: 12px;
+}
+.backlinks-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--text-3, rgba(255, 255, 255, 0.55));
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.backlinks-toggle:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-1, rgba(255, 255, 255, 0.92));
+}
+.backlinks-caret {
+  font-size: 10px;
+  opacity: 0.7;
+  width: 10px;
+  display: inline-block;
+  text-align: center;
+}
+.backlinks-label {
+  font-weight: 500;
+}
+.backlinks-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.backlinks-item {
+  margin: 0;
+}
+.backlinks-item-button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: 5px;
+  color: inherit;
+  transition: background 120ms ease;
+}
+.backlinks-item-button:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.backlinks-item-title {
+  color: var(--text-1, rgba(255, 255, 255, 0.92));
+  font-weight: 500;
+}
+.backlinks-item-id {
+  color: var(--text-3, rgba(255, 255, 255, 0.5));
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.backlinks-item-snippet {
+  color: var(--text-3, rgba(255, 255, 255, 0.55));
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.4;
+}
+
 /* ── Shortcuts panel (opens as a center tab) ────────────────────────────── */
 .shortcuts-panel {
   height: 100%;
@@ -2542,6 +2696,24 @@ textarea.form-input {
   background: var(--bg-0);
 }
 
+/* "Controlado pelo agente": label da tab pulsa na cor accent. Substitui a borda em volta
+   do canvas (era invasiva e ficava em cima do conteúdo da página). O bloqueio de input
+   humano continua sendo via injeção JS no WebContents (INSTALL_INPUT_BLOCKER em
+   web-views.ts) — só a indicação visual mudou de lugar. */
+.deck-tab-controlling .deck-tab-label {
+  color: var(--accent);
+  animation: deck-tab-control-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes deck-tab-control-pulse {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 .web-auth-banner {
   display: flex;
   align-items: center;
@@ -2737,6 +2909,12 @@ textarea.form-input {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: dev-rebuild-spin 0.7s linear infinite;
+}
+
+.dev-rebuild-elapsed {
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9em;
 }
 
 @keyframes dev-rebuild-spin {

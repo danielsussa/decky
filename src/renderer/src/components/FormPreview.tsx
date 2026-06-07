@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormField, FormSpec } from '../../../shared/preview'
+import { t } from '../lib/i18n'
 
 interface FormPreviewProps {
   spec: FormSpec
@@ -112,7 +113,7 @@ export default function FormPreview({ spec }: FormPreviewProps): React.JSX.Eleme
       setStatus('submitted')
     } catch (err) {
       setStatus('error')
-      setErrMsg((err as Error).message || 'falha ao enviar')
+      setErrMsg((err as Error).message || t('form.sendFailed'))
     }
   }
 
@@ -142,12 +143,12 @@ export default function FormPreview({ spec }: FormPreviewProps): React.JSX.Eleme
   return (
     <div className="form-preview" onKeyDown={onKeyDown}>
       <div className="form-bar">
-        <span className="form-title">{spec.title ?? 'Formulário'}</span>
+        <span className="form-title">{spec.title ?? t('form.untitled')}</span>
         <span className="form-status">
-          {status === 'submitted' && <span className="form-sent">✓ enviado</span>}
-          {status === 'cancelled' && <span className="form-cancelled">cancelado</span>}
-          {status === 'sending' && <span className="form-sending">enviando…</span>}
-          {status === 'error' && <span className="form-err">{errMsg ?? 'erro'}</span>}
+          {status === 'submitted' && <span className="form-sent">{t('form.sent')}</span>}
+          {status === 'cancelled' && <span className="form-cancelled">{t('form.cancelled')}</span>}
+          {status === 'sending' && <span className="form-sending">{t('form.sending')}</span>}
+          {status === 'error' && <span className="form-err">{errMsg ?? t('common.error')}</span>}
         </span>
       </div>
 
@@ -193,7 +194,7 @@ export default function FormPreview({ spec }: FormPreviewProps): React.JSX.Eleme
                   value={String(value ?? '')}
                   onChange={(e) => setValue(f.key, e.target.value)}
                 >
-                  <option value="">— selecione —</option>
+                  <option value="">{t('form.selectPlaceholder')}</option>
                   {(f.options ?? []).map((o) => (
                     <option key={o.value} value={o.value}>
                       {o.label}
@@ -251,7 +252,7 @@ export default function FormPreview({ spec }: FormPreviewProps): React.JSX.Eleme
           onClick={() => void cancel()}
           disabled={locked}
         >
-          cancelar
+          {t('common.cancel')}
         </button>
         <button type="button" className="form-send" onClick={() => void submit()} disabled={locked}>
           {spec.submitLabel ?? 'SEND'}

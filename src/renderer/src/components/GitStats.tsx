@@ -1,3 +1,5 @@
+import { t } from '../lib/i18n'
+
 type Props = {
   additions: number
   deletions: number
@@ -33,8 +35,8 @@ export default function GitStats({
     ...Array(empty).fill('e')
   ]
   const title = onClick
-    ? `+${additions} −${deletions} — abrir diff`
-    : `+${additions} −${deletions} (não commitado)`
+    ? `+${additions} −${deletions}${t('git.openDiffSuffix')}`
+    : `+${additions} −${deletions}${t('git.notCommittedSuffix')}`
   return (
     <button
       type="button"

@@ -53,8 +53,8 @@ const SWITCH_REPAINT_GUARD_MS = 1500
 type PanelId = 'shortcuts' | 'pages'
 const PANEL_PREFIX = '__panel:'
 const PANELS: { id: PanelId; title: string; paletteLabel: string }[] = [
-  { id: 'shortcuts', title: 'Atalhos', paletteLabel: 'Atalhos de teclado' },
-  { id: 'pages', title: 'Páginas', paletteLabel: 'Páginas do workspace' }
+  { id: 'shortcuts', title: t('panel.shortcuts'), paletteLabel: t('panel.shortcuts.paletteLabel') },
+  { id: 'pages', title: t('panel.pages'), paletteLabel: t('panel.pages.paletteLabel') }
 ]
 
 const HOME = '/Users/danielkanczuk'
@@ -1808,17 +1808,24 @@ function App(): React.JSX.Element {
     if (p) setWorkspace(p)
   }
 
-  // Open a blank browser card in the active session, focused (URL bar auto-focuses).
-  const openWebTab = (): void => {
+  // Open a browser card in the active session, focused. Empty url = "nova aba" (URL bar
+  // auto-focuses); with url = navigates straight there (used by palette `//query` shortcut).
+  const openWebTab = (url: string = ''): void => {
     if (!activeId) return
     const aId = activeId
     const id = `web-${Date.now().toString(36)}`
     setCardsBySession((p) => ({ ...p, [aId]: [...(p[aId] ?? []), id] }))
     setPreviewsByCard((p) => ({
       ...p,
-      [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url: '' } }
+      [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url } }
     }))
     setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
+  }
+
+  const openGoogleSearch = (query: string): void => {
+    const q = query.trim()
+    if (!q) return
+    openWebTab(`https://www.google.com/search?q=${encodeURIComponent(q)}`)
   }
 
   const toggleExpand = (ws: string): void =>
@@ -2193,27 +2200,27 @@ function App(): React.JSX.Element {
   const paletteCommands: Command[] = [
     {
       id: 'theme:toggle-mode',
-      label: mode === 'dark' ? 'Tema claro' : 'Tema escuro',
-      hint: 'aparência',
+      label: mode === 'dark' ? t('cmd.themeLight') : t('cmd.themeDark'),
+      hint: t('cmd.appearance'),
       run: toggleMode
     },
     ...(workspace
-      ? THEMES.filter((t) => t.id !== currentThemeId).map((t) => ({
-          id: `theme:color:${t.id}`,
-          label: `Cor: ${t.name}`,
-          hint: 'tema do workspace',
-          run: () => setWorkspaceThemes((prev) => ({ ...prev, [workspace]: t.id }))
+      ? THEMES.filter((th) => th.id !== currentThemeId).map((th) => ({
+          id: `theme:color:${th.id}`,
+          label: `${t('cmd.colorPrefix')}${th.name}`,
+          hint: t('cmd.workspaceTheme'),
+          run: () => setWorkspaceThemes((prev) => ({ ...prev, [workspace]: th.id }))
         }))
       : []),
-    { id: 'web:new', label: 'Nova aba de browser', hint: 'abre um webview', run: openWebTab },
+    { id: 'web:new', label: t('cmd.newWebTab'), hint: t('cmd.webTabHint'), run: openWebTab },
     {
       id: 'notify:test',
-      label: 'Testar notificação',
-      hint: 'diagnóstico',
+      label: t('cmd.testNotification'),
+      hint: t('cmd.diagnostic'),
       run: () => {
         console.log('[notify-test] firing test notification')
         void window.deck.notify
-          .show({ id: activeId ?? 'test', title: 'decky', body: 'teste de notificação' })
+          .show({ id: activeId ?? 'test', title: 'decky', body: t('cmd.notificationTestBody') })
           .then(() => console.log('[notify-test] IPC resolved'))
           .catch((e) => console.error('[notify-test] IPC failed', e))
       }
@@ -2221,7 +2228,7 @@ function App(): React.JSX.Element {
     ...PANELS.map((p) => ({
       id: `panel:${p.id}`,
       label: p.paletteLabel,
-      hint: 'painel',
+      hint: t('cmd.panelHint'),
       run: () => openPanel(p.id)
     }))
     // dev:rebuild lives in the right-click menu on the top "decky" panel header now.
@@ -2265,7 +2272,7 @@ function App(): React.JSX.Element {
           onSkip={handleCliSkip}
           onRecheck={handleCliRecheck}
           showSkip={!firstRunPending}
-          heading={cliSettingsOpen && !firstRunPending ? 'CLIs de IA' : undefined}
+          heading={cliSettingsOpen && !firstRunPending ? t('cli.headingSettings') : undefined}
         />
       )}
       <main className="deck-main">
@@ -2394,7 +2401,11 @@ function App(): React.JSX.Element {
         </ResizableSplit>
       </main>
       {paletteOpen && (
-        <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
+        <CommandPalette
+          commands={paletteCommands}
+          onWebSearch={openGoogleSearch}
+          onClose={() => setPaletteOpen(false)}
+        />
       )}
       {cardSearchOpen && workspace && (
         <CardSearch

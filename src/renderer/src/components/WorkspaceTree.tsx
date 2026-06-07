@@ -1,5 +1,6 @@
 import { ChevronRight, ChevronDown, FolderPlus, Plus, X } from 'lucide-react'
 import type { Mode, Theme } from '../../../shared/themes'
+import { t } from '../lib/i18n'
 
 export interface TreeSession {
   id: string
@@ -97,7 +98,7 @@ export default function WorkspaceTree({
               <button
                 type="button"
                 className="wstree-x"
-                title="fechar workspace"
+                title={t('ws.closeWorkspace')}
                 onClick={(e) => {
                   e.stopPropagation()
                   onCloseWorkspace(ws)
@@ -140,7 +141,7 @@ export default function WorkspaceTree({
                         <button
                           type="button"
                           className="wstree-x"
-                          title="fechar sessão"
+                          title={t('ws.closeSession')}
                           onClick={(e) => {
                             e.stopPropagation()
                             onCloseSession(s.id)
@@ -154,7 +155,7 @@ export default function WorkspaceTree({
                 })}
                 <button type="button" className="wstree-new" onClick={() => onNewSession(ws)}>
                   <Plus size={12} />
-                  <span>nova sessão</span>
+                  <span>{t('ws.newSession')}</span>
                 </button>
               </div>
             )}
@@ -163,7 +164,7 @@ export default function WorkspaceTree({
       })}
       <button type="button" className="wstree-add" onClick={onAddFolder}>
         <FolderPlus size={13} />
-        <span>Adicionar pasta…</span>
+        <span>{t('ws.addFolder')}</span>
       </button>
     </div>
   )

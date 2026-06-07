@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { t } from '../lib/i18n'
 
 export interface Command {
   id: string
@@ -10,18 +11,35 @@ export interface Command {
 interface CommandPaletteProps {
   commands: Command[]
   onClose: () => void
+  // Called when the user submits `//<query>` — opens a new web card pointing at a Google
+  // search for <query>. If omitted, the `//` shortcut is hidden.
+  onWebSearch?: (query: string) => void
 }
 
 export default function CommandPalette({
   commands,
-  onClose
+  onClose,
+  onWebSearch
 }: CommandPaletteProps): React.JSX.Element {
   const [q, setQ] = useState('')
   const [sel, setSel] = useState(0)
+  const searchMode = onWebSearch && q.startsWith('//')
+  const searchQuery = searchMode ? q.slice(2).trim() : ''
   const needle = q.toLowerCase().trim()
-  const filtered = commands.filter((c) =>
-    `${c.label} ${c.hint ?? ''} ${c.id}`.toLowerCase().includes(needle)
-  )
+  const filtered: Command[] = searchMode
+    ? searchQuery
+      ? [
+          {
+            id: 'web:search',
+            label: `${t('cmd.googleSearch')}: ${searchQuery}`,
+            hint: t('cmd.googleSearchHint'),
+            run: () => onWebSearch!(searchQuery)
+          }
+        ]
+      : []
+    : commands.filter((c) =>
+        `${c.label} ${c.hint ?? ''} ${c.id}`.toLowerCase().includes(needle)
+      )
 
   const run = (c: Command | undefined): void => {
     if (!c) return
@@ -36,7 +54,7 @@ export default function CommandPalette({
           autoFocus
           className="palette-input"
           value={q}
-          placeholder="digite um comando…"
+          placeholder={t('palette.placeholder')}
           onChange={(e) => {
             setQ(e.target.value)
             setSel(0)
@@ -58,7 +76,11 @@ export default function CommandPalette({
           }}
         />
         <div className="palette-list">
-          {filtered.length === 0 && <div className="palette-empty">nenhum comando</div>}
+          {filtered.length === 0 && (
+            <div className="palette-empty">
+              {searchMode ? t('cmd.googleSearchPrompt') : 'nenhum comando'}
+            </div>
+          )}
           {filtered.map((c, i) => (
             <div
               key={c.id}

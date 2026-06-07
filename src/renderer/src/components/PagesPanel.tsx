@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { t } from '../lib/i18n'
 
 export interface WorkspacePage {
   id: string
@@ -85,22 +86,20 @@ export default function PagesPanel({
       <div className="pages-toolbar">
         <input
           className="pages-search"
-          placeholder="filtrar páginas…"
+          placeholder={t('pages.filterPlaceholder')}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           autoFocus
         />
-        <button className="pages-refresh" type="button" onClick={reload} title="Recarregar">
+        <button className="pages-refresh" type="button" onClick={reload} title={t('common.reload')}>
           ↻
         </button>
       </div>
       {filtered === null ? (
-        <div className="pages-empty">carregando…</div>
+        <div className="pages-empty">{t('pages.loading')}</div>
       ) : filtered.length === 0 ? (
         <div className="pages-empty">
-          {pages && pages.length === 0
-            ? 'Nenhuma página neste workspace.'
-            : 'Nada bate com o filtro.'}
+          {pages && pages.length === 0 ? t('pages.empty') : t('pages.emptyFilter')}
         </div>
       ) : (
         <ul className="pages-list">
@@ -122,7 +121,7 @@ export default function PagesPanel({
                 </button>
                 <div className="pages-actions">
                   <button type="button" className="pages-btn" onClick={() => onOpen(p)}>
-                    Abrir
+                    {t('common.open')}
                   </button>
                   {confirming ? (
                     <>
@@ -132,7 +131,7 @@ export default function PagesPanel({
                         onClick={() => void handleDelete(p)}
                         disabled={busy}
                       >
-                        Confirmar
+                        {t('common.confirm')}
                       </button>
                       <button
                         type="button"
@@ -140,7 +139,7 @@ export default function PagesPanel({
                         onClick={() => setPendingDelete(null)}
                         disabled={busy}
                       >
-                        Cancelar
+                        {t('common.cancel')}
                       </button>
                     </>
                   ) : (
@@ -149,7 +148,7 @@ export default function PagesPanel({
                       className="pages-btn pages-btn-danger-outline"
                       onClick={() => setPendingDelete(p.path)}
                     >
-                      Deletar
+                      {t('common.delete')}
                     </button>
                   )}
                 </div>

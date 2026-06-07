@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CLI_KINDS, CLI_SPECS, type CliKind, type DetectedCli } from '../../../shared/cli-spec'
+import { t } from '../lib/i18n'
 
 interface FirstRunModalProps {
   detectedClis: DetectedCli[]
@@ -74,7 +75,7 @@ export default function FirstRunModal({
   }
 
   const browse = async (): Promise<void> => {
-    const picked = await window.deck.app.pickFile('Selecione o binário ou wrapper script')
+    const picked = await window.deck.app.pickFile(t('cli.pickFileDialog'))
     if (picked) setEditor((e) => ({ ...e, value: picked, error: undefined, okMsg: undefined }))
   }
 
@@ -84,7 +85,7 @@ export default function FirstRunModal({
     setEditor((e) => ({ ...e, validating: true, error: undefined, okMsg: undefined }))
     const v = await window.deck.cli.validatePath(path)
     if (!v.ok) {
-      setEditor((e) => ({ ...e, validating: false, error: v.error ?? 'inválido' }))
+      setEditor((e) => ({ ...e, validating: false, error: v.error ?? t('cli.invalid') }))
       return
     }
     await window.deck.cli.setPath(kind, path)
@@ -94,7 +95,7 @@ export default function FirstRunModal({
     setEditor((e) => ({
       ...e,
       validating: false,
-      okMsg: v.version ? `ok — ${v.version}` : 'ok'
+      okMsg: v.version ? `${t('cli.okPrefix')}${v.version}` : t('cli.ok')
     }))
     // Auto-close after a brief moment so user sees confirmation.
     setTimeout(() => {
@@ -118,7 +119,7 @@ export default function FirstRunModal({
           <input
             type="text"
             className="first-run-modal-editor-input"
-            placeholder="/caminho/do/binario-ou-wrapper.sh"
+            placeholder={t('cli.pathPlaceholder')}
             value={editor.value}
             onChange={(e) =>
               setEditor((s) => ({
@@ -139,7 +140,7 @@ export default function FirstRunModal({
             type="button"
             className="first-run-modal-editor-browse"
             onClick={() => void browse()}
-            title="Escolher arquivo"
+            title={t('cli.pickFile')}
           >
             …
           </button>
@@ -153,7 +154,7 @@ export default function FirstRunModal({
             onClick={cancelEdit}
             disabled={editor.validating}
           >
-            cancelar
+            {t('common.cancel')}
           </button>
           {hasOverride && (
             <button
@@ -162,7 +163,7 @@ export default function FirstRunModal({
               onClick={() => void clearPath(kind)}
               disabled={editor.validating}
             >
-              limpar override
+              {t('cli.clearOverride')}
             </button>
           )}
           <button
@@ -171,7 +172,7 @@ export default function FirstRunModal({
             onClick={() => void savePath(kind)}
             disabled={editor.validating || !editor.value.trim()}
           >
-            {editor.validating ? 'validando…' : 'salvar'}
+            {editor.validating ? t('cli.validating') : t('common.save')}
           </button>
         </div>
       </div>
@@ -188,12 +189,10 @@ export default function FirstRunModal({
       <div className="first-run-modal" role="dialog" aria-modal="true">
         <div className="first-run-modal-header">
           <h2>
-            {heading ?? (isEmpty ? 'Nenhum CLI de IA encontrado' : 'Escolha seu CLI de IA padrão')}
+            {heading ?? (isEmpty ? t('cli.headingNoCli') : t('cli.headingChoose'))}
           </h2>
           <p className="first-run-modal-sub">
-            {isEmpty
-              ? 'Instale um destes ou aponte um caminho customizado (ex.: script wrapper). Você pode pular e configurar depois.'
-              : 'Esse será o CLI usado em sessões novas. Você pode trocar o caminho — útil se usa um wrapper script.'}
+            {isEmpty ? t('cli.subEmpty') : t('cli.subPick')}
           </p>
         </div>
 
@@ -219,7 +218,9 @@ export default function FirstRunModal({
                   {detected?.version && (
                     <span className="first-run-modal-option-ver">{detected.version}</span>
                   )}
-                  {!detected && <span className="first-run-modal-option-ver">não detectado</span>}
+                  {!detected && (
+                    <span className="first-run-modal-option-ver">{t('cli.notDetected')}</span>
+                  )}
                   <button
                     type="button"
                     className="first-run-modal-link"
@@ -228,7 +229,7 @@ export default function FirstRunModal({
                       isEditingThis ? cancelEdit() : startEdit(kind)
                     }}
                   >
-                    {isEditingThis ? 'fechar' : override ? 'editar' : 'caminho…'}
+                    {isEditingThis ? t('common.close') : override ? t('cli.edit') : t('cli.editPath')}
                   </button>
                 </label>
                 {detected && (
@@ -253,7 +254,7 @@ export default function FirstRunModal({
         <div className="first-run-modal-footer">
           {showSkip && (
             <button type="button" className="first-run-modal-skip" onClick={() => void onSkip()}>
-              {isEmpty ? 'pular' : 'fechar'}
+              {isEmpty ? t('cli.skip') : t('common.close')}
             </button>
           )}
           {isEmpty ? (
@@ -263,7 +264,7 @@ export default function FirstRunModal({
               onClick={() => void handleRecheck()}
               disabled={rechecking}
             >
-              {rechecking ? 'verificando…' : 'já instalei, verificar'}
+              {rechecking ? t('cli.rechecking') : t('cli.recheck')}
             </button>
           ) : (
             <button
@@ -272,7 +273,7 @@ export default function FirstRunModal({
               disabled={!selected}
               onClick={() => selected && void onSave(selected)}
             >
-              usar como padrão
+              {t('cli.useDefault')}
             </button>
           )}
         </div>

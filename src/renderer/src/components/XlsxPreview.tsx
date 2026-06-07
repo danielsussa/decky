@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx-js-style'
+import { t } from '../lib/i18n'
 
 interface XlsxPreviewProps {
   path: string
@@ -222,7 +223,7 @@ export default function XlsxPreview({ path }: XlsxPreviewProps): React.JSX.Eleme
       .then((bytes) => {
         if (cancelled) return
         if (!bytes) {
-          setError('arquivo não encontrado ou ilegível')
+          setError(t('xlsx.notFound'))
           return
         }
         try {
@@ -232,11 +233,11 @@ export default function XlsxPreview({ path }: XlsxPreviewProps): React.JSX.Eleme
           setSheets(grids)
           setActive((prev) => (prev < grids.length ? prev : 0))
         } catch (err) {
-          if (!cancelled) setError(`falha ao parsear xlsx: ${(err as Error).message}`)
+          if (!cancelled) setError(`${t('xlsx.parseFailPrefix')}${(err as Error).message}`)
         }
       })
       .catch((err) => {
-        if (!cancelled) setError(`falha ao ler arquivo: ${err.message}`)
+        if (!cancelled) setError(`${t('xlsx.readFailPrefix')}${err.message}`)
       })
     return () => {
       cancelled = true

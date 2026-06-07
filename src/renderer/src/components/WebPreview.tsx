@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, RotateCw, ExternalLink } from 'lucide-react'
 import { useWebViewVisible } from '../hooks/useWebViewVisible'
+import { t } from '../lib/i18n'
 
 interface WebPreviewProps {
   // The DeckCard id this preview belongs to — also the key the main process uses to identify
@@ -210,7 +211,7 @@ export default function WebPreview({
           className="web-btn"
           disabled={!canBack}
           onClick={() => window.deck.web.back(cardId)}
-          title="voltar"
+          title={t('web.back')}
         >
           <ArrowLeft size={14} />
         </button>
@@ -219,7 +220,7 @@ export default function WebPreview({
           className="web-btn"
           disabled={!canFwd}
           onClick={() => window.deck.web.forward(cardId)}
-          title="avançar"
+          title={t('web.forward')}
         >
           <ArrowRight size={14} />
         </button>
@@ -227,7 +228,7 @@ export default function WebPreview({
           type="button"
           className="web-btn"
           onClick={() => window.deck.web.reload(cardId)}
-          title="recarregar"
+          title={t('web.reload')}
         >
           <RotateCw size={14} className={loading ? 'web-spin' : undefined} />
         </button>
@@ -235,7 +236,7 @@ export default function WebPreview({
           ref={inputRef}
           className="web-url"
           value={address}
-          placeholder="digite uma URL e Enter…"
+          placeholder={t('web.urlPlaceholder')}
           spellCheck={false}
           onChange={(e) => setAddress(e.target.value)}
           onKeyDown={(e) => {
@@ -246,7 +247,7 @@ export default function WebPreview({
           type="button"
           className="web-btn"
           onClick={() => void window.deck.app.openExternal(current)}
-          title="abrir no navegador externo"
+          title={t('web.openExternal')}
         >
           <ExternalLink size={14} />
         </button>

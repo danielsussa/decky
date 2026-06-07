@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { t } from '../lib/i18n'
 
 interface EditorPreviewProps {
   content: string
@@ -55,7 +56,7 @@ export default function EditorPreview({ content, path }: EditorPreviewProps): Re
       setSaveError(null)
     } else {
       justSavedRef.current = null
-      setSaveError('falha ao salvar')
+      setSaveError(t('editor.saveFailed'))
     }
   }, [buffer, path])
 
@@ -96,16 +97,17 @@ export default function EditorPreview({ content, path }: EditorPreviewProps): Re
             <span className="editor-err">{saveError}</span>
           ) : diskChangedWhileDirty ? (
             <button type="button" className="editor-reload" onClick={reloadFromDisk}>
-              disco mudou — descartar e recarregar
+              {t('editor.diskChanged')}
             </button>
           ) : dirty ? (
-            <span className="editor-dirty">● não salvo</span>
+            <span className="editor-dirty">{t('editor.dirty')}</span>
           ) : justSaved ? (
-            <span className="editor-saved">salvo</span>
+            <span className="editor-saved">{t('editor.saved')}</span>
           ) : null}
         </span>
         <button type="button" className="editor-save" onClick={() => void save()} disabled={!dirty}>
-          {navigator.platform.includes('Mac') ? '⌘S' : 'Ctrl+S'} salvar
+          {navigator.platform.includes('Mac') ? '⌘S' : 'Ctrl+S'}
+          {t('editor.saveSuffix')}
         </button>
       </div>
       <textarea

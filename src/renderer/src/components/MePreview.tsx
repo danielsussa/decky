@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { t } from '../lib/i18n'
 
 const BASE = 'http://127.0.0.1:6789'
 
@@ -32,13 +33,18 @@ export default function MePreview({ url }: MePreviewProps): React.JSX.Element {
     return (
       <div className="preview-empty">
         <p>
-          o <strong>me daemon</strong> não está rodando (sem servidor em <code>127.0.0.1:6789</code>
-          ).
+          {t('me.daemonDownPrefix')}
+          <strong>me daemon</strong>
+          {t('me.daemonDownMiddle')}
+          <code>127.0.0.1:6789</code>
+          {t('me.daemonDownSuffix')}
           <br />
-          rode <code>handoff start</code> num terminal e clique recarregar.
+          {t('me.daemonHowToPrefix')}
+          <code>handoff start</code>
+          {t('me.daemonHowToSuffix')}
         </p>
         <button className="sstack-add-btn primary" onClick={() => setReloadKey((k) => k + 1)}>
-          recarregar
+          {t('me.reload')}
         </button>
       </div>
     )

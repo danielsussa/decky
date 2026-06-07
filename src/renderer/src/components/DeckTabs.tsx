@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Pin } from 'lucide-react'
 import type { DeckCard } from './DeckGrid'
 import { PaneVisibleProvider } from '../web-visibility'
+import { t } from '../lib/i18n'
 
 interface DeckTabsProps {
   cards: DeckCard[]
@@ -79,9 +80,7 @@ export default function DeckTabs({
             className={`deck-tab ${c.id === activeId ? 'deck-tab-active' : ''} ${c.pinned ? 'deck-tab-ispinned' : ''} ${overId === c.id && dragId !== c.id ? 'deck-tab-dragover' : ''} ${dragId === c.id ? 'deck-tab-dragging' : ''} ${controlledIds.has(c.id) ? 'deck-tab-controlling' : ''}`}
             role="button"
             tabIndex={0}
-            title={
-              onTogglePin ? 'duplo-clique pra fixar/desafixar · arraste pra reordenar' : undefined
-            }
+            title={onTogglePin ? t('tabs.pinHint') : undefined}
             draggable={!!onReorder}
             onDragStart={() => setDragId(c.id)}
             onDragOver={(e) => {
@@ -106,7 +105,7 @@ export default function DeckTabs({
               <button
                 type="button"
                 className="deck-tab-close"
-                title="fechar card"
+                title={t('tabs.closeCard')}
                 onClick={(e) => {
                   e.stopPropagation()
                   onClose(c.id)

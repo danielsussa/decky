@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { GridStack, type GridStackOptions, type GridStackWidget } from 'gridstack'
 import { Focus, Maximize2, Minimize2, Pin } from 'lucide-react'
 import 'gridstack/dist/gridstack.min.css'
+import { t } from '../lib/i18n'
 
 export interface DeckCard {
   id: string
@@ -96,7 +97,7 @@ export default function DeckGrid({
             <button
               type="button"
               className={`deck-card-icon ${c.pinned ? 'deck-card-pinned' : ''}`}
-              title={c.pinned ? 'desafixar' : 'fixar em todas as sessões'}
+              title={c.pinned ? t('grid.unpin') : t('grid.pinAll')}
               onClick={(e) => {
                 e.stopPropagation()
                 onTogglePin(c.id)
@@ -109,7 +110,7 @@ export default function DeckGrid({
           <button
             type="button"
             className="deck-card-icon"
-            title={isFocused ? 'desselecionar' : 'selecionar card'}
+            title={isFocused ? t('grid.unfocus') : t('grid.focus')}
             onClick={(e) => {
               e.stopPropagation()
               toggleFocus(c.id)
@@ -121,7 +122,7 @@ export default function DeckGrid({
           <button
             type="button"
             className="deck-card-icon"
-            title={isFullscreen ? 'sair do fullscreen' : 'expandir card'}
+            title={isFullscreen ? t('grid.exitFullscreen') : t('grid.fullscreen')}
             onClick={(e) => {
               e.stopPropagation()
               toggleFullscreen(c.id)

@@ -1,3 +1,5 @@
+import { t } from '../lib/i18n'
+
 interface DiffPreviewProps {
   content: string
 }
@@ -88,7 +90,7 @@ export default function DiffPreview({ content }: DiffPreviewProps): React.JSX.El
   if (files.length === 0) {
     return (
       <div className="panel-placeholder">
-        <p className="muted">sem mudanças no diff</p>
+        <p className="muted">{t('diff.empty')}</p>
       </div>
     )
   }

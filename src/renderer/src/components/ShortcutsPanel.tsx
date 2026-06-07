@@ -6,6 +6,7 @@ import {
   eventToAccel,
   type ActionId
 } from '../../../shared/keymap'
+import { t } from '../lib/i18n'
 
 interface ShortcutsPanelProps {
   resolved: Record<ActionId, string>
@@ -43,13 +44,15 @@ export default function ShortcutsPanel({
       }
       const accel = eventToAccel(e)
       if (!accel) {
-        setError('use ao menos um modificador (Cmd / Ctrl / Alt)')
+        setError(t('shortcuts.useModifier'))
         return
       }
       const clash = conflictFor(resolved, accel, recording)
       if (clash) {
         const label = ACTIONS.find((a) => a.id === clash)?.label ?? clash
-        setError(`${accelLabel(accel)} já está em "${label}"`)
+        setError(
+          `${accelLabel(accel)}${t('shortcuts.alreadyAssignedPrefix')}${label}${t('shortcuts.alreadyAssignedSuffix')}`
+        )
         return
       }
       onSet(recording, accel)
@@ -62,7 +65,7 @@ export default function ShortcutsPanel({
 
   return (
     <div className="shortcuts-panel">
-      <div className="remap-section">Atalhos de teclado</div>
+      <div className="remap-section">{t('shortcuts.heading')}</div>
       <div className="remap-rows">
         {ACTIONS.map((a) => {
           const isRec = recording === a.id
@@ -76,9 +79,9 @@ export default function ShortcutsPanel({
                   setError(null)
                   setRecording(isRec ? null : a.id)
                 }}
-                title="clique e pressione o novo atalho"
+                title={t('shortcuts.tooltip')}
               >
-                {isRec ? 'pressione…' : accelLabel(resolved[a.id])}
+                {isRec ? t('shortcuts.recording') : accelLabel(resolved[a.id])}
               </button>
               <button
                 type="button"
@@ -88,7 +91,7 @@ export default function ShortcutsPanel({
                   setError(null)
                   onReset(a.id)
                 }}
-                title="restaurar padrão"
+                title={t('shortcuts.reset')}
               >
                 ↺
               </button>
@@ -97,9 +100,7 @@ export default function ShortcutsPanel({
         })}
       </div>
       {error && <div className="remap-error">{error}</div>}
-      <div className="remap-hint">
-        clique num atalho e pressione a nova combinação · Esc cancela
-      </div>
+      <div className="remap-hint">{t('shortcuts.hint')}</div>
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { type Components, defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeRaw from 'rehype-raw'
@@ -10,6 +10,16 @@ import ChecklistBlock from './ChecklistBlock'
 import BacklinksFooter from './BacklinksFooter'
 import remarkWikilinks from '../lib/remark-wikilinks'
 import { splitIntoBlocks } from '../lib/markdown-blocks'
+import { t } from '../lib/i18n'
+
+// react-markdown's defaultUrlTransform whitelists protocols (http, https, mailto, …) and
+// blanks anything else — so `wikilink:<name>` injected by remarkWikilinks would lose its
+// href before our `a` override sees it. Allow the synthetic scheme through; defer to the
+// default sanitizer for every other URL.
+function wikilinkAwareUrlTransform(url: string): string {
+  if (url.startsWith('wikilink:')) return url
+  return defaultUrlTransform(url)
+}
 
 // Card paths live under `<workspace>/.decky/cards/...`. Strip the suffix to recover the
 // workspace root — saves us threading a `workspace` prop through Preview/DeckGrid for
@@ -147,7 +157,7 @@ function makeComponents(
       // Wikilink injected by remarkWikilinks: `wikilink:<name>`. Resolve via IPC to an
       // absolute card path, then route through the same decky:open-path channel as the
       // regular .md link override below.
-      if (href && href.startsWith('wikilink:') && sessionId) {
+      if (href && href.startsWith('wikilink:')) {
         const name = href.slice('wikilink:'.length)
         const workspace = workspaceFromCardPath(cardPath)
         const onClick = (ev: React.MouseEvent<HTMLAnchorElement>): void => {
@@ -174,7 +184,7 @@ function makeComponents(
             {...props}
             href="#"
             className="wikilink"
-            title={`abrir card [[${name}]]`}
+            title={`${t('md.openCardPrefix')}[[${name}]]`}
             onClick={onClick}
           />
         )
@@ -397,6 +407,7 @@ function MarkdownPreviewInner({
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkWikilinks]}
                 rehypePlugins={[rehypeRaw, rehypeHighlight]}
+                urlTransform={wikilinkAwareUrlTransform}
                 components={components}
               >
                 {block.text}

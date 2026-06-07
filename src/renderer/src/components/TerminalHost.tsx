@@ -2,6 +2,7 @@ import Terminal from './Terminal'
 import type { Session } from '../types'
 import type { Mode, Theme } from '../../../shared/themes'
 import { CLI_SPECS } from '../../../shared/cli-spec'
+import { t } from '../lib/i18n'
 
 interface TerminalHostProps {
   // The GLOBAL pool of live sessions (across workspaces). Every one mounts a terminal that
@@ -40,8 +41,8 @@ export default function TerminalHost({
               <div className="panel-placeholder">
                 <p className="muted">
                   {detectionLoaded
-                    ? `${displayName} não está instalado nesta máquina.`
-                    : `resolvendo ${displayName.toLowerCase()}…`}
+                    ? `${displayName}${t('term.notInstalledSuffix')}`
+                    : `${t('term.resolvingPrefix')}${displayName.toLowerCase()}…`}
                 </p>
               </div>
             ) : (
@@ -60,7 +61,7 @@ export default function TerminalHost({
       })}
       {sessions.length === 0 && (
         <div className="panel-placeholder">
-          <p className="muted">nenhuma sessão — abra uma no workspace acima</p>
+          <p className="muted">{t('term.noSessions')}</p>
         </div>
       )}
     </div>

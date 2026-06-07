@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { t } from '../lib/i18n'
 
 export interface CardSearchHit {
   id: string
@@ -46,7 +47,7 @@ export default function CardSearch({
     onClose()
   }
 
-  const placeholder = 'buscar nos cards…'
+  const placeholder = t('search.placeholder')
 
   return (
     <div className="palette-backdrop" onClick={onClose}>
@@ -79,7 +80,7 @@ export default function CardSearch({
         <div className="palette-list">
           {hits.length === 0 && (
             <div className="palette-empty">
-              {q.trim() ? 'nenhum card' : 'nenhum card neste workspace'}
+              {q.trim() ? t('search.noCards') : t('search.emptyWorkspace')}
             </div>
           )}
           {hits.map((h, i) => {

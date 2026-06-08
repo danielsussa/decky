@@ -30,11 +30,37 @@ function workspaceFromCardPath(cardPath: string | undefined): string | undefined
   return idx > 0 ? cardPath.slice(0, idx) : undefined
 }
 
+// Compute the URL that "Copy URL" on a right-clicked image should write to the clipboard.
+// Remote/data/file URLs pass through as-is. Relative srcs resolve to an absolute path on
+// disk against the card's directory — that's what users actually need when pasting into a
+// shell, a file dialog, or another markdown doc. We DON'T return the decky-asset:// form
+// (it only works inside this app).
+function copyableImageUrl(src: string | undefined, cardPath: string | undefined): string {
+  if (!src) return ''
+  if (/^(https?:|data:|file:|blob:)/i.test(src)) return src
+  if (!cardPath) return src
+  const lastSlash = cardPath.lastIndexOf('/')
+  const baseDir = lastSlash >= 0 ? cardPath.slice(0, lastSlash) : ''
+  const joined = src.startsWith('/') ? src : `${baseDir}/${src}`
+  const parts = joined.split('/').reduce<string[]>((acc, part) => {
+    if (part === '..') acc.pop()
+    else if (part !== '.' && part !== '') acc.push(part)
+    return acc
+  }, [])
+  return '/' + parts.join('/')
+}
+
 // Resolve <img src> against the .md file's directory. ReactMarkdown alone treats relative
 // src as relative to the renderer page URL (http://localhost:xxxx in dev, file://app/... in
 // prod), neither of which knows where the card .md lives. We rewrite relative srcs to the
 // decky-asset:// protocol (see main/asset-protocol.ts) so they resolve to the actual file
-// on disk under the card's directory.
+// on disk — keeping the same relative path filesystem-native renderers (VSCode, GitHub)
+// resolve, so the .md stays portable.
+//
+// We pass the workspace root as `?base=<encoded abs dir>` (falling back to the card's own
+// directory when the card sits outside any `.decky/cards/` tree, e.g. a stray .md opened
+// via preview_show). The protocol allows files under that base — so images in a workspace-
+// level `imagens/` directory, not just under `.decky/cards/`, render correctly.
 function resolveAssetSrc(
   src: string | undefined,
   cardPath: string | undefined
@@ -54,7 +80,9 @@ function resolveAssetSrc(
   // requests for custom-scheme URLs with empty authority. Path segments are
   // encoded individually so slashes between them stay as path separators.
   const encoded = parts.map(encodeURIComponent).join('/')
-  return `decky-asset://card/${encoded}`
+  const allowBase = workspaceFromCardPath(cardPath) ?? baseDir
+  const baseQ = allowBase ? `?base=${encodeURIComponent(allowBase)}` : ''
+  return `decky-asset://card/${encoded}${baseQ}`
 }
 
 // Resolve a relative .md link to an absolute filesystem path against the card's directory.
@@ -124,7 +152,8 @@ function extractText(node: React.ReactNode): string {
 function makeComponents(
   cardPath: string | undefined,
   cardId: string | undefined,
-  sessionId: string | undefined
+  sessionId: string | undefined,
+  onImageContextMenu: (x: number, y: number, url: string) => void
 ): Components {
   return {
     code(props) {
@@ -150,7 +179,14 @@ function makeComponents(
     img(props) {
       const src = typeof props.src === 'string' ? props.src : undefined
       const resolved = resolveAssetSrc(src, cardPath)
-      return <img {...props} src={resolved} />
+      // Right-click on an image opens our own menu with "Copy URL". stopPropagation prevents
+      // the parent .md-body onContextMenu (selection-based menu) from also firing.
+      const onContextMenu = (ev: React.MouseEvent<HTMLImageElement>): void => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        onImageContextMenu(ev.clientX, ev.clientY, copyableImageUrl(src, cardPath))
+      }
+      return <img {...props} src={resolved} onContextMenu={onContextMenu} />
     },
     a(props) {
       const href = typeof props.href === 'string' ? props.href : undefined
@@ -246,9 +282,25 @@ function MarkdownPreviewInner({
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const blocks = useMemo(() => splitIntoBlocks(content), [content])
 
+  // Right-click on selected text inside the .md-body opens a small floating menu.
+  // For now the only action is "Expandir assunto": pre-create the sibling .md, open it as a
+  // new card, highlight the selection here while the agent fills it in.
+  // Right-click on an <img> opens the same menu shape with a "Copy URL" action — handled
+  // through the img override's onImageContextMenu callback so the parent .md-body handler
+  // (which needs a text selection) isn't involved.
+  const [menu, setMenu] = useState<
+    | { type: 'selection'; x: number; y: number; selection: string; range: Range }
+    | { type: 'image'; x: number; y: number; url: string }
+    | null
+  >(null)
+
+  const onImageContextMenu = (x: number, y: number, url: string): void => {
+    setMenu({ type: 'image', x, y, url })
+  }
+
   // Stable identity so ReactMarkdown doesn't see a "new" components prop on every render.
   const components = useMemo(
-    () => makeComponents(path, cardId, sessionId),
+    () => makeComponents(path, cardId, sessionId, onImageContextMenu),
     [path, cardId, sessionId]
   )
 
@@ -271,15 +323,6 @@ function MarkdownPreviewInner({
     if (el) scrollByCard.set(cardId, el.scrollTop)
   }
 
-  // Right-click on selected text inside the .md-body opens a small floating menu.
-  // For now the only action is "Expandir assunto": pre-create the sibling .md, open it as a
-  // new card, highlight the selection here while the agent fills it in.
-  const [menu, setMenu] = useState<{
-    x: number
-    y: number
-    selection: string
-    range: Range
-  } | null>(null)
   const onContextMenu = (ev: React.MouseEvent<HTMLDivElement>): void => {
     if (!sessionId || !path) return
     const winSel = window.getSelection()
@@ -287,6 +330,7 @@ function MarkdownPreviewInner({
     if (!sel || !winSel || winSel.rangeCount === 0) return
     ev.preventDefault()
     setMenu({
+      type: 'selection',
       x: ev.clientX,
       y: ev.clientY,
       selection: sel,
@@ -322,6 +366,13 @@ function MarkdownPreviewInner({
     const slug = `${slugBase || 'expansao'}-${Math.random().toString(36).slice(2, 6)}`
     const relPath = `${slug}.md`
     const absPath = `${baseDir}/${relPath}`
+    // Wikilink id is the new card's path relative to the workspace's cards root, sans `.md`.
+    // Resolves via exact id match (avoids basename collisions across subfolders).
+    const cardsRootIdx = absPath.indexOf('/.decky/cards/')
+    const wikilinkId =
+      cardsRootIdx >= 0
+        ? absPath.slice(cardsRootIdx + '/.decky/cards/'.length, -'.md'.length)
+        : slug
 
     // Highlight every occurrence of the selected text within this card. Walking text nodes
     // ourselves (instead of just adding the original range) means a selection like "carro"
@@ -370,7 +421,8 @@ function MarkdownPreviewInner({
       `\n` +
       `Já preparei o arquivo de destino vazio em "${absPath}" e ele já está aberto como card novo. Faça:\n` +
       `1. Escreva o conteúdo do aprofundamento nesse arquivo com Write — escopo coerente com o card pai, sem repetir o que já está lá.\n` +
-      `2. Edite o card original ("${path}") com Edit, substituindo EXATAMENTE o trecho selecionado por: [${selection}](${relPath})\n` +
+      `2. Edite o card original ("${path}") com Edit, substituindo EXATAMENTE o trecho selecionado por o wikilink: [[${wikilinkId}]]\n` +
+      `   (O renderer transforma [[id]] em link lavanda clicável, e o card novo passa a aparecer como "Referenciado por" no rodapé deste — mantém o vínculo permanente).\n` +
       `3. NÃO chame preview_show — o card já está aberto.`
     // Bracketed paste so claude CLI ingests the multi-line prompt as one block instead of
     // submitting on every newline. The trailing \r after \e[201~ ends paste mode and submits.
@@ -423,13 +475,26 @@ function MarkdownPreviewInner({
           style={{ left: menu.x, top: menu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <button
-            type="button"
-            className="md-context-menu-item"
-            onClick={() => void expandSubject(menu.selection, menu.range)}
-          >
-            Expandir assunto
-          </button>
+          {menu.type === 'selection' ? (
+            <button
+              type="button"
+              className="md-context-menu-item"
+              onClick={() => void expandSubject(menu.selection, menu.range)}
+            >
+              Expandir assunto
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="md-context-menu-item"
+              onClick={() => {
+                if (menu.url) void navigator.clipboard.writeText(menu.url)
+                setMenu(null)
+              }}
+            >
+              {t('md.copyUrl')}
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -98,18 +98,15 @@ function runBuild(
 
 // JSON-stringified deps block — used to detect when a fast-swap would ship stale
 // node_modules (new dep added to package.json but never installed into the bundle).
+// Only `dependencies` are compared: electron-builder strips `devDependencies` when
+// copying package.json into the bundle (they're build-time only — out/ is precompiled
+// against them, so the bundle's runtime never resolves them).
 function depsSignature(pkgPath: string): string {
   try {
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as {
       dependencies?: Record<string, string>
-      devDependencies?: Record<string, string>
     }
-    return JSON.stringify({
-      d: pkg.dependencies ?? {},
-      // devDeps matter too: vite plugins live there and a swap would yield an out/
-      // built against versions the bundle's node_modules doesn't carry.
-      e: pkg.devDependencies ?? {}
-    })
+    return JSON.stringify(pkg.dependencies ?? {})
   } catch {
     return ''
   }
@@ -165,9 +162,20 @@ async function fastSwap(
       [join(repo, 'out'), join(swapAppDir, 'out')],
       [join(repo, 'bin'), join(swapAppDir, 'bin')],
       [join(repo, 'resources'), join(swapAppDir, 'resources')],
-      [join(repo, 'package.json'), join(swapAppDir, 'package.json')]
+      [join(repo, 'package.json'), join(swapAppDir, 'package.json')],
+      // Native runtime deps the main bundle requires externally (externalizeDepsPlugin keeps
+      // them as bare require()s). better-sqlite3 ships a .node that can't be esbuild-bundled, so
+      // its runtime closure (better-sqlite3 → bindings → file-uri-to-path) must land on disk in
+      // the install's node_modules. The fast-swap clones the prior install's node_modules but a
+      // NEWLY-added dep won't be there, so sync each explicitly. Add new native deps here.
+      ...['better-sqlite3', 'bindings', 'file-uri-to-path'].map(
+        (m): [string, string] => [
+          join(repo, 'node_modules', m),
+          join(swapAppDir, 'node_modules', m)
+        ]
+      )
     ]
-    send(`→ syncing out/ + bin/ + resources/ + package.json\n`)
+    send(`→ syncing out/ + bin/ + resources/ + package.json + native deps\n`)
     for (const [src, dst] of syncs) {
       await run('rm', ['-rf', dst])
       await run('ditto', [src, dst])

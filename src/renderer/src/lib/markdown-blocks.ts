@@ -35,6 +35,12 @@ export function splitIntoBlocks(content: string): MarkdownBlock[] {
   if (!content) return []
   const tree = getParser().parse(content) as Root
   const blocks: MarkdownBlock[] = []
+  // Disambiguate blocks whose source text is identical (e.g. every `---` thematic break in a
+  // long doc, or repeated empty fences). Same content → same base hash; the suffix `-N` is
+  // the count of prior occurrences. Without this, React sees duplicate keys, can't tell the
+  // siblings apart on reconciliation, and stale <hr>/<p>/etc. nodes pile up at the position
+  // of the FIRST duplicate after every edit — only goes away on full unmount (close/reopen).
+  const seen = new Map<string, number>()
   for (const child of tree.children) {
     const pos = child.position
     if (!pos) continue
@@ -42,7 +48,11 @@ export function splitIntoBlocks(content: string): MarkdownBlock[] {
     const endOffset = pos.end.offset ?? content.length
     const text = content.slice(startOffset, endOffset)
     if (!text.trim()) continue
-    blocks.push({ text, type: child.type, key: hash(text) })
+    const base = hash(text)
+    const n = seen.get(base) ?? 0
+    seen.set(base, n + 1)
+    const key = n === 0 ? base : `${base}-${n}`
+    blocks.push({ text, type: child.type, key })
   }
   return blocks
 }

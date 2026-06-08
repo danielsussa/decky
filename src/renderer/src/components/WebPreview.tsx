@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, RotateCw, ExternalLink } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Bug } from 'lucide-react'
 import { useWebViewVisible } from '../hooks/useWebViewVisible'
 import { t } from '../lib/i18n'
 
@@ -8,10 +8,13 @@ interface WebPreviewProps {
   // this card's WebContentsView. Stable across re-renders of this component.
   cardId: string
   url: string
-  // Notifies the parent when the view navigates to a real URL (typed in the address bar,
-  // clicked link, history nav). The parent persists it on the card's source so a remount
-  // (workspace switch, full reload) restores where we were.
-  onUrlChange?: (url: string) => void
+  // Workspace cwd that owns this card. Passed to main on create so the history subsystem
+  // can tag each visit with the right workspace_id. Null when unknown (system panels etc).
+  workspaceCwd?: string | null
+  // Notifies the parent of changes to navigation metadata (URL/title/favicon). The parent
+  // persists this on the card's source so a remount (workspace switch, full reload) and the
+  // tab strip (which shows title+favicon) stay in sync without re-driving the page.
+  onMetaChange?: (meta: { url?: string; title?: string; favicon?: string | null }) => void
 }
 
 function normalizeUrl(raw: string): string {
@@ -37,10 +40,11 @@ function normalizeUrl(raw: string): string {
 export default function WebPreview({
   cardId,
   url,
-  onUrlChange
+  workspaceCwd,
+  onMetaChange
 }: WebPreviewProps): React.JSX.Element {
-  const onUrlChangeRef = useRef(onUrlChange)
-  onUrlChangeRef.current = onUrlChange
+  const onMetaChangeRef = useRef(onMetaChange)
+  onMetaChangeRef.current = onMetaChange
 
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -49,13 +53,43 @@ export default function WebPreview({
   const [canBack, setCanBack] = useState(false)
   const [canFwd, setCanFwd] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [favicon, setFavicon] = useState<string | null>(null)
+  // Favicons que falharam ao carregar (URL inválida, 404, CORS) — não tenta de novo no mesmo
+  // mount, cai pro Globe. Reset implícito no remount do card.
+  const [faviconFailed, setFaviconFailed] = useState<Set<string>>(new Set())
+  // Address-bar autocomplete: sugestões vindas do histórico (workspace atual).
+  // showSuggest é controlado por foco do input + presença de resultados.
+  type Suggestion = {
+    url: string
+    title: string | null
+    favicon: string | null
+    hits: number
+    last_visited: number
+  }
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+  const [showSuggest, setShowSuggest] = useState(false)
+  const [highlight, setHighlight] = useState(-1)
+  // Trava: ao Enter/click numa sugestão, navega — mas a sequência de setAddress + go
+  // re-disparam o fetcher, que reabriria o popover por cima da página recém-aberta. Ref
+  // segura o show até o input perder foco ou a navegação consolidar.
+  const justCommittedRef = useRef(false)
+  // Popover ref + altura medida: WebContentsView é overlay OS-native acima do DOM, então
+  // o popover renderizado abaixo da bar ficaria atrás do canvas. Pra liberar a área,
+  // encolhemos os bounds do view nativo subtraindo a altura do popover do topo do canvas.
+  // A altura mora num ref pra que o geometry pump leia sem re-criar o efeito a cada render.
+  const suggestRef = useRef<HTMLUListElement | null>(null)
+  const popoverHeightRef = useRef(0)
 
   const visible = useWebViewVisible()
   const visibleRef = useRef(visible)
   visibleRef.current = visible
-  // Latest URL the view actually navigated to. Source of truth across the unmount/remount
-  // cycle (workspace switch, session switch) — onUrlChange persists this to parent state.
+  // Latest URL/title/favicon the view actually exposed. Source of truth across the
+  // unmount/remount cycle (workspace switch, session switch) — onMetaChange persists this to
+  // parent state. Deduped here so we don't churn React state on every web:state event (which
+  // fires for loading flag changes too).
   const lastNavRef = useRef<string>(url || '')
+  const lastTitleRef = useRef<string>('')
+  const lastFaviconRef = useRef<string | null>(null)
 
   // Empty url = "nova aba" → focus address bar for immediate typing.
   useEffect(() => {
@@ -70,13 +104,24 @@ export default function WebPreview({
       setLoading(msg.loading)
       setCanBack(msg.canBack)
       setCanFwd(msg.canFwd)
+      setFavicon(msg.favicon)
       const u = msg.url || ''
+      const meta: { url?: string; title?: string; favicon?: string | null } = {}
       if (u && lastNavRef.current !== u) {
         lastNavRef.current = u
-        onUrlChangeRef.current?.(u)
+        meta.url = u
         setCurrent(u)
         setAddress(u)
       }
+      if (lastTitleRef.current !== msg.title) {
+        lastTitleRef.current = msg.title
+        meta.title = msg.title
+      }
+      if (lastFaviconRef.current !== msg.favicon) {
+        lastFaviconRef.current = msg.favicon
+        meta.favicon = msg.favicon
+      }
+      if (Object.keys(meta).length > 0) onMetaChangeRef.current?.(meta)
     })
     return off
   }, [cardId])
@@ -89,7 +134,7 @@ export default function WebPreview({
   // No unmount aqui, só hide() — o view fica órfão (sem WebPreview rendering bounds), então
   // tem que sair de tela; senão fica pendurado com bounds antigas sobre o outro workspace.
   useEffect(() => {
-    void window.deck.web.create(cardId, url)
+    void window.deck.web.create(cardId, url, workspaceCwd ?? null)
     return () => {
       window.deck.web.hide(cardId)
     }
@@ -105,6 +150,68 @@ export default function WebPreview({
     setCurrent(url)
     window.deck.web.navigate(cardId, url)
   }, [cardId, url])
+
+  // Address-bar autocomplete: busca sugestões do histórico (workspace atual) com debounce.
+  // Trigger: address muda E o popover está habilitado (showSuggest=true → input focado).
+  // Empty query devolve top frecência geral (vira "histórico recente rankeado" no foco vazio).
+  // Skip quando address === current (estamos só mostrando a URL da página, não digitando)
+  // ou quando o usuário acabou de selecionar (justCommittedRef).
+  useEffect(() => {
+    if (!showSuggest) return
+    if (justCommittedRef.current) return
+    // Mínimo 2 chars pra abrir lista — evita popover no foco vazio / 1 letra (ruído).
+    if (address.trim().length < 2) {
+      setSuggestions([])
+      setHighlight(-1)
+      return
+    }
+    // Pula quando o input mostra a URL da página atual (focou sem digitar).
+    if (address === current) return
+    let cancelled = false
+    const handle = setTimeout(() => {
+      void window.deck.history
+        .suggest(workspaceCwd ?? null, address, 8)
+        .then((rows) => {
+          if (cancelled) return
+          setSuggestions(rows)
+          setHighlight(rows.length > 0 ? 0 : -1)
+        })
+        .catch(() => {
+          if (!cancelled) setSuggestions([])
+        })
+    }, 80)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [address, current, showSuggest, workspaceCwd])
+
+  // Mede o popover (quando aberto) e mantém popoverHeightRef em dia. ResizeObserver pega
+  // mudanças de altura conforme suggestions[] cresce/encolhe. Tick dispara o pump pra ele
+  // re-aplicar os bounds com a área subtraída.
+  useLayoutEffect(() => {
+    const open = showSuggest && suggestions.length > 0
+    if (!open) {
+      if (popoverHeightRef.current !== 0) {
+        popoverHeightRef.current = 0
+        window.dispatchEvent(new Event('decky:layout-tick'))
+      }
+      return
+    }
+    const el = suggestRef.current
+    if (!el) return
+    const measure = (): void => {
+      const h = el.getBoundingClientRect().height
+      if (h !== popoverHeightRef.current) {
+        popoverHeightRef.current = h
+        window.dispatchEvent(new Event('decky:layout-tick'))
+      }
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [showSuggest, suggestions.length])
 
   // Geometry pump: when the sentinel changes size, ANY ancestor scrolls/resizes, or the
   // window resizes, push the new rect to main. Visibility flips run through the same code
@@ -144,11 +251,16 @@ export default function WebPreview({
           }
           return
         }
+        // Popover de autocomplete vive entre a bar e o topo do canvas (top: calc(100% + 4px)
+        // do input wrap). Subtrai (popH + 4) do topo do view nativo pra ele não cobrir a
+        // lista. Quando fechado, popoverHeightRef === 0 → sem efeito.
+        const popH = popoverHeightRef.current
+        const skip = popH > 0 ? Math.min(popH + 4, Math.round(r.height)) : 0
         const next = {
           x: Math.round(r.left),
-          y: Math.round(r.top),
+          y: Math.round(r.top) + skip,
           width: Math.round(r.width),
-          height: Math.round(r.height)
+          height: Math.round(r.height) - skip
         }
         if (
           !lastHidden &&
@@ -200,7 +312,50 @@ export default function WebPreview({
     if (!next) return
     lastNavRef.current = next
     setCurrent(next)
+    setAddress(next)
     window.deck.web.navigate(cardId, next)
+    // Fecha popover + segura abertura imediata até o blur (ou nova digitação real).
+    justCommittedRef.current = true
+    setShowSuggest(false)
+    setSuggestions([])
+    setHighlight(-1)
+    inputRef.current?.blur()
+  }
+
+  const commitSuggestion = (s: Suggestion): void => {
+    go(s.url)
+  }
+
+  const onAddressKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'ArrowDown') {
+      if (suggestions.length === 0) return
+      e.preventDefault()
+      setHighlight((h) => (h + 1) % suggestions.length)
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      if (suggestions.length === 0) return
+      e.preventDefault()
+      setHighlight((h) => (h <= 0 ? suggestions.length - 1 : h - 1))
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      setAddress(current)
+      setShowSuggest(false)
+      setSuggestions([])
+      setHighlight(-1)
+      inputRef.current?.select()
+      return
+    }
+    if (e.key === 'Enter') {
+      if (showSuggest && highlight >= 0 && suggestions[highlight]) {
+        e.preventDefault()
+        commitSuggestion(suggestions[highlight])
+        return
+      }
+      go(address)
+    }
   }
 
   return (
@@ -232,17 +387,90 @@ export default function WebPreview({
         >
           <RotateCw size={14} className={loading ? 'web-spin' : undefined} />
         </button>
-        <input
-          ref={inputRef}
-          className="web-url"
-          value={address}
-          placeholder={t('web.urlPlaceholder')}
-          spellCheck={false}
-          onChange={(e) => setAddress(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') go(address)
-          }}
-        />
+        <div className="web-favicon" aria-hidden>
+          {favicon && !faviconFailed.has(favicon) ? (
+            <img
+              src={favicon}
+              alt=""
+              onError={() =>
+                setFaviconFailed((prev) => {
+                  if (prev.has(favicon)) return prev
+                  const next = new Set(prev)
+                  next.add(favicon)
+                  return next
+                })
+              }
+            />
+          ) : (
+            <Globe size={13} />
+          )}
+        </div>
+        <div className="web-url-wrap">
+          <input
+            ref={inputRef}
+            className="web-url"
+            value={address}
+            placeholder={t('web.urlPlaceholder')}
+            spellCheck={false}
+            onChange={(e) => {
+              justCommittedRef.current = false
+              setAddress(e.target.value)
+              setShowSuggest(true)
+            }}
+            onFocus={() => {
+              justCommittedRef.current = false
+              setShowSuggest(true)
+              // Select-all no foco — comportamento padrão de URL bar (Chrome/Safari).
+              inputRef.current?.select()
+            }}
+            // Pequeno timeout pra não fechar o popover antes do click no item registrar.
+            onBlur={() => {
+              window.setTimeout(() => {
+                setShowSuggest(false)
+                setHighlight(-1)
+              }, 120)
+            }}
+            onKeyDown={onAddressKeyDown}
+          />
+          {showSuggest && suggestions.length > 0 && (
+            <ul className="web-suggest" role="listbox">
+              {suggestions.map((s, i) => (
+                <li
+                  key={s.url}
+                  role="option"
+                  aria-selected={i === highlight}
+                  className={i === highlight ? 'web-suggest-item is-active' : 'web-suggest-item'}
+                  onMouseEnter={() => setHighlight(i)}
+                  onMouseDown={(e) => {
+                    // mousedown (não click) pra disparar antes do blur do input fechar a lista.
+                    e.preventDefault()
+                    commitSuggestion(s)
+                  }}
+                >
+                  <div className="web-suggest-icon" aria-hidden>
+                    {s.favicon ? (
+                      <img src={s.favicon} alt="" onError={(e) => e.currentTarget.remove()} />
+                    ) : (
+                      <Globe size={12} />
+                    )}
+                  </div>
+                  <div className="web-suggest-text">
+                    <div className="web-suggest-url">{s.url}</div>
+                    {s.title ? <div className="web-suggest-title">{s.title}</div> : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <button
+          type="button"
+          className="web-btn"
+          onClick={() => window.deck.web.openDevTools(cardId)}
+          title={t('web.devtools')}
+        >
+          <Bug size={14} />
+        </button>
         <button
           type="button"
           className="web-btn"

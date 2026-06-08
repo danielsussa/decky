@@ -14,14 +14,24 @@ const MIME: Record<string, string> = {
 
 // Custom scheme used by markdown cards to reference local files (SVGs, images) via paths
 // relative to the .md. ReactMarkdown alone can't resolve relative <img src> because the renderer
-// page has no notion of where the .md lives on disk; this protocol bridges that, with an
-// allow-list confined to any workspace's .decky/cards/ tree so a malicious card can't read
-// arbitrary files.
+// page has no notion of where the .md lives on disk; this protocol bridges that.
 //
-// URL shape: decky-asset:///?p=<url-encoded absolute path>
-// Example:   decky-asset:///?p=%2FUsers%2Fuser%2Fproj%2F.decky%2Fcards%2Ffoo%2Fbar.svg
+// Allow-list (request is allowed if EITHER matches):
+//   1. Path lives under some `.decky/cards/` tree — covers materialized cards.
+//   2. Path lives under the card's own directory, passed as `?base=<abs dir>` — covers
+//      preview_show on a stray .md anywhere on disk that references neighbor files.
+// Either way a malicious card can only reach files near itself, not arbitrary disk.
+//
+// URL shape: decky-asset://card/<encoded abs path>?base=<encoded abs dir>
+// Example:   decky-asset://card/Users/u/p/img.jpg?base=%2FUsers%2Fu%2Fp
 
 const ALLOWED_RE = /\/\.decky\/cards\//
+
+function isUnder(abs: string, baseDir: string): boolean {
+  if (!baseDir) return false
+  const normalizedBase = baseDir.endsWith('/') ? baseDir.slice(0, -1) : baseDir
+  return abs === normalizedBase || abs.startsWith(normalizedBase + '/')
+}
 
 export function registerAssetScheme(): void {
   // Privileged registration must happen BEFORE app is ready. Mark the scheme as standard +
@@ -49,7 +59,11 @@ export function setupAssetProtocol(): void {
       const url = new URL(req.url)
       const segs = url.pathname.split('/').map((s) => decodeURIComponent(s))
       const abs = resolve(segs.join('/'))
-      if (!ALLOWED_RE.test(abs)) return new Response('forbidden', { status: 403 })
+      const base = url.searchParams.get('base')
+      const baseAbs = base ? resolve(base) : ''
+      if (!ALLOWED_RE.test(abs) && !isUnder(abs, baseAbs)) {
+        return new Response('forbidden', { status: 403 })
+      }
       const fileUrl = pathToFileURL(abs).toString()
       const res = await net.fetch(fileUrl)
       if (!res.ok) return new Response('not found', { status: 404 })

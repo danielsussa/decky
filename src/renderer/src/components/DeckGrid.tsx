@@ -13,6 +13,8 @@ export interface DeckCard {
   minW?: number
   minH?: number
   title?: string
+  // URL do favicon (web cards). DeckTabs renderiza ao lado do título no lugar do ícone padrão.
+  favicon?: string | null
   pinned?: boolean
   render: () => ReactNode
 }

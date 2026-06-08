@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Pin } from 'lucide-react'
+import { Globe, Pin } from 'lucide-react'
 import type { DeckCard } from './DeckGrid'
 import { PaneVisibleProvider } from '../web-visibility'
 import { t } from '../lib/i18n'
@@ -29,6 +29,8 @@ export default function DeckTabs({
   // só emitem 'web:controlling' (web-views.ts setControlling), então uma tab não-web nunca
   // entra nesse set.
   const [controlledIds, setControlledIds] = useState<Set<string>>(new Set())
+  // URLs de favicon que falharam (onError) — caem pro Globe sem ficar batendo na rede.
+  const [faviconFailed, setFaviconFailed] = useState<Set<string>>(new Set())
   useEffect(() => {
     const off = window.deck.web.onControlling((msg) => {
       setControlledIds((prev) => {
@@ -100,6 +102,28 @@ export default function DeckTabs({
             }}
           >
             {c.pinned && <Pin size={10} fill="currentColor" className="deck-tab-pinmark" />}
+            {c.favicon !== undefined && (
+              <span className="deck-tab-favicon" aria-hidden>
+                {c.favicon && !faviconFailed.has(c.favicon) ? (
+                  <img
+                    src={c.favicon}
+                    alt=""
+                    onError={() => {
+                      const url = c.favicon
+                      if (!url) return
+                      setFaviconFailed((prev) => {
+                        if (prev.has(url)) return prev
+                        const next = new Set(prev)
+                        next.add(url)
+                        return next
+                      })
+                    }}
+                  />
+                ) : (
+                  <Globe size={11} />
+                )}
+              </span>
+            )}
             <span className="deck-tab-label">{c.title ?? c.id}</span>
             {onClose && (
               <button

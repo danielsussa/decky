@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, session, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { diag } from './diag'
 
 // All web cards share this partition (persist:deckweb). Cookies, storage, and the handlers
 // configured here are scoped to it — distinct from the app shell's own session so a bad cert
@@ -251,6 +252,11 @@ export function attachWebContentsPopupRouter(getMainWindow: () => BrowserWindow 
     if (contents.session !== webSession) return
     contents.setWindowOpenHandler((details) => {
       const popup = looksLikePopupWindow(details.features || '')
+      // Log every window.open attempt so we can debug OAuth flows that "do nothing" — without
+      // this, a silent path between page → handler → renderer is invisible.
+      diag(
+        `[popup-router] open url=${details.url} features=${details.features || '<none>'} disposition=${details.disposition} → ${popup ? 'popup-window' : 'new-card'}`
+      )
       if (!popup) {
         // Tab-like: route to a new decky web card.
         getMainWindow()?.webContents.send('app:open-url', details.url)

@@ -20,6 +20,11 @@ asarUnpack:
   # runs `node <path>`); a path inside app.asar isn't a real file to a non-Electron
   # node, so these must live unpacked on disk.
   - bin/**
+  # better-sqlite3 (history DB) is a native module — its .node binary can't be loaded
+  # from inside app.asar by dlopen, so unpack it (and its runtime closure) to disk.
+  - node_modules/better-sqlite3/**
+  - node_modules/bindings/**
+  - node_modules/file-uri-to-path/**
 win:
   executableName: decky
 nsis:

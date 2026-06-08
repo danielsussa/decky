@@ -261,8 +261,8 @@ const deckApi = {
     // view on mount, streams bounds whenever its sentinel rect changes, hides it (zero-sized
     // bounds) when the pane / session / overlay state says it shouldn't be visible, and
     // destroys it on unmount.
-    create: (cardId: string, url: string): Promise<true> =>
-      ipcRenderer.invoke('web:create', { cardId, url }),
+    create: (cardId: string, url: string, workspaceCwd?: string | null): Promise<true> =>
+      ipcRenderer.invoke('web:create', { cardId, url, workspaceCwd: workspaceCwd ?? null }),
     destroy: (cardId: string): Promise<true> => ipcRenderer.invoke('web:destroy', cardId),
     setBounds: (
       cardId: string,
@@ -275,11 +275,13 @@ const deckApi = {
     forward: (cardId: string): void => ipcRenderer.send('web:forward', cardId),
     reload: (cardId: string): void => ipcRenderer.send('web:reload', cardId),
     stop: (cardId: string): void => ipcRenderer.send('web:stop', cardId),
+    openDevTools: (cardId: string): void => ipcRenderer.send('web:open-devtools', cardId),
     getState: (
       cardId: string
     ): Promise<{
       url: string
       title: string
+      favicon: string | null
       loading: boolean
       canBack: boolean
       canFwd: boolean
@@ -289,6 +291,7 @@ const deckApi = {
         cardId: string
         url: string
         title: string
+        favicon: string | null
         loading: boolean
         canBack: boolean
         canFwd: boolean
@@ -309,6 +312,42 @@ const deckApi = {
       ipcRenderer.on('web:controlling', listener)
       return () => ipcRenderer.removeListener('web:controlling', listener)
     }
+  },
+  history: {
+    listRecent: (
+      workspaceCwd: string | null,
+      limit?: number
+    ): Promise<
+      {
+        id: number
+        url: string
+        title: string | null
+        favicon: string | null
+        card_id: string | null
+        workspace_id: string
+        visited_at: number
+        dwell_ms: number
+        transition: string | null
+      }[]
+    > => ipcRenderer.invoke('history:list-recent', { workspaceCwd, limit }),
+    // Address-bar autocomplete: query vazia = top por frecência geral.
+    suggest: (
+      workspaceCwd: string | null,
+      query: string,
+      limit?: number
+    ): Promise<
+      {
+        url: string
+        title: string | null
+        favicon: string | null
+        hits: number
+        last_visited: number
+      }[]
+    > => ipcRenderer.invoke('history:suggest', { workspaceCwd, query, limit }),
+    getWorkspaceMeta: (cwd: string): Promise<{ workspaceId: string; isolated: boolean }> =>
+      ipcRenderer.invoke('history:get-workspace-meta', cwd),
+    setWorkspaceIsolated: (cwd: string, isolated: boolean): Promise<true> =>
+      ipcRenderer.invoke('history:set-workspace-isolated', cwd, isolated)
   },
   widget: {
     // Main forwards every widget:call here. The renderer dispatches into the widget registry

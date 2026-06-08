@@ -26,7 +26,7 @@ interface WorkspaceTreeProps {
   onToggleExpand: (ws: string) => void
   onSelectSession: (ws: string, sessionId: string) => void
   onNewSession: (ws: string) => void
-  onCloseSession: (sessionId: string) => void
+  onCloseSession: (ws: string, sessionId: string) => void
   onCloseWorkspace: (ws: string) => void
   onAddFolder: () => void
 }
@@ -137,19 +137,17 @@ export default function WorkspaceTree({
                         />
                         <span className="wstree-session-name">{s.label}</span>
                       </button>
-                      {isActiveWs && (
-                        <button
-                          type="button"
-                          className="wstree-x"
-                          title={t('ws.closeSession')}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onCloseSession(s.id)
-                          }}
-                        >
-                          <X size={11} />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        className="wstree-x"
+                        title={t('ws.closeSession')}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onCloseSession(ws, s.id)
+                        }}
+                      >
+                        <X size={11} />
+                      </button>
                     </div>
                   )
                 })}

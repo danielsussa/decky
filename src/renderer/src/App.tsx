@@ -1758,16 +1758,55 @@ function App(): React.JSX.Element {
     setFocusedCardBySession((prev) => ({ ...prev, [activeId]: id }))
   }
 
-  const handleClose = (id: string): void => {
-    setSessions((prev) => {
-      const idx = prev.findIndex((s) => s.id === id)
-      if (idx === -1) return prev
+  const handleClose = (ws: string, id: string): void => {
+    const isActiveWs = ws === workspace
+    if (isActiveWs) {
+      setSessions((prev) => {
+        const idx = prev.findIndex((s) => s.id === id)
+        if (idx === -1) return prev
+        const next = prev.filter((s) => s.id !== id)
+        if (id === activeId) {
+          const replacement = next[idx] ?? next[idx - 1] ?? next[0]
+          setActiveId(replacement?.id)
+        }
+        return next
+      })
+    } else {
+      // Sessão num WS não-ativo: o estado `sessions` não a contém (só representa o WS ativo).
+      // Atualizamos o cache de exibição da árvore E persistimos a remoção no arquivo do WS,
+      // senão a sessão voltaria no próximo read (mount, switch, expand).
+      setWsSessionsCache((c) => {
+        const list = c[ws]
+        if (!list) return c
+        const next = list.filter((s) => s.id !== id)
+        return next.length === list.length ? c : { ...c, [ws]: next }
+      })
+      void (async () => {
+        const data = await window.deck.workspace.read<WorkspaceState>(ws)
+        if (!data || !Array.isArray(data.sessions)) return
+        const nextSessions = data.sessions.filter((s) => s.id !== id)
+        if (nextSessions.length === data.sessions.length) return
+        const remaining = new Set(nextSessions.map((s) => s.id))
+        const nextActive =
+          data.activeId && remaining.has(data.activeId) ? data.activeId : nextSessions[0]?.id
+        void window.deck.workspace.write(ws, {
+          ...data,
+          sessions: nextSessions,
+          activeId: nextActive,
+          cardsBySession: filterToSessionIds(data.cardsBySession ?? {}, remaining),
+          focusedCardBySession: filterToSessionIds(data.focusedCardBySession ?? {}, remaining),
+          previews: filterToSessionIds(data.previews ?? {}, remaining),
+          titles: data.titles
+            ? Object.fromEntries(Object.entries(data.titles).filter(([k]) => remaining.has(k)))
+            : undefined
+        })
+      })()
+    }
+    // Tira a sessão do live pool — desmonta o Terminal (que chama pty.kill no cleanup) e
+    // libera o pty mesmo quando a sessão estava rodando em outro workspace.
+    setLiveSessions((prev) => {
       const next = prev.filter((s) => s.id !== id)
-      if (id === activeId) {
-        const replacement = next[idx] ?? next[idx - 1] ?? next[0]
-        setActiveId(replacement?.id)
-      }
-      return next
+      return next.length === prev.length ? prev : next
     })
     // Destrói os WebContentsViews dos cards web desta session antes de dropar o mapa — eles
     // vivem em main, indexados por cardId, e sobrevivem unmount do React de propósito (workspace
@@ -2121,41 +2160,78 @@ function App(): React.JSX.Element {
   // can keep all sessions' DeckTabs mounted in parallel — switching sessions then only flips
   // CSS visibility, leaving <webview>/iframe guests alive instead of tearing them down and
   // forcing a full reload on return.
-  const buildContentCards = (sessionId: string): DeckCardData[] => {
+  // includePinned: pinned cards são workspace-global mas só montam na session ATIVA — montar
+  // o mesmo cardId em várias panes faria N WebPreview instances brigarem pelos bounds do único
+  // WebContentsView (keyed por cardId em main): a inativa chama hide() no tick, a ativa
+  // chama setBounds(real), quem disparar último vence → card pinada "some". O view sobrevive
+  // ao unmount (main não destrói no React unmount), então trocar de session só re-attacha.
+  const buildContentCards = (sessionId: string, includePinned: boolean): DeckCardData[] => {
     const sessPreviews = previewsByCard[sessionId] ?? {}
     const own = (cardsBySession[sessionId] ?? []).filter((id) => !pinned[id])
-    return [...pinnedIds, ...own].map((id, i) => {
+    // Workspace cwd this session is rooted at — passed to web cards so the history subsystem
+    // in main can tag each visit with the right workspace_id.
+    const sessionCwd = sessions.find((s) => s.id === sessionId)?.cwd ?? null
+    const ids = includePinned ? [...pinnedIds, ...own] : own
+    return ids.map((id, i) => {
       const isPinned = !!pinned[id]
       const source = isPinned ? pinned[id] : (sessPreviews[id] ?? { type: 'none' })
-      // Persist the navigated URL of a web card up to parent state so a remount (workspace
-      // switch, full reload) restores the typed URL instead of falling back to the source's
-      // initial value (often '' from "nova aba" → about:blank).
-      const onWebUrlChange = (nextUrl: string): void => {
+      // Persist navigation metadata of a web card up to parent state so a remount (workspace
+      // switch, full reload) restores the typed URL/title/favicon instead of falling back to
+      // the source's initial value (often '' from "nova aba" → about:blank). The tab strip
+      // also reads title+favicon from the source — so this keeps the tab in sync without
+      // re-driving the page.
+      const onWebMetaChange = (meta: {
+        url?: string
+        title?: string
+        favicon?: string | null
+      }): void => {
+        const patch = (cur: PreviewSource | undefined): PreviewSource | undefined => {
+          if (!cur || cur.type !== 'web') return cur
+          const next = { ...cur }
+          let changed = false
+          if (meta.url !== undefined && next.url !== meta.url) {
+            next.url = meta.url
+            changed = true
+          }
+          if (meta.title !== undefined && next.title !== meta.title) {
+            next.title = meta.title
+            changed = true
+          }
+          if (meta.favicon !== undefined && next.favicon !== meta.favicon) {
+            next.favicon = meta.favicon
+            changed = true
+          }
+          return changed ? next : cur
+        }
         if (isPinned) {
           setPinned((prev) => {
-            const cur = prev[id]
-            if (!cur || cur.type !== 'web' || cur.url === nextUrl) return prev
-            return { ...prev, [id]: { ...cur, url: nextUrl } }
+            const next = patch(prev[id])
+            if (next === prev[id]) return prev
+            return { ...prev, [id]: next as PreviewSource }
           })
         } else {
           setPreviewsByCard((prev) => {
             const sess = prev[sessionId] ?? {}
-            const cur = sess[id]
-            if (!cur || cur.type !== 'web' || cur.url === nextUrl) return prev
-            return { ...prev, [sessionId]: { ...sess, [id]: { ...cur, url: nextUrl } } }
+            const next = patch(sess[id])
+            if (next === sess[id]) return prev
+            return { ...prev, [sessionId]: { ...sess, [id]: next as PreviewSource } }
           })
         }
       }
+      const webFavicon =
+        source.type === 'web' ? (source.favicon ?? null) : undefined
       return {
         id,
         title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
+        favicon: webFavicon,
         pinned: isPinned,
         render: () => (
           <Preview
             source={source}
             cardId={id}
             sessionId={sessionId}
-            onWebUrlChange={onWebUrlChange}
+            workspaceCwd={sessionCwd}
+            onWebMetaChange={onWebMetaChange}
           />
         )
       }
@@ -2168,8 +2244,9 @@ function App(): React.JSX.Element {
   // System panels ficam só na session ativa — são UI global, não precisam ser duplicados.
   const deckCardsBySession: Record<string, DeckCardData[]> = {}
   for (const s of hostSessions) {
-    const own = buildContentCards(s.id)
-    deckCardsBySession[s.id] = s.id === activeId ? [...panelCards, ...own] : own
+    const isActive = s.id === activeId
+    const own = buildContentCards(s.id, isActive)
+    deckCardsBySession[s.id] = isActive ? [...panelCards, ...own] : own
   }
   const deckCards: DeckCardData[] = activeId
     ? (deckCardsBySession[activeId] ?? panelCards)

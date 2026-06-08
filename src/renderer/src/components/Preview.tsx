@@ -12,14 +12,18 @@ interface PreviewProps {
   source: PreviewSource
   cardId?: string
   sessionId?: string
-  onWebUrlChange?: (url: string) => void
+  // Cwd of the session this preview belongs to. Threaded into web cards so main can tag
+  // history visits with the right workspace.
+  workspaceCwd?: string | null
+  onWebMetaChange?: (meta: { url?: string; title?: string; favicon?: string | null }) => void
 }
 
 export default function Preview({
   source,
   cardId,
   sessionId,
-  onWebUrlChange
+  workspaceCwd,
+  onWebMetaChange
 }: PreviewProps): React.JSX.Element {
   if (source.type === 'me') return <MePreview url={source.url} />
   if (source.type === 'markdown')
@@ -37,7 +41,14 @@ export default function Preview({
     // a stable handle for main to address. In practice every web card is created with one
     // (see App.tsx panel/session card construction). Show an empty fallback if it ever isn't.
     if (!cardId) return <div className="preview-empty"><p>card sem id — recrie a aba</p></div>
-    return <WebPreview cardId={cardId} url={source.url} onUrlChange={onWebUrlChange} />
+    return (
+      <WebPreview
+        cardId={cardId}
+        url={source.url}
+        workspaceCwd={workspaceCwd ?? null}
+        onMetaChange={onWebMetaChange}
+      />
+    )
   }
   if (source.type === 'diff') return <DiffPreview content={source.content} />
   if (source.type === 'editor') return <EditorPreview content={source.content} path={source.path} />

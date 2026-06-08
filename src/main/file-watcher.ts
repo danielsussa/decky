@@ -2,6 +2,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { ipcMain, type BrowserWindow } from 'electron'
+import { applyAutoFix } from './card-auto-fix'
 
 const DEBOUNCE_MS = 150
 
@@ -18,8 +19,21 @@ export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null)
       path,
       setTimeout(() => {
         debounceTimers.delete(path)
-        const win = getWindow()
-        if (win && !win.isDestroyed()) win.webContents.send('file:changed', { path })
+        // Card .mds: auto-repair broken `![](...)` refs before notifying the renderer, so a
+        // wrong path written by an author/agent renders correctly (and the .md becomes
+        // filesystem-correct, so VSCode/GitHub render it too). The fix's own write will
+        // re-fire the watcher; the second pass finds nothing broken and is a no-op, so the
+        // loop converges in one extra cycle.
+        const isCardMd = path.endsWith('.md') && path.includes('/.decky/cards/')
+        const finish = (): void => {
+          const win = getWindow()
+          if (win && !win.isDestroyed()) win.webContents.send('file:changed', { path })
+        }
+        if (isCardMd) {
+          void applyAutoFix(path).finally(finish)
+        } else {
+          finish()
+        }
       }, DEBOUNCE_MS)
     )
   }
@@ -48,6 +62,13 @@ export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null)
       if (!dirPaths.has(dir)) dirPaths.set(dir, new Set())
       dirPaths.get(dir)!.add(path)
       ensureDirWatcher(dir)
+    }
+    // First-open auto-fix: a card written by an agent (or with stale paths from a rename)
+    // gets repaired on first open, before the renderer's read. Fire-and-forget; if it
+    // rewrites the file, the watcher set up above picks up the change and the renderer
+    // gets a fresh `file:changed` with the fixed content moments later.
+    if (path.endsWith('.md') && path.includes('/.decky/cards/')) {
+      void applyAutoFix(path)
     }
     return true
   })

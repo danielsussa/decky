@@ -1,6 +1,21 @@
-import { WebContentsView, ipcMain, type BrowserWindow, type WebContents } from 'electron'
+import {
+  WebContentsView,
+  ipcMain,
+  Menu,
+  clipboard,
+  type BrowserWindow,
+  type WebContents
+} from 'electron'
 import { WEB_PARTITION } from './web-session'
 import { diag } from './diag'
+import {
+  openVisit as historyOpenVisit,
+  closeVisit as historyCloseVisit,
+  patchTitle as historyPatchTitle,
+  patchFavicon as historyPatchFavicon,
+  setVisible as historySetVisible,
+  getOpenVisitUrl as historyGetOpenVisitUrl
+} from './history/capture'
 
 // Tracing the create/destroy/bounds lifecycle per card (decky-startup.log). Logs only
 // structural events (first attach, zero-size hide, missing-entry drops, create/destroy)
@@ -27,6 +42,13 @@ interface ViewState {
   // True quando o handoff está dirigindo este card. Persistido pra reinjeção no dom-ready
   // (navegação limpa o blocker do DOM).
   controlling: boolean
+  // Favicon URL captado de page-favicon-updated; null entre navegações pra site diferente.
+  // Chromium dispara o evento com várias URLs ordenadas (resoluções, ico/png) — pegamos a
+  // primeira, que costuma ser a de maior fidelidade.
+  favicon: string | null
+  // Workspace cwd que owna este card. Tag pro histórico (workspace_id é resolvido a partir
+  // disso em getWorkspaceMeta). Null quando o renderer não passou (gracefully skips capture).
+  workspaceCwd: string | null
 }
 
 interface Bounds {
@@ -70,15 +92,42 @@ class WebViewsManager {
     return null
   }
 
-  create(cardId: string, initialUrl: string, emit: EmitState): void {
+  create(cardId: string, initialUrl: string, workspaceCwd: string | null, emit: EmitState): void {
     if (this.views.has(cardId)) {
       // Already created — if the URL changed (rehydrate path), navigate; otherwise no-op.
       const s = this.views.get(cardId)!
       wlog(`create ${cardId} → existing entry (attached=${s.attached}), url=${initialUrl || '<empty>'}`)
+      // Always refresh the workspace tag — a card may have been created without one (older
+      // path) and later receive it on rehydrate.
+      if (workspaceCwd && workspaceCwd !== s.workspaceCwd) s.workspaceCwd = workspaceCwd
+      const willNavigate =
+        !!initialUrl && initialUrl !== s.initialUrl && initialUrl !== 'about:blank'
       if (initialUrl && initialUrl !== s.initialUrl) {
         s.initialUrl = initialUrl
         if (initialUrl !== 'about:blank') {
           void s.view.webContents.loadURL(initialUrl).catch(() => {})
+        }
+      }
+      // Bootstrap pra cards já abertos: se NÃO vai navegar (não tem URL nova) e ainda não há
+      // visit aberta pra URL atual, abre uma agora com URL/título/favicon que o webContents
+      // já tem. Cobre o cenário "card vivo de antes do feature OU de antes do workspaceCwd
+      // estar plumbed" — sem isso, esses cards só entram no histórico após a próxima nav.
+      if (!willNavigate && s.workspaceCwd) {
+        try {
+          const liveUrl = s.view.webContents.getURL()
+          if (
+            liveUrl &&
+            liveUrl !== 'about:blank' &&
+            !liveUrl.startsWith('data:') &&
+            historyGetOpenVisitUrl(cardId) !== liveUrl
+          ) {
+            historyOpenVisit(cardId, liveUrl, s.workspaceCwd, 'rehydrate', {
+              title: s.view.webContents.getTitle() || null,
+              favicon: s.favicon
+            })
+          }
+        } catch (err) {
+          console.error('[history] bootstrap openVisit failed:', err)
         }
       }
       return
@@ -99,7 +148,14 @@ class WebViewsManager {
       }
     })
     const wc = view.webContents
-    const state: ViewState = { view, initialUrl, attached: false, controlling: false }
+    const state: ViewState = {
+      view,
+      initialUrl,
+      attached: false,
+      controlling: false,
+      favicon: null,
+      workspaceCwd
+    }
     this.views.set(cardId, state)
     this.wireEvents(cardId, wc, emit)
 
@@ -115,6 +171,7 @@ class WebViewsManager {
       return
     }
     wlog(`destroy ${cardId} (attached=${s.attached})`)
+    historyCloseVisit(cardId)
     const win = this.getWin()
     if (win && !win.isDestroyed() && s.attached) {
       try {
@@ -164,6 +221,9 @@ class WebViewsManager {
     } catch {
       // view may be tearing down
     }
+    // Dwell tracking: non-zero bounds = visível, zero = escondido. O capture.ts ignora flips
+    // idempotentes (não acumula tempo duplicado se o bounds só mexeu de posição).
+    historySetVisible(cardId, rounded.width > 0 && rounded.height > 0)
   }
 
   // Cheap hide: setBounds(0,0,0,0). The view stays in the contentView tree (page survives) but
@@ -177,6 +237,16 @@ class WebViewsManager {
     const wc = this.views.get(cardId)?.view.webContents
     if (!wc) return
     void wc.loadURL(url).catch(() => {})
+  }
+
+  // Open Chrome DevTools on the card's page (not the decky shell). `mode: 'detach'` puts it
+  // in a separate window so the geometry pump's bounds aren't fighting a docked panel inside
+  // the WebContentsView. Toggles: if devtools are already open for this view, close them.
+  toggleDevTools(cardId: string): void {
+    const wc = this.views.get(cardId)?.view.webContents
+    if (!wc) return
+    if (wc.isDevToolsOpened()) wc.closeDevTools()
+    else wc.openDevTools({ mode: 'detach' })
   }
 
   back(cardId: string): void {
@@ -240,10 +310,117 @@ class WebViewsManager {
     const fire = (): void => emit(cardId)
     wc.on('did-start-loading', fire)
     wc.on('did-stop-loading', fire)
-    wc.on('did-navigate', fire)
-    wc.on('did-navigate-in-page', fire)
+    wc.on('did-navigate', (_e, url) => {
+      const s = this.views.get(cardId)
+      // Top-level navigation pra outra origem → o favicon atual não vale mais. Limpa pra
+      // não exibir o ícone do site anterior até o do novo chegar.
+      if (s) {
+        const prev = s.favicon
+        try {
+          const prevHost = prev ? new URL(prev).host : null
+          const nextHost = new URL(url).host
+          if (prevHost !== nextHost) s.favicon = null
+        } catch {
+          s.favicon = null
+        }
+      }
+      try {
+        historyOpenVisit(cardId, url, s?.workspaceCwd ?? null, 'navigate', {
+          title: wc.getTitle() || null,
+          favicon: s?.favicon ?? null
+        })
+      } catch (err) {
+        console.error('[history] openVisit (did-navigate) failed:', err)
+      }
+      fire()
+    })
+    wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+      if (!isMainFrame) {
+        fire()
+        return
+      }
+      const s = this.views.get(cardId)
+      try {
+        historyOpenVisit(cardId, url, s?.workspaceCwd ?? null, 'in-page', {
+          title: wc.getTitle() || null,
+          favicon: s?.favicon ?? null
+        })
+      } catch (err) {
+        console.error('[history] openVisit (did-navigate-in-page) failed:', err)
+      }
+      fire()
+    })
     wc.on('did-fail-load', fire)
-    wc.on('page-title-updated', fire)
+    wc.on('page-title-updated', (_e, title) => {
+      try {
+        historyPatchTitle(cardId, title)
+      } catch (err) {
+        console.error('[history] patchTitle failed:', err)
+      }
+      fire()
+    })
+    wc.on('page-favicon-updated', (_e, favicons) => {
+      const s = this.views.get(cardId)
+      if (!s) return
+      const next = favicons?.[0] ?? null
+      if (s.favicon === next) return
+      s.favicon = next
+      try {
+        historyPatchFavicon(cardId, next)
+      } catch (err) {
+        console.error('[history] patchFavicon failed:', err)
+      }
+      fire()
+    })
+    // Intercept Cmd+Opt+I (mac), Ctrl+Shift+I (others), and F12 so they open devtools on
+    // THIS view instead of being eaten by the page. Without this the WebContentsView swallows
+    // the keystroke (it has focus) and the user can't inspect what the page is doing.
+    wc.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return
+      const isMac = process.platform === 'darwin'
+      const macToggle = isMac && input.meta && input.alt && (input.code === 'KeyI' || input.key === 'I' || input.key === 'i')
+      const winToggle = !isMac && input.control && input.shift && (input.code === 'KeyI' || input.key === 'I' || input.key === 'i')
+      const f12 = input.key === 'F12'
+      if (macToggle || winToggle || f12) {
+        event.preventDefault()
+        if (wc.isDevToolsOpened()) wc.closeDevTools()
+        else wc.openDevTools({ mode: 'detach' })
+      }
+    })
+    // Right-click context menu. WebContentsView has none by default, so right-clicking on
+    // an image / link / selection in a web card was a no-op. Surface the three "Copy URL"-
+    // shaped actions a browser would offer:
+    //   - over an image      → Copy image URL  (params.srcURL)
+    //   - over a link        → Copy link URL   (params.linkURL)
+    //   - over a selection   → Copy            (selected text)
+    // Plus a "Reload" fallback so the menu isn't empty on a bare page right-click.
+    wc.on('context-menu', (_e, params) => {
+      const win = this.getWin()
+      if (!win || win.isDestroyed()) return
+      const items: Electron.MenuItemConstructorOptions[] = []
+      if (params.mediaType === 'image' && params.srcURL) {
+        items.push({
+          label: 'Copy image URL',
+          click: () => clipboard.writeText(params.srcURL)
+        })
+      }
+      if (params.linkURL) {
+        items.push({
+          label: 'Copy link URL',
+          click: () => clipboard.writeText(params.linkURL)
+        })
+      }
+      if (params.selectionText) {
+        items.push({
+          label: 'Copy',
+          click: () => wc.copy()
+        })
+      }
+      if (items.length === 0) {
+        items.push({ label: 'Reload', click: () => wc.reload() })
+      }
+      Menu.buildFromTemplate(items).popup({ window: win })
+    })
     // Re-inject the cmd/ctrl-click capture on every load. The previous override is wiped by
     // the navigation, so the renderer relies on this to keep modifier-click → new card alive.
     wc.on('dom-ready', () => {
@@ -292,15 +469,18 @@ class WebViewsManager {
   snapshot(cardId: string): {
     url: string
     title: string
+    favicon: string | null
     loading: boolean
     canBack: boolean
     canFwd: boolean
   } | null {
-    const wc = this.views.get(cardId)?.view.webContents
-    if (!wc) return null
+    const s = this.views.get(cardId)
+    if (!s) return null
+    const wc = s.view.webContents
     return {
       url: wc.getURL() || '',
       title: wc.getTitle() || '',
+      favicon: s.favicon,
       loading: wc.isLoadingMainFrame(),
       canBack: wc.navigationHistory.canGoBack(),
       canFwd: wc.navigationHistory.canGoForward()
@@ -391,13 +571,21 @@ export function setupWebViews(getWin: () => BrowserWindow | null): void {
     win.webContents.send('web:state', { cardId, ...snap })
   }
 
-  ipcMain.handle('web:create', (_e, payload: { cardId: string; url: string }) => {
-    manager!.create(payload.cardId, payload.url || '', emitState)
-    // Emit one synthetic state right after create so the renderer can populate the address
-    // bar without waiting for the first navigation event.
-    emitState(payload.cardId)
-    return true
-  })
+  ipcMain.handle(
+    'web:create',
+    (_e, payload: { cardId: string; url: string; workspaceCwd?: string | null }) => {
+      manager!.create(
+        payload.cardId,
+        payload.url || '',
+        payload.workspaceCwd ?? null,
+        emitState
+      )
+      // Emit one synthetic state right after create so the renderer can populate the address
+      // bar without waiting for the first navigation event.
+      emitState(payload.cardId)
+      return true
+    }
+  )
   ipcMain.handle('web:destroy', (_e, cardId: string) => {
     manager!.destroy(cardId)
     return true
@@ -415,6 +603,7 @@ export function setupWebViews(getWin: () => BrowserWindow | null): void {
   ipcMain.on('web:forward', (_e, cardId: string) => manager!.forward(cardId))
   ipcMain.on('web:reload', (_e, cardId: string) => manager!.reload(cardId))
   ipcMain.on('web:stop', (_e, cardId: string) => manager!.stop(cardId))
+  ipcMain.on('web:open-devtools', (_e, cardId: string) => manager!.toggleDevTools(cardId))
   ipcMain.handle('web:get-state', (_e, cardId: string) => manager!.snapshot(cardId))
   // Renderer pergunta o estado atual de "controlando" no mount — caso o handoff já tenha
   // ligado antes do WebPreview montar (workspace switch durante uma sequência de comandos).

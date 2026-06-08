@@ -47,9 +47,21 @@ import { registerGitHandlers } from './git-stats'
 import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
 import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
 import { setupWebViews } from './web-views'
+import { setupHistory } from './history'
 
 // Privileged scheme registration must happen before app is ready.
 registerAssetScheme()
+
+// Disable FedCM globally. Google Identity Services (used by Pinterest, Spotify, many sites'
+// "Continue with Google") calls navigator.credentials.get({identity}) FIRST and only falls
+// back to the legacy popup OAuth flow when the API throws NotSupportedError. With FedCM
+// enabled, Chromium responds with NetworkError (the IdP config fetch fails inside Electron's
+// partition because there's no signed-in Google session + the spoofed UA/client-hints confuse
+// accounts.google.com's well-known endpoint), and GSI keeps retrying forever — symptom: the
+// "Continue with Google" button does NOTHING. Disabling FedCM makes the API return
+// NotSupportedError immediately, GSI falls back to popup, and setWindowOpenHandler in
+// web-session.ts routes the OAuth window correctly.
+app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAuthz,FedCmIdpSigninStatusEnabled,FedCmAutoSelectedFlag')
 
 let mainWindow: BrowserWindow | null = null
 
@@ -238,6 +250,7 @@ app
     })
     setupWebSession(() => mainWindow)
     attachWebContentsPopupRouter(() => mainWindow)
+    setupHistory()
     setupWebViews(() => mainWindow)
     diag('handlers registered, starting preview server')
     startPreviewServer(() => mainWindow)

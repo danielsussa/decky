@@ -30,6 +30,7 @@ const messages = {
   'web.reload': { pt: 'recarregar', en: 'reload' },
   'web.urlPlaceholder': { pt: 'digite uma URL e Enter…', en: 'enter a URL and press Enter…' },
   'web.openExternal': { pt: 'abrir no navegador externo', en: 'open in external browser' },
+  'web.devtools': { pt: 'inspecionar (DevTools)', en: 'inspect (DevTools)' },
 
   // git stats — wrap the interpolated +A −D count
   'git.openDiffSuffix': { pt: ' — abrir diff', en: ' — open diff' },
@@ -176,6 +177,7 @@ const messages = {
 
   // markdown wikilinks
   'md.openCardPrefix': { pt: 'abrir card ', en: 'open card ' },
+  'md.copyUrl': { pt: 'Copiar URL', en: 'Copy URL' },
 
   // command palette
   'palette.placeholder': { pt: 'digite um comando…', en: 'type a command…' },

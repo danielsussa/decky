@@ -144,8 +144,41 @@ export interface DeckAPI {
     show: (payload: { id: string; title: string; body?: string }) => Promise<void>
     onFocusSession: (callback: (msg: { id: string }) => void) => () => void
   }
+  history: {
+    listRecent: (
+      workspaceCwd: string | null,
+      limit?: number
+    ) => Promise<
+      {
+        id: number
+        url: string
+        title: string | null
+        favicon: string | null
+        card_id: string | null
+        workspace_id: string
+        visited_at: number
+        dwell_ms: number
+        transition: string | null
+      }[]
+    >
+    suggest: (
+      workspaceCwd: string | null,
+      query: string,
+      limit?: number
+    ) => Promise<
+      {
+        url: string
+        title: string | null
+        favicon: string | null
+        hits: number
+        last_visited: number
+      }[]
+    >
+    getWorkspaceMeta: (cwd: string) => Promise<{ workspaceId: string; isolated: boolean }>
+    setWorkspaceIsolated: (cwd: string, isolated: boolean) => Promise<true>
+  }
   web: {
-    create: (cardId: string, url: string) => Promise<true>
+    create: (cardId: string, url: string, workspaceCwd?: string | null) => Promise<true>
     destroy: (cardId: string) => Promise<true>
     setBounds: (
       cardId: string,
@@ -157,9 +190,11 @@ export interface DeckAPI {
     forward: (cardId: string) => void
     reload: (cardId: string) => void
     stop: (cardId: string) => void
+    openDevTools: (cardId: string) => void
     getState: (cardId: string) => Promise<{
       url: string
       title: string
+      favicon: string | null
       loading: boolean
       canBack: boolean
       canFwd: boolean
@@ -169,6 +204,7 @@ export interface DeckAPI {
         cardId: string
         url: string
         title: string
+        favicon: string | null
         loading: boolean
         canBack: boolean
         canFwd: boolean

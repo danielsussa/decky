@@ -98,6 +98,15 @@ export async function rehydratePreviews(
           path: abs,
           title: source.title ?? basename(abs)
         }
+      } else if (source.type === 'html' && source.path) {
+        const abs =
+          !isAbsolute(source.path) && workspace ? resolvePath(workspace, source.path) : source.path
+        out[sessionId][cardId] = {
+          type: 'html',
+          path: abs,
+          title: source.title ?? basename(abs),
+          favicon: source.favicon ?? null
+        }
       } else {
         out[sessionId][cardId] = source
       }
@@ -179,6 +188,13 @@ async function normalize(wire: PreviewSourceWire): Promise<PreviewSource> {
   }
   if (wire.type === 'web' && !wire.url) {
     throw new Error('web source requires a url')
+  }
+  if (wire.type === 'html') {
+    if (!wire.path) throw new Error('html source requires a path')
+    // Stat as a fail-fast — the renderer will spin up the http server on mount and a missing
+    // file there would just 404 silently inside the web card.
+    await stat(wire.path)
+    return { type: 'html', path: wire.path, title: wire.title ?? basename(wire.path) }
   }
   return wire as PreviewSource
 }

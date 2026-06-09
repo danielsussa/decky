@@ -333,7 +333,8 @@ function migrateSessions(list: Session[]): Session[] {
 
 function sourcePath(source: PreviewSource | undefined): string | undefined {
   if (!source) return undefined
-  if (source.type === 'editor' || source.type === 'xlsx') return source.path
+  if (source.type === 'editor' || source.type === 'xlsx' || source.type === 'html')
+    return source.path
   if ((source.type === 'markdown' || source.type === 'diff') && source.path) return source.path
   return undefined
 }
@@ -378,7 +379,7 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
     }
     return 'diff'
   }
-  if (source.type === 'editor' || source.type === 'xlsx') {
+  if (source.type === 'editor' || source.type === 'xlsx' || source.type === 'html') {
     if (source.title) return source.title
     return source.path.split('/').pop() ?? source.path
   }
@@ -424,6 +425,13 @@ function serializePreviews(
           type: 'xlsx',
           path: toWorkspaceRelative(src.path, workspace),
           title: src.title
+        }
+      } else if (src.type === 'html') {
+        out[sid][cid] = {
+          type: 'html',
+          path: toWorkspaceRelative(src.path, workspace),
+          title: src.title,
+          favicon: src.favicon
         }
       } else if (src.type === 'form') {
         // Forms are tied to a live MCP await on the agent side. Persisting them across
@@ -473,6 +481,12 @@ function App(): React.JSX.Element {
   const [focusedCardBySession, setFocusedCardBySession] = useState<Record<string, string | null>>(
     {}
   )
+  // Por session, pilha MRU dos cards que JÁ foram focados (mais recente no fim). Fecha o focado →
+  // volta pro último que ainda existe, em vez do fallback "cards[0]" do DeckTabs (que joga pra #1).
+  const focusHistoryRef = useRef<Record<string, string[]>>({})
+  // Snapshot do focused da última render por session — usado pelo effect abaixo pra detectar a
+  // transição X→Y e empilhar X. Ref (não state) porque é dado puramente derivado.
+  const prevFocusedSnapshotRef = useRef<Record<string, string | null>>({})
   const [previewsByCard, setPreviewsByCard] = useState<
     Record<string, Record<string, PreviewSource>>
   >({})
@@ -1656,6 +1670,7 @@ function App(): React.JSX.Element {
       else if (src.type === 'editor') lines.push(`- **${id}** — (editor: \`${src.path}\`)`)
       else if (src.type === 'xlsx') lines.push(`- **${id}** — (xlsx: \`${src.path}\`)`)
       else if (src.type === 'web') lines.push(`- **${id}** — (web: ${src.url})`)
+      else if (src.type === 'html') lines.push(`- **${id}** — (html: \`${src.path}\`)`)
       else if (src.type === 'me') lines.push(`- **${id}** — (live view: ${src.url ?? 'me'})`)
     }
     if (Object.keys(pinned).length === 0) lines.push('_(nenhum card fixado)_')
@@ -1757,6 +1772,22 @@ function App(): React.JSX.Element {
     if (!activeId) return
     setFocusedCardBySession((prev) => ({ ...prev, [activeId]: id }))
   }
+
+  // Cada vez que o focado de uma session muda de X pra Y (ambos !== null), empilha X no histórico
+  // (MRU; remove duplicata antes pra não inflar). Ler isso em closeCard nos dá "volta pro último".
+  useEffect(() => {
+    for (const [sid, curr] of Object.entries(focusedCardBySession)) {
+      const snap = prevFocusedSnapshotRef.current[sid] ?? null
+      if (snap === curr) continue
+      if (snap && snap !== curr) {
+        const stack = (focusHistoryRef.current[sid] ?? []).filter((x) => x !== snap)
+        stack.push(snap)
+        if (stack.length > 32) stack.shift()
+        focusHistoryRef.current[sid] = stack
+      }
+      prevFocusedSnapshotRef.current[sid] = curr
+    }
+  }, [focusedCardBySession])
 
   const handleClose = (ws: string, id: string): void => {
     const isActiveWs = ws === workspace
@@ -1957,6 +1988,9 @@ function App(): React.JSX.Element {
       return
     }
     if (!activeId) return
+    const wasFocused = focusedCardBySession[activeId] === id
+    const oldList = cardsBySession[activeId] ?? []
+    const remaining = oldList.filter((c) => c !== id)
     setCardsBySession((prev) => ({
       ...prev,
       [activeId]: (prev[activeId] ?? []).filter((c) => c !== id)
@@ -1966,6 +2000,28 @@ function App(): React.JSX.Element {
       delete cards[id]
       return { ...prev, [activeId]: cards }
     })
+    // Tira o card fechado de qualquer pilha (não volta pra ele depois) e, se ele era o focado,
+    // pop até achar um card que ainda existe. Sem hit no histórico, fallback é o vizinho à esquerda
+    // (o que está numa posição abaixo do fechado), comportamento esperado de fechar a aba ativa.
+    if (focusHistoryRef.current[activeId]) {
+      focusHistoryRef.current[activeId] = focusHistoryRef.current[activeId].filter((x) => x !== id)
+    }
+    if (wasFocused) {
+      const history = focusHistoryRef.current[activeId] ?? []
+      const remainingSet = new Set(remaining)
+      let next: string | null = null
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (remainingSet.has(history[i])) {
+          next = history[i]
+          break
+        }
+      }
+      if (!next) {
+        const idx = oldList.indexOf(id)
+        next = remaining[idx - 1] ?? remaining[0] ?? null
+      }
+      setFocusedCardBySession((prev) => ({ ...prev, [activeId]: next }))
+    }
     if (wasWeb) window.deck.web.destroy(id)
   }
 

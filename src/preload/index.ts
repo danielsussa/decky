@@ -313,6 +313,12 @@ const deckApi = {
       return () => ipcRenderer.removeListener('web:controlling', listener)
     }
   },
+  html: {
+    // Resolve a local HTML file path to an http://127.0.0.1:<port> URL. Main spins up an
+    // ephemeral server for the file's directory on first call and reuses it after that —
+    // serving via http lets fetch / ES modules / Service Workers actually work (file:// blocks).
+    resolve: (path: string): Promise<string> => ipcRenderer.invoke('html:resolve', path)
+  },
   history: {
     listRecent: (
       workspaceCwd: string | null,

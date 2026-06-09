@@ -48,6 +48,7 @@ import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
 import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
 import { setupWebViews } from './web-views'
 import { setupHistory } from './history'
+import { setupHtmlServer } from './html-server'
 
 // Privileged scheme registration must happen before app is ready.
 registerAssetScheme()
@@ -252,6 +253,7 @@ app
     attachWebContentsPopupRouter(() => mainWindow)
     setupHistory()
     setupWebViews(() => mainWindow)
+    setupHtmlServer()
     diag('handlers registered, starting preview server')
     startPreviewServer(() => mainWindow)
     // Backend do handoff: socket falando o protocolo contra o card web focado, pro sdk/adapters/MCP

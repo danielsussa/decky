@@ -10,6 +10,7 @@ export type MirrorCardKind =
   | 'diff'
   | 'json'
   | 'web'
+  | 'html'
   | 'me'
   | 'editor'
   | 'xlsx'

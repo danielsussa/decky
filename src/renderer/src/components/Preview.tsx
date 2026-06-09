@@ -2,6 +2,7 @@ import MePreview from './MePreview'
 import MarkdownPreview from './MarkdownPreview'
 import JsonPreview from './JsonPreview'
 import WebPreview from './WebPreview'
+import HtmlPreview from './HtmlPreview'
 import DiffPreview from './DiffPreview'
 import EditorPreview from './EditorPreview'
 import XlsxPreview from './XlsxPreview'
@@ -45,6 +46,17 @@ export default function Preview({
       <WebPreview
         cardId={cardId}
         url={source.url}
+        workspaceCwd={workspaceCwd ?? null}
+        onMetaChange={onWebMetaChange}
+      />
+    )
+  }
+  if (source.type === 'html') {
+    if (!cardId) return <div className="preview-empty"><p>card sem id — recrie a aba</p></div>
+    return (
+      <HtmlPreview
+        cardId={cardId}
+        path={source.path}
         workspaceCwd={workspaceCwd ?? null}
         onMetaChange={onWebMetaChange}
       />

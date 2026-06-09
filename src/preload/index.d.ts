@@ -144,6 +144,9 @@ export interface DeckAPI {
     show: (payload: { id: string; title: string; body?: string }) => Promise<void>
     onFocusSession: (callback: (msg: { id: string }) => void) => () => void
   }
+  html: {
+    resolve: (path: string) => Promise<string>
+  }
   history: {
     listRecent: (
       workspaceCwd: string | null,

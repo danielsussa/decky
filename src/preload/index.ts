@@ -200,6 +200,16 @@ const deckApi = {
       ipcRenderer.on('menu:close-tab', listener)
       return () => ipcRenderer.removeListener('menu:close-tab', listener)
     },
+    onMenuTogglePalette: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('menu:toggle-palette', listener)
+      return () => ipcRenderer.removeListener('menu:toggle-palette', listener)
+    },
+    onMenuToggleFind: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('menu:toggle-find', listener)
+      return () => ipcRenderer.removeListener('menu:toggle-find', listener)
+    },
     onMenuOpenCliSettings: (callback: () => void): (() => void) => {
       const listener = (): void => callback()
       ipcRenderer.on('menu:open-cli-settings', listener)
@@ -224,7 +234,25 @@ const deckApi = {
       ipcRenderer.on('app:open-url', listener)
       return () => ipcRenderer.removeListener('app:open-url', listener)
     },
-    openExternal: (url: string): Promise<void> => ipcRenderer.invoke('app:open-external', url)
+    openExternal: (url: string): Promise<void> => ipcRenderer.invoke('app:open-external', url),
+    // Main forwards decky chrome shortcuts (Cmd+P etc) caught by focused web cards so the
+    // renderer can replay them as a real KeyboardEvent on window.
+    onShortcut: (
+      callback: (msg: {
+        key: string
+        shift: boolean
+        control: boolean
+        alt: boolean
+        meta: boolean
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _: unknown,
+        msg: { key: string; shift: boolean; control: boolean; alt: boolean; meta: boolean }
+      ): void => callback(msg)
+      ipcRenderer.on('app:shortcut', listener)
+      return () => ipcRenderer.removeListener('app:shortcut', listener)
+    }
   },
   dev: {
     getInfo: (): Promise<{ enabled: boolean; repo?: string; accel: string }> =>

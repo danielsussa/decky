@@ -120,12 +120,23 @@ export interface DeckAPI {
     pickFile: (title?: string) => Promise<string | null>
     onMenuNewSession: (callback: () => void) => () => void
     onMenuCloseTab: (callback: () => void) => () => void
+    onMenuTogglePalette: (callback: () => void) => () => void
+    onMenuToggleFind: (callback: () => void) => () => void
     onMenuOpenCliSettings: (callback: () => void) => () => void
     onMenuDevRebuild: (callback: () => void) => () => void
     onFlush: (callback: () => void) => () => void
     flushDone: () => void
     onOpenUrl: (callback: (url: string) => void) => () => void
     openExternal: (url: string) => Promise<void>
+    onShortcut: (
+      callback: (msg: {
+        key: string
+        shift: boolean
+        control: boolean
+        alt: boolean
+        meta: boolean
+      }) => void
+    ) => () => void
   }
   dev: {
     getInfo: () => Promise<{ enabled: boolean; repo?: string; accel: string }>

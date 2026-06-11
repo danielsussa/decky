@@ -49,9 +49,12 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
       label: 'File',
       submenu: [
         {
-          // Accelerator (Cmd+N) is handled in the renderer (capture-phase keydown) so it
-          // works over the focused terminal; keep the menu item clickable for discoverability.
+          // Accelerator on the native menu (not the renderer's keydown) so the OS intercepts
+          // the chord BEFORE handing input to any focused webContents — works over a PDF
+          // viewer, terminal, web card, etc. The renderer's capture-phase keydown is now
+          // unreachable for this chord on focused web cards/PDFs, which is the point.
           label: 'New Session',
+          accelerator: 'CmdOrCtrl+N',
           click: () => sendToRenderer('menu:new-session')
         },
         { type: 'separator' },
@@ -64,8 +67,8 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
         },
         { type: 'separator' },
         {
-          // Accelerator (Cmd+K) handled in the renderer (see New Session above).
           label: 'Close Session',
+          accelerator: 'CmdOrCtrl+K',
           click: () => sendToRenderer('menu:close-tab')
         },
         ...(!isMac
@@ -83,7 +86,24 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
         { role: 'cut' },
         { role: 'copy' },
         { role: 'paste' },
-        { role: 'selectAll' }
+        { role: 'selectAll' },
+        { type: 'separator' },
+        {
+          label: 'Find in Cards…',
+          accelerator: 'CmdOrCtrl+Shift+F',
+          click: () => sendToRenderer('menu:toggle-find')
+        }
+      ]
+    },
+
+    {
+      label: 'Go',
+      submenu: [
+        {
+          label: 'Command Palette…',
+          accelerator: 'CmdOrCtrl+P',
+          click: () => sendToRenderer('menu:toggle-palette')
+        }
       ]
     },
 

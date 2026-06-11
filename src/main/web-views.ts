@@ -49,6 +49,12 @@ interface ViewState {
   // Workspace cwd que owna este card. Tag pro histórico (workspace_id é resolvido a partir
   // disso em getWorkspaceMeta). Null quando o renderer não passou (gracefully skips capture).
   workspaceCwd: string | null
+  // URL que precisa ser carregada no primeiro attach com bounds não-zero. O embed nativo de PDF
+  // do Chromium se inicializa com o tamanho do view no momento do load e não se re-layouta
+  // depois — se a gente chamar loadURL antes do view ter dimensão, o PDF nasce em branco e só
+  // acorda num next paint (ex: ciclo hide/show ao trocar workspace). Adiar o load até o
+  // primeiro setBounds não-zero corrige isso pra PDFs sem afetar páginas HTML.
+  pendingUrl: string | null
 }
 
 interface Bounds {
@@ -105,7 +111,14 @@ class WebViewsManager {
       if (initialUrl && initialUrl !== s.initialUrl) {
         s.initialUrl = initialUrl
         if (initialUrl !== 'about:blank') {
-          void s.view.webContents.loadURL(initialUrl).catch(() => {})
+          // Se o primeiro load ainda está pendente (view ainda sem bounds), só troca a URL
+          // que será carregada quando setBounds fizer o flush. Sem isso, carregaríamos aqui
+          // a URL nova e logo em seguida o setBounds re-carregaria a antiga (pendingUrl).
+          if (s.pendingUrl) {
+            s.pendingUrl = initialUrl
+          } else {
+            void s.view.webContents.loadURL(initialUrl).catch(() => {})
+          }
         }
       }
       // Bootstrap pra cards já abertos: se NÃO vai navegar (não tem URL nova) e ainda não há
@@ -154,14 +167,11 @@ class WebViewsManager {
       attached: false,
       controlling: false,
       favicon: null,
-      workspaceCwd
+      workspaceCwd,
+      pendingUrl: initialUrl && initialUrl !== 'about:blank' ? initialUrl : null
     }
     this.views.set(cardId, state)
     this.wireEvents(cardId, wc, emit)
-
-    if (initialUrl && initialUrl !== 'about:blank') {
-      void wc.loadURL(initialUrl).catch(() => {})
-    }
   }
 
   destroy(cardId: string): void {
@@ -220,6 +230,14 @@ class WebViewsManager {
       else if (rounded.width === 0 || rounded.height === 0) wlog(`setBounds ${cardId} ${rounded.width}x${rounded.height}@${rounded.x},${rounded.y} (zero-size = hidden)`)
     } catch {
       // view may be tearing down
+    }
+    // Load adiada: dispara o loadURL no primeiro setBounds com dimensão real. Garante que o
+    // embed nativo de PDF veja o view com size > 0 no momento da inicialização (sem isso o
+    // PDF nasce em branco — ver pendingUrl em ViewState).
+    if (s.pendingUrl && rounded.width > 0 && rounded.height > 0) {
+      const url = s.pendingUrl
+      s.pendingUrl = null
+      void s.view.webContents.loadURL(url).catch(() => {})
     }
     // Dwell tracking: non-zero bounds = visível, zero = escondido. O capture.ts ignora flips
     // idempotentes (não acumula tempo duplicado se o bounds só mexeu de posição).
@@ -375,6 +393,17 @@ class WebViewsManager {
     // Intercept Cmd+Opt+I (mac), Ctrl+Shift+I (others), and F12 so they open devtools on
     // THIS view instead of being eaten by the page. Without this the WebContentsView swallows
     // the keystroke (it has focus) and the user can't inspect what the page is doing.
+    //
+    // The fixed decky accels (Cmd+P palette, Cmd+Shift+F find, Cmd+N new session, Cmd+K
+    // close session) are bound as native menu accelerators in main/menu.ts — the OS handles
+    // those before any webContents sees them, which is the only thing that survives a focused
+    // PDF viewer (its native plugin captures input before before-input-event fires here).
+    //
+    // What remains in this whitelist are accels that can't go in the menu: keymap-configurable
+    // bindings (Cmd+Arrow* session/tab nav, Cmd+Ctrl+P tab.pin) and Cmd+Enter (contextual,
+    // commits a preview-nav cursor). These still flow through the renderer's capture-phase
+    // keydown, so we re-broadcast them as a synthetic KeyboardEvent on window. Won't fire
+    // over a focused PDF (plugin swallows them), but works over HTML pages.
     wc.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown') return
       const isMac = process.platform === 'darwin'
@@ -385,7 +414,35 @@ class WebViewsManager {
         event.preventDefault()
         if (wc.isDevToolsOpened()) wc.closeDevTools()
         else wc.openDevTools({ mode: 'detach' })
+        return
       }
+      const k = input.key
+      const primary = isMac ? input.meta && !input.control : input.control && !input.meta
+      const isLetter = (ch: string): boolean => k === ch || k === ch.toUpperCase()
+      let isDeckyAccel = false
+      if (primary && !input.alt) {
+        if (k === 'Enter') isDeckyAccel = true
+        else if (k === 'ArrowUp' || k === 'ArrowDown' || k === 'ArrowLeft' || k === 'ArrowRight') isDeckyAccel = true
+      }
+      // tab.pin default: Cmd+Ctrl+P (mac) / Ctrl+Alt+P (others)
+      if (!isDeckyAccel) {
+        if (isMac && input.meta && input.control && !input.alt && isLetter('p')) isDeckyAccel = true
+        else if (!isMac && input.control && input.alt && !input.meta && isLetter('p')) isDeckyAccel = true
+      }
+      if (!isDeckyAccel) return
+      event.preventDefault()
+      const win = this.getWin()
+      if (!win || win.isDestroyed()) return
+      // IPC > sendInputEvent: synthetic input events from Chromium were arriving in the renderer
+      // without metaKey/ctrlKey populated, so the App.tsx keydown handler never recognized them.
+      // The renderer side dispatches a real KeyboardEvent on window using this payload.
+      win.webContents.send('app:shortcut', {
+        key: k,
+        shift: input.shift,
+        control: input.control,
+        alt: input.alt,
+        meta: input.meta
+      })
     })
     // Right-click context menu. WebContentsView has none by default, so right-clicking on
     // an image / link / selection in a web card was a no-op. Surface the three "Copy URL"-

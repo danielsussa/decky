@@ -1578,6 +1578,36 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [])
 
+  // Cmd+P (palette) and Cmd+Shift+F (find-in-cards) are bound as native menu accelerators in
+  // main/menu.ts so the OS intercepts the chord before any focused webContents — works even
+  // when the PDF viewer or a web card has focus (the renderer's capture-phase keydown above
+  // never sees the event in that case). Same logic, two paths.
+  useEffect(() => {
+    const unsubPalette = window.deck.app.onMenuTogglePalette(() => setPaletteOpen((v) => !v))
+    const unsubFind = window.deck.app.onMenuToggleFind(() => setCardSearchOpen((v) => !v))
+    // Configurable accels (Cmd+Arrow nav, Cmd+Ctrl+P pin, Cmd+Enter preview commit) can't be
+    // menu items — main forwards them from web cards' before-input-event and we replay as a
+    // real KeyboardEvent on window so the capture-phase keydown above handles them as usual.
+    const unsubShortcut = window.deck.app.onShortcut(({ key, shift, control, alt, meta }) => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key,
+          shiftKey: shift,
+          ctrlKey: control,
+          altKey: alt,
+          metaKey: meta,
+          bubbles: true,
+          cancelable: true
+        })
+      )
+    })
+    return () => {
+      unsubPalette()
+      unsubFind()
+      unsubShortcut()
+    }
+  }, [])
+
   // Cards that should NOT auto-focus on next broadcast. The "expand subject" flow opens a
   // placeholder card in the background (so the user can keep reading the original) — once
   // content arrives, a separate decky:focus-path event focuses it.

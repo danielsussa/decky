@@ -133,7 +133,11 @@ export default function WebPreview({
   // explicitamente (App.closeCard / handleClose), não no unmount do React.
   // No unmount aqui, só hide() — o view fica órfão (sem WebPreview rendering bounds), então
   // tem que sair de tela; senão fica pendurado com bounds antigas sobre o outro workspace.
-  useEffect(() => {
+  // useLayoutEffect (não useEffect) pra garantir que o create() seja enfileirado ANTES do rAF do
+  // geometry pump abaixo — useEffect roda depois do paint, mas o rAF do pump dispara antes do
+  // useEffect, então um web:set-bounds chegaria no main antes do web:create e seria dropado
+  // ("NO ENTRY") — card nasce em branco até um layout-tick subsequente (troca de sessão p.ex.).
+  useLayoutEffect(() => {
     void window.deck.web.create(cardId, url, workspaceCwd ?? null)
     return () => {
       window.deck.web.hide(cardId)

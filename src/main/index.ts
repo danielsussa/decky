@@ -26,6 +26,7 @@ import {
 } from './preview-server'
 import { registerWorkspaceHandlers } from './workspace-store'
 import { registerCardsHandlers } from './cards-store'
+import { registerTagsIndexHandlers } from './tags-index-watcher'
 import { searchCards } from './cards-search'
 import { resolveWikilink, computeBacklinks } from './cards-wikilinks'
 import { workspaceCardsDir } from './paths'
@@ -224,6 +225,7 @@ app
     registerCliHandlers()
     registerWorkspaceHandlers()
     registerCardsHandlers()
+    registerTagsIndexHandlers()
     registerCardMirrorHandlers(() => mainWindow)
     registerWidgetBridge(() => mainWindow)
     registerFileWatchHandlers(() => mainWindow)

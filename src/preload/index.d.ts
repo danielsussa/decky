@@ -82,6 +82,11 @@ export interface DeckAPI {
     >
     delete: (workspace: string, cardId: string) => Promise<boolean>
   }
+  tagsIndex: {
+    ensure: (workspace: string) => Promise<void>
+    rebuild: (workspace: string) => Promise<void>
+    path: (workspace: string) => Promise<string>
+  }
   file: {
     watch: (path: string) => Promise<true>
     unwatch: (path: string) => Promise<true>

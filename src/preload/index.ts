@@ -130,6 +130,19 @@ const deckApi = {
     delete: (workspace: string, cardId: string): Promise<boolean> =>
       ipcRenderer.invoke('cards:delete', workspace, cardId)
   },
+  tagsIndex: {
+    // Ensure the workspace's tags-index.html is being generated + watched. Idempotent.
+    // Triggers an initial generation on the first call so the index file exists when the
+    // renderer goes to open it as an empty-state tab.
+    ensure: (workspace: string): Promise<void> =>
+      ipcRenderer.invoke('tagsIndex:ensure', workspace),
+    // Force a regen now (sync — useful from a UI "rebuild index" button later).
+    rebuild: (workspace: string): Promise<void> =>
+      ipcRenderer.invoke('tagsIndex:rebuild', workspace),
+    // Absolute path to <workspace>/.decky[-dev]/cards/tags-index.html.
+    path: (workspace: string): Promise<string> =>
+      ipcRenderer.invoke('tagsIndex:path', workspace)
+  },
   file: {
     watch: (path: string): Promise<true> => ipcRenderer.invoke('file:watch', path),
     unwatch: (path: string): Promise<true> => ipcRenderer.invoke('file:unwatch', path),

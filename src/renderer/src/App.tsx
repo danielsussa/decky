@@ -527,6 +527,9 @@ function App(): React.JSX.Element {
   const [titles, setTitles] = useState<Record<string, string>>({})
   const [wsLoaded, setWsLoaded] = useState(false)
   const [lastWorkspaceResolved, setLastWorkspaceResolved] = useState(false)
+  // Per-workspace abs path to <workspace>/.decky[-dev]/cards/tags-index.html. Materialized by
+  // main and used as the default empty-state tab. Cached so buildContentCards stays sync.
+  const [tagsIndexPathByWs, setTagsIndexPathByWs] = useState<Record<string, string>>({})
   const [activity, setActivity] = useState<
     Record<string, { status: string; at: number; workingAt: number }>
   >({})
@@ -1179,6 +1182,21 @@ function App(): React.JSX.Element {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace])
+
+  // When a workspace becomes active, ensure its tags-index.html exists and is being watched
+  // for regeneration. Idempotent — main keeps the watcher alive across workspace switches.
+  // Also resolves and caches the abs path so the empty-state tab can be built synchronously.
+  useEffect(() => {
+    if (!wsLoaded || !workspace) return
+    const ws = workspace
+    void window.deck.tagsIndex.ensure(ws)
+    if (!tagsIndexPathByWs[ws]) {
+      void window.deck.tagsIndex.path(ws).then((p) => {
+        if (p) setTagsIndexPathByWs((prev) => ({ ...prev, [ws]: p }))
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsLoaded, workspace])
 
   // Debounced save of the current workspace state.
   useEffect(() => {
@@ -2292,7 +2310,7 @@ function App(): React.JSX.Element {
     // in main can tag each visit with the right workspace_id.
     const sessionCwd = sessions.find((s) => s.id === sessionId)?.cwd ?? null
     const ids = includePinned ? [...pinnedIds, ...own] : own
-    return ids.map((id, i) => {
+    const out: DeckCardData[] = ids.map((id, i) => {
       const isPinned = !!pinned[id]
       const source = isPinned ? pinned[id] : (sessPreviews[id] ?? { type: 'none' })
       // Persist navigation metadata of a web card up to parent state so a remount (workspace
@@ -2374,6 +2392,28 @@ function App(): React.JSX.Element {
         )
       }
     })
+    // Empty session → show the workspace's tags-index.html as the default tab (replaces
+    // the "nenhum card ainda" empty state). It's a regular HTML card pointing at the
+    // materialized file in <workspace>/.decky/cards/tags-index.html.
+    const tagsIdxPath = sessionCwd ? tagsIndexPathByWs[sessionCwd] : undefined
+    if (out.length === 0 && tagsIdxPath) {
+      const virtualId = '__tags-index'
+      out.push({
+        id: virtualId,
+        title: 'Tags',
+        favicon: undefined,
+        pinned: false,
+        render: () => (
+          <Preview
+            source={{ type: 'html', path: tagsIdxPath, title: 'Tags' }}
+            cardId={virtualId}
+            sessionId={sessionId}
+            workspaceCwd={sessionCwd}
+          />
+        )
+      })
+    }
+    return out
   }
   // Per-session deckCards. Built for EVERY live session (LRU pool, cross-workspace) — not
   // just the active workspace's sessions — pra que trocar de workspace seja idempotente:

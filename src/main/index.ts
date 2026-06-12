@@ -29,7 +29,6 @@ import { registerCardsHandlers } from './cards-store'
 import { searchCards } from './cards-search'
 import { resolveWikilink, computeBacklinks } from './cards-wikilinks'
 import { workspaceCardsDir } from './paths'
-import { startDeckyHandoffBackend } from './handoff-backend'
 import { registerCardMirrorHandlers } from './card-mirror'
 import { registerWidgetBridge } from './widget-bridge'
 import { migrateGlobalState } from './migrate'
@@ -256,9 +255,9 @@ app
     setupHtmlServer()
     diag('handlers registered, starting preview server')
     startPreviewServer(() => mainWindow)
-    // Backend do handoff: socket falando o protocolo contra o card web focado, pro sdk/adapters/MCP
-    // do handoff dirigirem o mesmo card logado que o usuário vê. Opt-OUT via DECKY_NO_HANDOFF=1.
-    if (!process.env.DECKY_NO_HANDOFF) startDeckyHandoffBackend()
+    // O backend do handoff agora sobe POR SESSÃO em pty.ts (start no spawn / stop no exit),
+    // bound em /tmp/handoff-decky-<sessionId>.sock e escopado em cards da própria sessão.
+    // O HANDOFF_SOCKET do pty aponta clientes pra esse socket isolado. Sem chamada global aqui.
 
     ipcMain.handle('dialog:pick-folder', async () => {
       const opts: Electron.OpenDialogOptions = {
@@ -315,7 +314,12 @@ app
     // Drives the in-app Cmd+Shift+F palette; the MCP `search_cards` tool uses the same helper
     // via the HTTP server (POST /cards/search).
     ipcMain.handle('cards:search', (_e, workspace: string, query: string, limit?: number) =>
-      searchCards(workspaceCardsDir(workspace), query ?? '', typeof limit === 'number' ? limit : 20)
+      searchCards(
+        workspaceCardsDir(workspace),
+        query ?? '',
+        typeof limit === 'number' ? limit : 20,
+        'html'
+      )
     )
 
     // Resolve `[[name]]` from a card body to its absolute .md path. Renderer calls this on

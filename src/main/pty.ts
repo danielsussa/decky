@@ -6,6 +6,11 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { sanitizeTranscript } from './transcript-repair'
 import { workspaceCardsDir } from './paths'
+import {
+  sessionHandoffSocketPath,
+  startSessionHandoffBackend,
+  stopSessionHandoffBackend
+} from './handoff-backend'
 
 // claude stores each session at ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl, where the cwd is
 // encoded by replacing EVERY non-alphanumeric char with '-' (not just '/': e.g. "garimpo.ai" →
@@ -209,11 +214,23 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
         DECKY_SESSION_ID: args.id,
         DECKY_URL: process.env.DECKY_URL || 'http://127.0.0.1:6790',
         // Where this workspace's shared card .md files live, so the bot can Glob/Read them.
-        DECKY_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir())
+        DECKY_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir()),
+        // Socket DESTA sessão pro handoff CLI/SDK/MCP. O backend só dirige cards da própria
+        // sessão — sem isso, qualquer cliente caía no socket global e mexia em card de
+        // outra sessão/workspace. Bound em startSessionHandoffBackend abaixo.
+        HANDOFF_SOCKET: sessionHandoffSocketPath(args.id)
       }
     })
 
     ptys.set(args.id, term)
+    // Sobe o backend handoff scoped na sessão. Idempotente — recovery respawn cai no mesmo.
+    if (!process.env.DECKY_NO_HANDOFF) {
+      try {
+        startSessionHandoffBackend(args.id)
+      } catch (e) {
+        console.error(`[handoff] session=${args.id} failed to start backend:`, e)
+      }
+    }
 
     let conflictChecked = false
     let earlyBuf = ''
@@ -249,6 +266,7 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
       ptys.delete(args.id)
       if (recovering.has(args.id)) {
         // Recovery exit: don't surface it as a process exit; resume the session instead.
+        // Mantém o backend handoff vivo — o respawn vai reutilizar (idempotente).
         recovering.delete(args.id)
         settleDying(args.id)
         const a = spawnArgs.get(args.id)
@@ -258,6 +276,10 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
         }
         return
       }
+      // Saída real → derruba o backend handoff dessa sessão (libera socket).
+      void stopSessionHandoffBackend(args.id).catch((e) =>
+        console.error(`[handoff] session=${args.id} stop failed:`, e)
+      )
       const win = getWindow()
       if (win && !win.isDestroyed()) {
         win.webContents.send('pty:exit', { id: args.id, code: exitCode })
@@ -285,6 +307,10 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
     ptys.delete(args.id)
     // A user-initiated kill cancels any pending auto-recovery for this id.
     recovering.delete(args.id)
+    // Derruba backend handoff junto — sem recovery, não há respawn pra reaproveitar.
+    void stopSessionHandoffBackend(args.id).catch((e) =>
+      console.error(`[handoff] session=${args.id} stop failed:`, e)
+    )
     killGraceful(args.id, term)
   })
 

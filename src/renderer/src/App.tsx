@@ -387,6 +387,38 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
   return fallback
 }
 
+// Wrap inline markdown content as an HTML mini-app. Used when materializing `preview_markdown`
+// calls — instead of writing a .md file, we write a .html scaffold that pulls marked from
+// esm.sh and renders the markdown client-side inside `.md-body` (default.css already styles it).
+// Markdown stays as the raw text of a `<script type="text/markdown">` block (safer than a JS
+// string literal — only `</script>` would break out, not backticks/dollar signs).
+function wrapMarkdownAsHtml(content: string, title?: string): string {
+  const safeTitle = (title ?? '').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  // Escape `</script>` inside the content so it can't break out of the markdown holder.
+  const safeContent = content.replace(/<\/script/gi, '<\\/script')
+  return `<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8" />
+<title>${safeTitle || 'Card'}</title>
+<link rel="stylesheet" href="/__decky/default.css">
+<style>
+  body { padding: 24px; margin: 0; }
+</style>
+</head>
+<body>
+<article class="md-body" id="content">carregando…</article>
+<script type="text/markdown" id="md-src">${safeContent}</script>
+<script type="module">
+  import { marked } from 'https://esm.sh/marked@12'
+  const src = document.getElementById('md-src').textContent
+  document.getElementById('content').innerHTML = marked.parse(src, { gfm: true, breaks: false })
+</script>
+</body>
+</html>
+`
+}
+
 // On persist, drop markdown content when we have a path (re-read on load).
 // Paths inside `workspace` are stored relative to it so cards survive the workspace
 // folder being renamed/moved. Paths outside the workspace stay absolute.
@@ -784,18 +816,19 @@ function App(): React.JSX.Element {
           }
         }
 
-        // Materialize inline markdown into a real file (main owns the path, in <workspace>/.decky) →
-        // editable, live-watched, discoverable by other sessions. target may contain "/".
+        // Materialize inline markdown as an HTML mini-app (wrapped scaffold with client-side
+        // markdown rendering via marked from esm.sh) → editable, live-watched, full HTML cards
+        // by default. Older .md cards still work; only NEW preview_markdown calls become .html.
         // Use the EMITTING session's workspace, not the active one — a session in the live pool
-        // can be from a different workspace than the user is currently viewing, and the card file
-        // belongs with its owner session.
+        // can be from a different workspace than the user is currently viewing.
         const owner = aSess.find((s) => s.id === sessionId) ?? lSess.find((s) => s.id === sessionId)
         const ownerWs = owner?.cwd
         if (source.type === 'markdown' && !source.path && ownerWs) {
-          void window.deck.cards.write(ownerWs, target!, source.content).then((filePath) => {
+          const html = wrapMarkdownAsHtml(source.content, source.title)
+          void window.deck.cards.write(ownerWs, target!, html, '.html').then((filePath) => {
             apply(
               filePath
-                ? { type: 'markdown', content: source.content, title: source.title, path: filePath }
+                ? { type: 'html', path: filePath, title: source.title }
                 : source
             )
             ack(filePath ?? undefined)
@@ -883,6 +916,7 @@ function App(): React.JSX.Element {
       const ext = abs.split('.').pop()?.toLowerCase() ?? ''
       let wire: { type: string; path: string }
       if (ext === 'md' || ext === 'markdown') wire = { type: 'markdown', path: abs }
+      else if (ext === 'html' || ext === 'htm') wire = { type: 'html', path: abs }
       else if (ext === 'diff' || ext === 'patch') wire = { type: 'diff', path: abs }
       else if (ext === 'xlsx') wire = { type: 'xlsx', path: abs }
       else wire = { type: 'editor', path: abs }
@@ -2272,22 +2306,40 @@ function App(): React.JSX.Element {
         favicon?: string | null
       }): void => {
         const patch = (cur: PreviewSource | undefined): PreviewSource | undefined => {
-          if (!cur || cur.type !== 'web') return cur
-          const next = { ...cur }
-          let changed = false
-          if (meta.url !== undefined && next.url !== meta.url) {
-            next.url = meta.url
-            changed = true
+          if (!cur) return cur
+          if (cur.type === 'web') {
+            const next = { ...cur }
+            let changed = false
+            if (meta.url !== undefined && next.url !== meta.url) {
+              next.url = meta.url
+              changed = true
+            }
+            if (meta.title !== undefined && next.title !== meta.title) {
+              next.title = meta.title
+              changed = true
+            }
+            if (meta.favicon !== undefined && next.favicon !== meta.favicon) {
+              next.favicon = meta.favicon
+              changed = true
+            }
+            return changed ? next : cur
           }
-          if (meta.title !== undefined && next.title !== meta.title) {
-            next.title = meta.title
-            changed = true
+          if (cur.type === 'html') {
+            // HTML cards: page <title> arrives via did-update-page-title; store it on the
+            // source so cardTitle() shows it on the tab instead of falling back to basename.
+            const next = { ...cur }
+            let changed = false
+            if (meta.title !== undefined && next.title !== meta.title) {
+              next.title = meta.title
+              changed = true
+            }
+            if (meta.favicon !== undefined && next.favicon !== meta.favicon) {
+              next.favicon = meta.favicon
+              changed = true
+            }
+            return changed ? next : cur
           }
-          if (meta.favicon !== undefined && next.favicon !== meta.favicon) {
-            next.favicon = meta.favicon
-            changed = true
-          }
-          return changed ? next : cur
+          return cur
         }
         if (isPinned) {
           setPinned((prev) => {
@@ -2422,7 +2474,7 @@ function App(): React.JSX.Element {
   // command palette, FirstRunModal, etc.). Keep this short and additive — anything truly
   // overlay-shaped goes in here.
   const overlayActive =
-    paletteOpen || ((firstRunPending || cliSettingsOpen) && detectedClis !== null)
+    paletteOpen || cardSearchOpen || ((firstRunPending || cliSettingsOpen) && detectedClis !== null)
 
   return (
     <OverlayActiveProvider active={overlayActive}>
@@ -2459,6 +2511,26 @@ function App(): React.JSX.Element {
                 data-panel="terminal"
                 data-focused={focusedPanel === 'terminal'}
               >
+                {(() => {
+                  const focId = activeId ? focusedCardBySession[activeId] : null
+                  const isPanel = focId?.startsWith(PANEL_PREFIX)
+                  const cards = activeId ? (deckCardsBySession[activeId] ?? []) : []
+                  const focCard = focId && !isPanel ? cards.find((c) => c.id === focId) : null
+                  return (
+                    <div className="session-ctx-bar" data-empty={focCard ? 'false' : 'true'}>
+                      <span className="session-ctx-label">CONTEXTO</span>
+                      {focCard ? (
+                        <span className="session-ctx-title" title={focCard.id}>
+                          {focCard.title ?? focCard.id}
+                        </span>
+                      ) : (
+                        <span className="session-ctx-empty">
+                          nenhum card focado — clique numa tab pra dar contexto
+                        </span>
+                      )}
+                    </div>
+                  )
+                })()}
                 <TerminalHost
                   sessions={hostSessions}
                   activeId={activeId}
@@ -2544,6 +2616,7 @@ function App(): React.JSX.Element {
                             onClose={closeCard}
                             onTogglePin={togglePin}
                             onReorder={reorderCards}
+                            onNewTab={() => openWebTab()}
                             cards={deckCardsBySession[s.id] ?? []}
                           />
                         </SessionVisibleProvider>

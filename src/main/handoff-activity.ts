@@ -17,11 +17,20 @@ const CONTROL_OFF_DEBOUNCE_MS = 5000
 
 let controlledCardId: string | null = null
 let offTimer: NodeJS.Timeout | null = null
+let activeStartedAt = 0
+let activeOrigin: string | null = null
+
+// Log compacto pra investigar "borda laranja apareceu sem motivo": cada start/end registra
+// origem (handoff-socket vs mcp-http) e cmd. Grepa por "[handoff-activity]" no log.
+function alog(msg: string): void {
+  console.log(`[handoff-activity] ${msg}`)
+}
 
 // Marca o início de um comando ativo dirigindo `wc`. Cancela qualquer debounce de OFF em
 // andamento, mapeia WC → cardId e liga setControlling no manager (que injeta o blocker e
-// emite IPC pra renderer animar).
-export function trackActivityStart(wc: WebContents | null): void {
+// emite IPC pra renderer animar). `origin` é uma string curta tipo "handoff-socket:click"
+// ou "mcp-http:navigate" pra rastrear quem disparou.
+export function trackActivityStart(wc: WebContents | null, origin = 'unknown'): void {
   const manager = getWebViewsManager()
   if (!manager || !wc) return
   if (offTimer) {
@@ -32,9 +41,16 @@ export function trackActivityStart(wc: WebContents | null): void {
   if (!cardId) return
   if (controlledCardId && controlledCardId !== cardId) {
     // Mudou de alvo (defensivo — sticky deveria evitar): desliga o anterior já.
+    alog(`switch ${controlledCardId} → ${cardId} (origin=${origin})`)
     manager.setControlling(controlledCardId, false)
   }
+  const wasControlling = controlledCardId === cardId
   controlledCardId = cardId
+  activeOrigin = origin
+  if (!wasControlling) {
+    activeStartedAt = Date.now()
+    alog(`start cardId=${cardId} origin=${origin}`)
+  }
   manager.setControlling(cardId, true)
 }
 
@@ -45,8 +61,13 @@ export function trackActivityEnd(): void {
   offTimer = setTimeout(() => {
     offTimer = null
     const cardId = controlledCardId
+    const origin = activeOrigin
+    const elapsed = activeStartedAt ? Date.now() - activeStartedAt : 0
     controlledCardId = null
+    activeOrigin = null
+    activeStartedAt = 0
     if (cardId) {
+      alog(`end cardId=${cardId} origin=${origin ?? '?'} elapsed=${elapsed}ms`)
       const m = getWebViewsManager()
       if (m) m.setControlling(cardId, false)
     }

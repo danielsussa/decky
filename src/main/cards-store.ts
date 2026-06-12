@@ -3,6 +3,7 @@ import type { Dirent } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { ipcMain } from 'electron'
 import { cardFilePath, safeCardId, workspaceCardsDir } from './paths'
+import { extractTags } from './cards-search'
 
 // Serialize writes per-file so rapid successive updates to the same card don't clobber.
 const writeChains = new Map<string, Promise<void>>()
@@ -12,10 +13,14 @@ export interface WorkspaceCardEntry {
   path: string
   title: string
   mtime: number
+  kind: 'md' | 'html'
+  tags: string[]
 }
 
 // Headings are H1-H6 in markdown.
 const HEADING_RE = /^#{1,6}\s+(.+?)\s*#*\s*$/m
+const HTML_TITLE_RE = /<title>([^<]+)<\/title>/i
+const HTML_H1_RE = /<h1[^>]*>([\s\S]*?)<\/h1>/i
 
 function deriveTitle(content: string, fallback: string): string {
   const h = content.match(HEADING_RE)
@@ -26,6 +31,17 @@ function deriveTitle(content: string, fallback: string): string {
     .find((l) => l.length > 0)
   if (first) {
     const clean = first.replace(/^[#>*\-`\s]+/, '').trim()
+    if (clean) return clean.slice(0, 80)
+  }
+  return fallback
+}
+
+function deriveHtmlTitle(content: string, fallback: string): string {
+  const t = content.match(HTML_TITLE_RE)
+  if (t && t[1]) return t[1].trim().slice(0, 80)
+  const h1 = content.match(HTML_H1_RE)
+  if (h1 && h1[1]) {
+    const clean = h1[1].replace(/<[^>]+>/g, '').trim()
     if (clean) return clean.slice(0, 80)
   }
   return fallback
@@ -46,10 +62,14 @@ async function walkCards(root: string, prefix = ''): Promise<WorkspaceCardEntry[
       out.push(...(await walkCards(abs, childPrefix)))
       continue
     }
-    if (!ent.isFile() || !ent.name.endsWith('.md')) continue
+    if (!ent.isFile()) continue
+    const isMd = ent.name.endsWith('.md')
+    const isHtml = ent.name.endsWith('.html')
+    if (!isMd && !isHtml) continue
     // PINNED.md is the workspace's pinned-cards index, not a page itself.
     if (!prefix && ent.name === 'PINNED.md') continue
-    const baseId = ent.name.slice(0, -'.md'.length)
+    const kind: 'md' | 'html' = isHtml ? 'html' : 'md'
+    const baseId = ent.name.slice(0, -(isHtml ? '.html' : '.md').length)
     const id = prefix ? `${prefix}/${baseId}` : baseId
     let content = ''
     let mtime = 0
@@ -60,7 +80,8 @@ async function walkCards(root: string, prefix = ''): Promise<WorkspaceCardEntry[
     } catch {
       // partial failure: still surface the file with whatever info we got
     }
-    out.push({ id, path: abs, title: deriveTitle(content, baseId), mtime })
+    const title = isHtml ? deriveHtmlTitle(content, baseId) : deriveTitle(content, baseId)
+    out.push({ id, path: abs, title, mtime, kind, tags: extractTags(content) })
   }
   return out
 }
@@ -91,8 +112,14 @@ async function cleanupEmptyParents(cardsDir: string, fromFile: string): Promise<
 export function registerCardsHandlers(): void {
   ipcMain.handle(
     'cards:write',
-    async (_e, workspace: string, cardId: string, content: string): Promise<string | null> => {
-      const path = cardFilePath(workspace, cardId)
+    async (
+      _e,
+      workspace: string,
+      cardId: string,
+      content: string,
+      ext?: '.md' | '.html'
+    ): Promise<string | null> => {
+      const path = cardFilePath(workspace, cardId, ext ?? '.md')
       const prev = writeChains.get(path) ?? Promise.resolve()
       let ok = true
       const next = prev
@@ -122,23 +149,30 @@ export function registerCardsHandlers(): void {
   })
 
   // Delete a single card file. Validates the resolved path is inside the workspace's
-  // cards dir before unlinking; cleans up empty parent directories afterward.
+  // cards dir before unlinking; cleans up empty parent directories afterward. Tries .md
+  // first (legacy default) then .html — POC: HTML cards live alongside markdown ones.
   ipcMain.handle(
     'cards:delete',
     async (_e, workspace: string, cardId: string): Promise<boolean> => {
       const cardsDir = workspaceCardsDir(workspace)
-      const target = join(cardsDir, `${safeCardId(cardId)}.md`)
-      if (!isUnderCardsDir(cardsDir, target)) {
-        console.warn(`[cards-store] refused delete outside cards dir: ${target}`)
-        return false
+      const safeId = safeCardId(cardId)
+      const candidates = [join(cardsDir, `${safeId}.md`), join(cardsDir, `${safeId}.html`)]
+      let deleted: string | null = null
+      for (const target of candidates) {
+        if (!isUnderCardsDir(cardsDir, target)) {
+          console.warn(`[cards-store] refused delete outside cards dir: ${target}`)
+          continue
+        }
+        try {
+          await unlink(target)
+          deleted = target
+          break
+        } catch {
+          // try next candidate
+        }
       }
-      try {
-        await unlink(target)
-      } catch (err) {
-        console.error(`[cards-store] delete failed for ${target}:`, err)
-        return false
-      }
-      await cleanupEmptyParents(cardsDir, target)
+      if (!deleted) return false
+      await cleanupEmptyParents(cardsDir, deleted)
       return true
     }
   )

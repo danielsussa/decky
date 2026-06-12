@@ -1,59 +1,83 @@
-// Backend do handoff no decky: sobe o socket-server compartilhado (@handoff/runtime-electron)
-// dirigindo o WebContents do CARD WEB FOCADO. Opt-in via DECKY_HANDOFF — não muda o default.
-// Deixa o sdk/client.ts + adapters do handoff (HANDOFF_BACKEND=/tmp/handoff-decky.sock) e o MCP
-// dinâmico dirigirem o mesmo card web logado que o usuário vê no decky.
+// Backend do handoff no decky: UM socket POR SESSÃO em /tmp/handoff-decky-<sessionId>.sock,
+// dirigindo só os cards web da própria sessão. Cada pty exporta HANDOFF_SOCKET apontando
+// pro seu socket — quando o handoff CLI/SDK/MCP é spawnado dentro dessa sessão, ele cai no
+// backend isolado. Resolve o vazamento cross-session/cross-workspace que o socket global
+// (/tmp/handoff-decky.sock) tinha: qualquer cliente dirigia o card focado em QUALQUER
+// sessão, então uma sessão A podia mexer num card de B sem nenhuma barreira.
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { WebContents } from 'electron'
 import { getWebViewsManager } from './web-views'
-import { getAllCards } from './card-mirror'
-import { startHandoffServer } from '@handoff/runtime-electron'
+import { getCardsForSession } from './card-mirror'
+import { startHandoffServer, type HandoffServerHandle } from '@handoff/runtime-electron'
 import { trackActivityStart, trackActivityEnd } from './handoff-activity'
 
-// Sticky pointer pra WebContents que estamos dirigindo. Uma vez que o agente começa, mantém
-// o MESMO card mesmo se o foco mudar (editor, outra aba, outra sessão do decky). Sobrevive
-// re-renders e troca de foco. Só "perde" o alvo se o card for fechado (WC destroyed).
-let stickyWc: WebContents | null = null
+export function sessionHandoffSocketPath(sessionId: string): string {
+  // sessionId vem do pty (DECKY_SESSION_ID); slugify defensivamente — sessionId hoje é UUID
+  // mas se um dia for arbitrário, não quero `/` no path.
+  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')
+  return join(tmpdir(), `handoff-decky-${safe}.sock`)
+}
 
-// Resolução, sticky-first: enquanto o WC alvo estiver vivo, continua nele. Se não tiver
-// alvo (boot inicial OU o card sticky foi fechado), elege um: preferência por foco, depois
-// único card web global, depois qualquer card web aberto.
-function activeWebCardWc(): WebContents | null {
-  // (1) Sticky: continua dirigindo o mesmo WC. Independe de foco — só quebra se for destruído.
-  if (stickyWc && !stickyWc.isDestroyed()) return stickyWc
+interface SessionBackend {
+  sessionId: string
+  handle: HandoffServerHandle
+  // Sticky pointer pro WC dirigido NA SESSÃO. Mantém o mesmo card mesmo se o foco da sessão
+  // mudar — só "perde" se o card for fechado. Per-instance: cada sessão tem o próprio sticky,
+  // sem cruzar entre sessões/workspaces.
+  stickyWc: WebContents | null
+}
+
+const backends = new Map<string, SessionBackend>()
+
+// address-bar → URL (mesmo afordance do normalizeAddress dos outros hosts).
+function normalizeUrl(raw: string): string {
+  const s = raw.trim()
+  if (!s) return 'about:blank'
+  if (/^(https?|file|about|data|chrome):/i.test(s)) return s
+  if (/^localhost(:\d+)?(\/|$)/i.test(s) || /^127\.0\.0\.1(:\d+)?(\/|$)/i.test(s))
+    return `http://${s}`
+  if (/^[^\s]+\.[^\s]{2,}/.test(s) && !/\s/.test(s)) return `https://${s}`
+  return `https://www.google.com/search?q=${encodeURIComponent(s)}`
+}
+
+// Resolução do card alvo, SCOPED na sessão: foco da sessão → único card web da sessão →
+// qualquer card web da sessão (escolha estável). Cards de outras sessões NUNCA entram.
+function activeWebCardWcForSession(backend: SessionBackend): WebContents | null {
+  // (1) Sticky vivo → continua nele.
+  if (backend.stickyWc && !backend.stickyWc.isDestroyed()) return backend.stickyWc
 
   const manager = getWebViewsManager()
   if (!manager) return null
-  const sessions = Object.values(getAllCards())
+  const session = getCardsForSession(backend.sessionId)
+  if (!session.cards.length) return null
 
-  // (2) Bootstrap: card web focado em alguma sessão.
-  for (const s of sessions) {
-    const f = s.cards.find((c) => c.id === s.focused)
-    if (f && f.type === 'web' && manager.has(f.id)) {
-      const wc = manager.webContentsFor(f.id)
-      if (wc) {
-        stickyWc = wc
-        return wc
-      }
+  // (2) Foco da sessão, se for um card web.
+  const focused = session.cards.find((c) => c.id === session.focused)
+  if (focused && focused.type === 'web' && manager.has(focused.id)) {
+    const wc = manager.webContentsFor(focused.id)
+    if (wc) {
+      backend.stickyWc = wc
+      return wc
     }
   }
-  const webIds = new Set<string>()
-  for (const s of sessions) for (const c of s.cards) if (c.type === 'web') webIds.add(c.id)
-  // (3) Único card web global.
-  if (webIds.size === 1) {
-    const only = [...webIds][0]
-    if (manager.has(only)) {
-      const wc = manager.webContentsFor(only)
-      if (wc) {
-        stickyWc = wc
-        return wc
-      }
+
+  // (3) Único card web na sessão.
+  const webCards = session.cards.filter((c) => c.type === 'web')
+  if (webCards.length === 1 && manager.has(webCards[0].id)) {
+    const wc = manager.webContentsFor(webCards[0].id)
+    if (wc) {
+      backend.stickyWc = wc
+      return wc
     }
   }
-  // (4) Qualquer card web aberto (escolha estável: primeiro id).
-  for (const id of webIds) {
-    if (manager.has(id)) {
-      const wc = manager.webContentsFor(id)
+
+  // (4) Qualquer card web da sessão (escolha estável: primeiro id).
+  for (const c of webCards) {
+    if (manager.has(c.id)) {
+      const wc = manager.webContentsFor(c.id)
       if (wc) {
-        stickyWc = wc
+        backend.stickyWc = wc
         return wc
       }
     }
@@ -61,29 +85,35 @@ function activeWebCardWc(): WebContents | null {
   return null
 }
 
-// address-bar → URL (mesmo afordance do normalizeAddress dos outros hosts).
-function normalizeUrl(raw: string): string {
-  const s = raw.trim()
-  if (!s) return 'about:blank'
-  if (/^(https?|file|about|data|chrome):/i.test(s)) return s
-  if (/^localhost(:\d+)?(\/|$)/i.test(s) || /^127\.0\.0\.1(:\d+)?(\/|$)/i.test(s)) return `http://${s}`
-  if (/^[^\s]+\.[^\s]{2,}/.test(s) && !/\s/.test(s)) return `https://${s}`
-  return `https://www.google.com/search?q=${encodeURIComponent(s)}`
-}
+export function startSessionHandoffBackend(sessionId: string): HandoffServerHandle {
+  // Idempotente: chamado de novo na mesma sessão (ex.: recriar pty), reaproveita o backend.
+  const existing = backends.get(sessionId)
+  if (existing) return existing.handle
 
-// O tracker debounced de "controlando" vive em handoff-activity.ts — compartilhado com o
-// preview-server (/web/act), porque os dois caminhos dirigem o mesmo WC e o usuário precisa
-// ver o feedback visual independente de qual cliente está dirigindo.
-function onActivity(kind: 'start' | 'end', wc: WebContents | null): void {
-  if (kind === 'start') trackActivityStart(wc)
-  else trackActivityEnd()
-}
+  const socketPath = sessionHandoffSocketPath(sessionId)
+  const backend: SessionBackend = { sessionId, stickyWc: null, handle: null as unknown as HandoffServerHandle }
 
-export function startDeckyHandoffBackend(): void {
-  startHandoffServer({
-    getActiveWebContents: activeWebCardWc,
+  const handle = startHandoffServer({
+    socketPath,
+    getActiveWebContents: () => activeWebCardWcForSession(backend),
     normalizeUrl,
-    onActivity
+    // cmd vem do runtime; snapshot/see/wait JÁ são filtrados como passivos lá.
+    onActivity: (kind, wc, cmd) => {
+      if (kind === 'start') trackActivityStart(wc, `handoff-socket:${cmd}:${sessionId}`)
+      else trackActivityEnd()
+    }
   })
-  console.log('[handoff] decky backend on — dirige o card web focado')
+
+  backend.handle = handle
+  backends.set(sessionId, backend)
+  console.log(`[handoff] session=${sessionId} backend on — ${socketPath}`)
+  return handle
+}
+
+export async function stopSessionHandoffBackend(sessionId: string): Promise<void> {
+  const b = backends.get(sessionId)
+  if (!b) return
+  backends.delete(sessionId)
+  await b.handle.close()
+  console.log(`[handoff] session=${sessionId} backend off`)
 }

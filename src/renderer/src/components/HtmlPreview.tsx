@@ -54,12 +54,17 @@ export default function HtmlPreview({
   if (!url) {
     return <div className="preview-empty" />
   }
+  // Basename do .html original — usado pelo WebPreview pra esconder o ruído da URL
+  // local-server (`http://127.0.0.1:<porta>/xxx.html`) e mostrar só `xxx.html` quando
+  // o address bar está blur. Ao focar, a URL real reaparece.
+  const basename = path.split('/').pop() ?? path
   return (
     <WebPreview
       cardId={cardId}
       url={url}
       workspaceCwd={workspaceCwd ?? null}
       onMetaChange={onMetaChange}
+      displayAlias={basename}
     />
   )
 }

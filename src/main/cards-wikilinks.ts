@@ -46,7 +46,7 @@ function* extractWikilinks(content: string): Generator<{ name: string; line: num
 //   1. exact id match (name contains '/' or matches a known id directly): cardsDir/<name>.md
 //   2. basename match: first .md under cardsDir whose filename === <name>.md
 export async function resolveWikilink(cardsDir: string, name: string): Promise<string | null> {
-  const files = await listMdFiles(cardsDir)
+  const files = await listMdFiles(cardsDir, '', 'md')
   const exact = files.find((f) => f.id === name)
   if (exact) return exact.path
   const byBase = files.find((f) => basename(f.path).slice(0, -'.md'.length) === name)
@@ -60,7 +60,7 @@ export async function computeBacklinks(
   cardsDir: string,
   targetPath: string
 ): Promise<BacklinkHit[]> {
-  const files = await listMdFiles(cardsDir)
+  const files = await listMdFiles(cardsDir, '', 'md')
   const target = files.find((f) => f.path === targetPath)
   if (!target) return []
   const targetBase = basename(targetPath).slice(0, -'.md'.length)

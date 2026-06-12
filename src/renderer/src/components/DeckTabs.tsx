@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Globe, Pin } from 'lucide-react'
+import { Globe, Pin, Plus, X } from 'lucide-react'
 import type { DeckCard } from './DeckGrid'
 import { PaneVisibleProvider } from '../web-visibility'
 import { t } from '../lib/i18n'
@@ -11,6 +11,7 @@ interface DeckTabsProps {
   onClose?: (id: string) => void
   onTogglePin?: (id: string) => void
   onReorder?: (orderedIds: string[]) => void
+  onNewTab?: () => void
 }
 
 export default function DeckTabs({
@@ -19,7 +20,8 @@ export default function DeckTabs({
   onFocusChange,
   onClose,
   onTogglePin,
-  onReorder
+  onReorder,
+  onNewTab
 }: DeckTabsProps): React.JSX.Element {
   const activeId = focusedId && cards.some((c) => c.id === focusedId) ? focusedId : cards[0]?.id
   const [dragId, setDragId] = useState<string | null>(null)
@@ -64,11 +66,25 @@ export default function DeckTabs({
 
   if (cards.length === 0) {
     return (
-      <div className="preview-empty">
-        <p>
-          nenhum card ainda. o claude desta sessão cria cards conforme renderiza (markdown, json,
-          live view).
-        </p>
+      <div className="deck-tabs">
+        <div className="deck-tabs-bar">
+          {onNewTab && (
+            <button
+              type="button"
+              className="deck-tab-new"
+              title="Nova web tab"
+              onClick={onNewTab}
+            >
+              <Plus size={14} />
+            </button>
+          )}
+        </div>
+        <div className="preview-empty">
+          <p>
+            nenhum card ainda. o claude desta sessão cria cards conforme renderiza (markdown, json,
+            live view).
+          </p>
+        </div>
       </div>
     )
   }
@@ -135,11 +151,21 @@ export default function DeckTabs({
                   onClose(c.id)
                 }}
               >
-                ×
+                <X size={14} />
               </button>
             )}
           </div>
         ))}
+        {onNewTab && (
+          <button
+            type="button"
+            className="deck-tab-new"
+            title="Nova web tab"
+            onClick={onNewTab}
+          >
+            <Plus size={14} />
+          </button>
+        )}
       </div>
       {/* Render every card pane and stack them in the same area — inactive ones use
           visibility:hidden instead of display:none. Electron tears down a <webview>'s guest

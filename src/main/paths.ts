@@ -36,8 +36,12 @@ export function safeCardId(cardId: string): string {
     .join('/')
 }
 
-export function cardFilePath(workspaceAbsPath: string, cardId: string): string {
-  return join(workspaceCardsDir(workspaceAbsPath), `${safeCardId(cardId)}.md`)
+export function cardFilePath(
+  workspaceAbsPath: string,
+  cardId: string,
+  ext: '.md' | '.html' = '.md'
+): string {
+  return join(workspaceCardsDir(workspaceAbsPath), `${safeCardId(cardId)}${ext}`)
 }
 
 // True for card files decky generated (<workspace>/.decky[-dev]/cards/<id>.md) — their

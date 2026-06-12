@@ -55,6 +55,11 @@ interface ViewState {
   // acorda num next paint (ex: ciclo hide/show ao trocar workspace). Adiar o load até o
   // primeiro setBounds não-zero corrige isso pra PDFs sem afetar páginas HTML.
   pendingUrl: string | null
+  // URL que falhou (ERR_NAME_NOT_RESOLVED, ERR_CONNECTION_REFUSED, etc) e está sendo substituída
+  // pela página de erro interna (data: URL). Mantemos pra (a) snapshot devolver a URL/título
+  // "lógicos" no lugar do data: feio na address bar, (b) reload re-tentar a URL real em vez de
+  // recarregar a página de erro, (c) limpar quando uma nova navegação bem-sucedida acontecer.
+  failedUrl: string | null
 }
 
 interface Bounds {
@@ -168,7 +173,8 @@ class WebViewsManager {
       controlling: false,
       favicon: null,
       workspaceCwd,
-      pendingUrl: initialUrl && initialUrl !== 'about:blank' ? initialUrl : null
+      pendingUrl: initialUrl && initialUrl !== 'about:blank' ? initialUrl : null,
+      failedUrl: null
     }
     this.views.set(cardId, state)
     this.wireEvents(cardId, wc, emit)
@@ -252,9 +258,10 @@ class WebViewsManager {
   }
 
   navigate(cardId: string, url: string): void {
-    const wc = this.views.get(cardId)?.view.webContents
-    if (!wc) return
-    void wc.loadURL(url).catch(() => {})
+    const s = this.views.get(cardId)
+    if (!s) return
+    s.failedUrl = null
+    void s.view.webContents.loadURL(url).catch(() => {})
   }
 
   // Open Chrome DevTools on the card's page (not the decky shell). `mode: 'detach'` puts it
@@ -280,7 +287,17 @@ class WebViewsManager {
   }
 
   reload(cardId: string): void {
-    this.views.get(cardId)?.view.webContents.reload()
+    const s = this.views.get(cardId)
+    if (!s) return
+    // Reload em cima da página de erro recarregaria o próprio data: URL (no-op visual). O que
+    // o usuário quer é tentar de novo a URL que falhou — re-disparamos a navegação real.
+    if (s.failedUrl) {
+      const url = s.failedUrl
+      s.failedUrl = null
+      void s.view.webContents.loadURL(url).catch(() => {})
+      return
+    }
+    s.view.webContents.reload()
   }
 
   stop(cardId: string): void {
@@ -330,9 +347,17 @@ class WebViewsManager {
     wc.on('did-stop-loading', fire)
     wc.on('did-navigate', (_e, url) => {
       const s = this.views.get(cardId)
+      // Navegação pra página de erro interna (data: URL carregada pelo did-fail-load handler).
+      // Não mexe em favicon, não loga no histórico, e mantém s.failedUrl ativo pra snapshot
+      // continuar reportando a URL original na address bar.
+      if (url.startsWith('data:')) {
+        fire()
+        return
+      }
       // Top-level navigation pra outra origem → o favicon atual não vale mais. Limpa pra
       // não exibir o ícone do site anterior até o do novo chegar.
       if (s) {
+        s.failedUrl = null
         const prev = s.favicon
         try {
           const prevHost = prev ? new URL(prev).host : null
@@ -368,8 +393,38 @@ class WebViewsManager {
       }
       fire()
     })
-    wc.on('did-fail-load', fire)
+    // Navegação top-level falhou (DNS, conexão recusada, certificado, timeout). Sem este
+    // handler o WebContentsView fica em branco — diferente do Chrome.exe, o Electron não
+    // ship'a uma página interstitial padrão. Carregamos a nossa via data: URL.
+    wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      // Sub-frames falhando (iframe de ad, fetch redirect): página principal pode estar OK.
+      if (!isMainFrame) {
+        fire()
+        return
+      }
+      // -3 = ERR_ABORTED: navegação superseded (usuário clicou outro link antes do load
+      // terminar, redirect que invalida a entrada anterior, etc). Não é falha real.
+      if (errorCode === -3) {
+        fire()
+        return
+      }
+      const s = this.views.get(cardId)
+      if (s) s.failedUrl = validatedURL || ''
+      const html = buildErrorPageHtml(validatedURL || '', errorCode, errorDescription || '')
+      void wc
+        .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+        .catch(() => {})
+      fire()
+    })
     wc.on('page-title-updated', (_e, title) => {
+      // Página de erro interna seta um <title> nosso pra UX dela mesma, mas isso não pode
+      // vazar como "título do card" (sobrescreveria o título persistido com algo tipo
+      // "Falha ao carregar"). Skip enquanto failedUrl ativo.
+      const s = this.views.get(cardId)
+      if (s?.failedUrl) {
+        fire()
+        return
+      }
       try {
         historyPatchTitle(cardId, title)
       } catch (err) {
@@ -534,6 +589,24 @@ class WebViewsManager {
     const s = this.views.get(cardId)
     if (!s) return null
     const wc = s.view.webContents
+    // Página de erro está em tela: reporta a URL/host que falhou pra address bar e tab
+    // continuarem mostrando o destino "lógico", não o data: URL feio do interstitial.
+    if (s.failedUrl) {
+      let host = ''
+      try {
+        host = new URL(s.failedUrl).host
+      } catch {
+        host = s.failedUrl
+      }
+      return {
+        url: s.failedUrl,
+        title: host,
+        favicon: null,
+        loading: false,
+        canBack: wc.navigationHistory.canGoBack(),
+        canFwd: wc.navigationHistory.canGoForward()
+      }
+    }
     return {
       url: wc.getURL() || '',
       title: wc.getTitle() || '',
@@ -543,6 +616,141 @@ class WebViewsManager {
       canFwd: wc.navigationHistory.canGoForward()
     }
   }
+}
+
+// Mapa de códigos de erro Chromium mais comuns → explicação curta em PT-BR. O nome textual
+// (errorDescription, ex "ERR_NAME_NOT_RESOLVED") sempre vai pra tela como detalhe técnico; este
+// mapa só fornece a frase amigável de cabeçalho. Códigos fora da lista caem num genérico.
+const ERROR_HINTS: Record<number, string> = {
+  [-7]: 'A conexão demorou demais pra responder.',
+  [-21]: 'A rede mudou no meio do carregamento.',
+  [-100]: 'A conexão foi fechada antes do site responder.',
+  [-101]: 'A conexão foi resetada.',
+  [-102]: 'O servidor recusou a conexão.',
+  [-105]: 'Não foi possível encontrar o endereço deste site.',
+  [-106]: 'Parece que você está sem internet.',
+  [-107]: 'Erro de protocolo SSL.',
+  [-108]: 'Endereço inválido.',
+  [-109]: 'Endereço inalcançável.',
+  [-118]: 'A conexão expirou.',
+  [-130]: 'Falha na conexão com o proxy.',
+  [-137]: 'Falha na resolução de DNS.',
+  [-201]: 'Certificado inválido.',
+  [-202]: 'Autoridade certificadora não confiável.',
+  [-300]: 'URL inválida.',
+  [-324]: 'O servidor não devolveu nenhuma resposta.',
+  [-501]: 'Conteúdo inseguro bloqueado.'
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+// Página de erro mostrada no WebContentsView quando did-fail-load dispara pra navegação top-level.
+// Estilo dark pra casar com o shell do decky. Bem minimal: cabeçalho + URL + descrição + botão
+// Retry (link <a> simples — clicar re-dispara loadURL na URL real, que pode falhar de novo e
+// renderizar essa página outra vez, sem loop infinito porque cada iteração espera input humano).
+function buildErrorPageHtml(failedUrl: string, code: number, desc: string): string {
+  let host = failedUrl
+  try {
+    host = new URL(failedUrl).host || failedUrl
+  } catch {
+    // mantém failedUrl como fallback
+  }
+  const hint = ERROR_HINTS[code] || 'Não foi possível carregar este site.'
+  const safeUrl = escapeHtml(failedUrl)
+  const safeHost = escapeHtml(host)
+  const safeDesc = escapeHtml(desc || `ERR_${code}`)
+  const safeHint = escapeHtml(hint)
+  return `<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title>${safeHost} — não carregou</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #1a1a1a;
+    color: #e6e6e6;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    max-width: 520px;
+    width: 100%;
+  }
+  .icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    background: #2a2a2a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 20px;
+    font-size: 24px;
+  }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 8px;
+    color: #fff;
+  }
+  p {
+    margin: 0 0 16px;
+    color: #b3b3b3;
+  }
+  .url {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: #8a8a8a;
+    word-break: break-all;
+    background: #232323;
+    padding: 8px 10px;
+    border-radius: 6px;
+    margin-bottom: 20px;
+  }
+  .code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: #707070;
+    margin-bottom: 24px;
+  }
+  .retry {
+    display: inline-block;
+    background: #3a3a3a;
+    color: #fff;
+    text-decoration: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.12s ease;
+  }
+  .retry:hover { background: #4a4a4a; }
+  .retry:active { background: #303030; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon" aria-hidden="true">⚠️</div>
+    <h1>${safeHint}</h1>
+    <p>Não foi possível abrir <strong>${safeHost}</strong>. Verifique o endereço, sua conexão, ou se o site está fora do ar.</p>
+    <div class="url">${safeUrl}</div>
+    <div class="code">${safeDesc}</div>
+    <a class="retry" href="${safeUrl}">Tentar novamente</a>
+  </div>
+</body>
+</html>`
 }
 
 // Blocker de input HUMANO injetado na página quando o handoff está dirigindo o card. Usa

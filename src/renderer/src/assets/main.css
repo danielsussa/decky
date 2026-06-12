@@ -202,29 +202,11 @@ code {
   overflow: hidden;
 }
 
-/* Thin accent strip at the top of whichever sub-panel (terminal / sessions tree / cards)
- * the user is currently in. Painted as an absolutely-positioned ::before so it stays at
- * the top edge regardless of the body's own padding/scroll, and z-index keeps it visible
- * above the panel's content (xterm, deck tabs, tree rows). */
+/* Focused-panel indicator removed — was a 2px accent strip at the top of the focused
+ * sub-panel (terminal/tree/cards). position: relative kept in case other rules anchor to
+ * .panel-focusable. */
 .panel-focusable {
   position: relative;
-}
-
-.panel-focusable::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: transparent;
-  z-index: 10;
-  pointer-events: none;
-  transition: background 120ms;
-}
-
-.panel-focusable[data-focused='true']::before {
-  background: var(--accent);
 }
 
 .panel-placeholder {
@@ -302,10 +284,13 @@ code {
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  overflow: hidden;
+  overflow-x: clip;
+  min-height: 36px;
+  padding-top: 4px;
 }
 
 .deck-tab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -318,12 +303,13 @@ code {
   padding: 8px 12px 8px 16px;
   cursor: pointer;
   white-space: nowrap;
-  border-bottom: 2px solid transparent;
-  transition: background 120ms, color 120ms, border-color 120ms;
+  transition: background 120ms, color 120ms;
   flex: 1 1 0;
   max-width: 220px;
   min-width: 0;
   overflow: hidden;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
 }
 
 .deck-tab-label {
@@ -341,13 +327,20 @@ code {
 .deck-tab-active {
   color: var(--text-1);
   background: var(--bg-0);
-  border-bottom-color: var(--accent);
+  /* Punch through the bar's border-bottom so the active tab flows visually into
+     the body (Chrome trick). margin-bottom covers the 1px border; z-index keeps
+     the tab above the neighbor's border-right at the seam. */
+  margin-bottom: -1px;
+  padding-bottom: 9px;
+  z-index: 1;
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 .deck-tab-pinmark {
   color: var(--accent);
   flex-shrink: 0;
 }
+
 
 .deck-tab-favicon {
   display: inline-flex;
@@ -367,7 +360,7 @@ code {
 }
 
 .deck-tab-ispinned {
-  box-shadow: inset 2px 0 0 var(--accent);
+  /* No visual indicator — the pin icon already marks pinned tabs. */
 }
 
 .deck-tab[draggable='true'] {
@@ -399,12 +392,13 @@ code {
 }
 
 .deck-tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: none;
   color: var(--text-3);
-  font-size: 14px;
-  line-height: 1;
-  padding: 1px 5px;
+  padding: 3px;
   border-radius: 3px;
   cursor: pointer;
   opacity: 0;
@@ -419,6 +413,27 @@ code {
 .deck-tab-close:hover {
   color: var(--text-1);
   background: var(--bg-2);
+}
+
+.deck-tab-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  margin: auto 6px auto 2px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  align-self: center;
+  transition: background 120ms, color 120ms;
+}
+.deck-tab-new:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
 }
 
 .session-pane-stack {
@@ -2138,6 +2153,61 @@ textarea.form-input {
   user-select: text;
 }
 
+/* Session-context bar above the terminal — tells the user (and visually documents) that
+   the FOCUSED card is the agent's context. Empty state shows a "drop hint" message. */
+[data-panel="terminal"].panel-body-flush {
+  display: flex;
+  flex-direction: column;
+}
+[data-panel="terminal"].panel-body-flush > .terminal-host {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.session-ctx-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 0;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  flex-shrink: 0;
+  min-height: 40px;
+}
+.session-ctx-bar[data-empty='true'] {
+  background: rgba(138, 92, 246, 0.06);
+}
+.session-ctx-label {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  color: var(--accent);
+  background: rgba(138, 92, 246, 0.15);
+  border: 1px solid rgba(138, 92, 246, 0.4);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.session-ctx-title {
+  color: var(--text-1);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.session-ctx-empty {
+  color: var(--text-3);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
 .terminal-host .xterm,
 .terminal-host .xterm-viewport,
 .terminal-host .xterm-screen {
@@ -2392,6 +2462,38 @@ textarea.form-input {
   color: rgba(255, 255, 255, 0.8);
 }
 
+/* ── Tag chips (shown in search results + sidebar) ──────────────────────── */
+.card-search-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0;
+}
+.card-tag-chip {
+  display: inline-block;
+  padding: 1px 7px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--accent, #8a5cf6);
+  background: rgba(138, 92, 246, 0.12);
+  border: 1px solid rgba(138, 92, 246, 0.25);
+  border-radius: 9px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 0.1s, border-color 0.1s;
+}
+.card-tag-chip:hover {
+  background: rgba(138, 92, 246, 0.22);
+  border-color: rgba(138, 92, 246, 0.5);
+}
+.palette-item-sel .card-tag-chip {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
 /* ── Backlinks footer (lives at the bottom of every markdown card) ──────── */
 .backlinks-footer {
   margin: 32px 0 8px;
@@ -2600,6 +2702,14 @@ textarea.form-input {
   max-width: 100%;
 }
 
+.pages-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 1px 0;
+  max-width: 100%;
+}
+
 .pages-id {
   opacity: 0.85;
   overflow: hidden;
@@ -2670,7 +2780,7 @@ textarea.form-input {
   align-items: center;
   gap: 4px;
   padding: 5px 6px;
-  background: var(--bg-1);
+  background: var(--bg-0);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -2727,13 +2837,13 @@ textarea.form-input {
 .web-url {
   width: 100%;
   min-width: 0;
-  background: var(--bg-0);
+  background: var(--bg-1);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 16px;
   color: var(--text-1);
   font-size: 12px;
   font-family: var(--mono);
-  padding: 5px 9px;
+  padding: 5px 12px;
   outline: none;
 }
 

@@ -286,19 +286,33 @@ function normalizeWebUrl(raw: string): string {
 
 // Resolve which web card the action targets: an explicit cardId, else the session's focused card
 // (if it's a web card), else the single open web card. Throws a guiding error otherwise.
+//
+// IMPORTANTE: o WebViewsManager é singleton no main process — compartilhado entre sessões
+// e workspaces. Sem essa validação, uma sessão A passando um cardId que pertence a sessão B
+// (até de outro workspace) dirigia o card de B. /web/act é o único caminho que aceita cardId
+// arbitrário; o handoff CLI é cross-session por design (sticky pelo card focado em qualquer
+// sessão), mas /web/act vem do MCP que JÁ tem sessionId — então blinda aqui.
 function resolveWebCard(
   sessionId: string,
   explicitCardId?: string
 ): { cardId: string; wc: WebContents } {
   const manager = getWebViewsManager()
   if (!manager) throw new Error('no web views ready — open a web card first')
+  const sessionCards = getCardsForSession(sessionId)
   let cardId = explicitCardId
-  if (!cardId) {
-    const m = getCardsForSession(sessionId)
-    const focused = m.cards.find((c) => c.id === m.focused)
+  if (cardId) {
+    // cardId explícito: garante que pertence à sessão chamadora.
+    const owns = sessionCards.cards.some((c) => c.id === cardId)
+    if (!owns) {
+      throw new Error(
+        `card "${cardId}" não pertence a esta sessão — /web/act só dirige cards da sessão chamadora`
+      )
+    }
+  } else {
+    const focused = sessionCards.cards.find((c) => c.id === sessionCards.focused)
     if (focused && focused.type === 'web') cardId = focused.id
     else {
-      const webCards = m.cards.filter((c) => c.type === 'web')
+      const webCards = sessionCards.cards.filter((c) => c.type === 'web')
       if (webCards.length === 1) cardId = webCards[0].id
     }
   }
@@ -353,7 +367,7 @@ async function runWebAction(
     if (target) {
       // Caminho que dirige um card já aberto — sinaliza atividade pro tracker. Cria card
       // novo NÃO sinaliza (não há controle de algo que ainda não existe).
-      trackActivityStart(target.wc)
+      trackActivityStart(target.wc, 'mcp-http:navigate')
       try {
         await target.wc.loadURL(url).catch(() => {})
         return {
@@ -373,9 +387,12 @@ async function runWebAction(
   }
 
   const { wc } = resolveWebCard(sessionId, body.cardId)
-  // Demais ações sempre mexem ou lêem o DOM vivo do card — sinaliza atividade. O tracker
-  // tem debounce no end, então uma rajada vira UM estado contínuo de "controlado".
-  trackActivityStart(wc)
+  // Ações ATIVAS (mutam página ou input) sinalizam atividade → label pulsa + input blocker.
+  // PASSIVAS (snapshot/read) só lêem o DOM e não devem atrapalhar quem está digitando nem
+  // acender o indicador — Claude frequentemente faz snapshot pra "ver" o estado sem que o
+  // usuário tenha pedido pra agir.
+  const isActive = body.action === 'click' || body.action === 'type' || body.action === 'eval'
+  if (isActive) trackActivityStart(wc, `mcp-http:${body.action}`)
   try {
     switch (body.action) {
       case 'snapshot':
@@ -395,7 +412,7 @@ async function runWebAction(
         throw new Error(`unknown web action: ${body.action}`)
     }
   } finally {
-    trackActivityEnd()
+    if (isActive) trackActivityEnd()
   }
 }
 

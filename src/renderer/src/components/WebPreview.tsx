@@ -15,6 +15,11 @@ interface WebPreviewProps {
   // persists this on the card's source so a remount (workspace switch, full reload) and the
   // tab strip (which shows title+favicon) stay in sync without re-driving the page.
   onMetaChange?: (meta: { url?: string; title?: string; favicon?: string | null }) => void
+  // Pretty label to show in the address bar when blurred AND the current URL still matches
+  // the initial `url` prop. Used by HtmlPreview to hide the noisy `http://127.0.0.1:<port>/`
+  // prefix and show only the file's basename. On focus the real URL reappears so the user can
+  // still edit/navigate.
+  displayAlias?: string
 }
 
 function normalizeUrl(raw: string): string {
@@ -41,7 +46,8 @@ export default function WebPreview({
   cardId,
   url,
   workspaceCwd,
-  onMetaChange
+  onMetaChange,
+  displayAlias
 }: WebPreviewProps): React.JSX.Element {
   const onMetaChangeRef = useRef(onMetaChange)
   onMetaChangeRef.current = onMetaChange
@@ -69,6 +75,10 @@ export default function WebPreview({
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [showSuggest, setShowSuggest] = useState(false)
   const [highlight, setHighlight] = useState(-1)
+  // Address bar focus state — controls quando o `displayAlias` (basename pra html cards)
+  // toma lugar do `address` real. Focado = mostra a URL real (editável); blurred com
+  // alias definido E current === url (não navegou pra fora) = mostra o basename.
+  const [isFocused, setIsFocused] = useState(false)
   // Trava: ao Enter/click numa sugestão, navega — mas a sequência de setAddress + go
   // re-disparam o fetcher, que reabriria o popover por cima da página recém-aberta. Ref
   // segura o show até o input perder foco ou a navegação consolidar.
@@ -317,6 +327,11 @@ export default function WebPreview({
     lastNavRef.current = next
     setCurrent(next)
     setAddress(next)
+    // Push the URL up to App.tsx NOW (synchronously) — onState IPC echoes back later but its
+    // dedupe guard (lastNavRef.current !== u) silently swallows the URL because we just set
+    // lastNavRef above. Without this, the source's url never updates and disk persistence
+    // never sees the new URL → restart loses it.
+    onMetaChangeRef.current?.({ url: next })
     window.deck.web.navigate(cardId, next)
     // Fecha popover + segura abertura imediata até o blur (ou nova digitação real).
     justCommittedRef.current = true
@@ -413,7 +428,7 @@ export default function WebPreview({
           <input
             ref={inputRef}
             className="web-url"
-            value={address}
+            value={!isFocused && displayAlias && current === url ? displayAlias : address}
             placeholder={t('web.urlPlaceholder')}
             spellCheck={false}
             onChange={(e) => {
@@ -423,12 +438,14 @@ export default function WebPreview({
             }}
             onFocus={() => {
               justCommittedRef.current = false
+              setIsFocused(true)
               setShowSuggest(true)
               // Select-all no foco — comportamento padrão de URL bar (Chrome/Safari).
               inputRef.current?.select()
             }}
             // Pequeno timeout pra não fechar o popover antes do click no item registrar.
             onBlur={() => {
+              setIsFocused(false)
               window.setTimeout(() => {
                 setShowSuggest(false)
                 setHighlight(-1)

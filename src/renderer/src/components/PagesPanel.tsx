@@ -6,6 +6,7 @@ export interface WorkspacePage {
   path: string
   title: string
   mtime: number
+  tags?: string[]
 }
 
 interface PagesPanelProps {
@@ -56,7 +57,18 @@ export default function PagesPanel({
     if (!pages) return null
     const needle = q.toLowerCase().trim()
     if (!needle) return pages
-    return pages.filter((p) => `${p.title} ${p.id} ${p.path}`.toLowerCase().includes(needle))
+    // `#tag` tokens AND with the bare-word part.
+    const requiredTags = (needle.match(/#([a-z0-9][a-z0-9_-]*)/g) || []).map((s) => s.slice(1))
+    const bare = needle.replace(/#[a-z0-9][a-z0-9_-]*/g, '').trim()
+    return pages.filter((p) => {
+      if (requiredTags.length) {
+        const tags = p.tags ?? []
+        if (!requiredTags.every((t) => tags.includes(t))) return false
+      }
+      if (!bare) return true
+      const tagText = (p.tags ?? []).join(' ')
+      return `${p.title} ${p.id} ${p.path} ${tagText}`.toLowerCase().includes(bare)
+    })
   }, [pages, q])
 
   const handleDelete = async (page: WorkspacePage): Promise<void> => {
@@ -114,6 +126,22 @@ export default function PagesPanel({
                   title={p.path}
                 >
                   <span className="pages-title">{p.title}</span>
+                  {p.tags && p.tags.length > 0 && (
+                    <span className="pages-tags">
+                      {p.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="card-tag-chip"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setQ(`#${tag}`)
+                          }}
+                        >
+                          #{tag}
+                        </span>
+                      ))}
+                    </span>
+                  )}
                   <span className="pages-meta">
                     <span className="pages-id">{p.id}</span>
                     {p.mtime > 0 && <span className="pages-mtime">{formatMtime(p.mtime)}</span>}

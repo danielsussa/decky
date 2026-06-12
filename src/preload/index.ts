@@ -75,8 +75,13 @@ const deckApi = {
   cards: {
     // Materialize a card to its file under the workspace's .decky/cards/. Returns the
     // resolved abs path (to store on the source + watch), or null on failure.
-    write: (workspace: string, cardId: string, content: string): Promise<string | null> =>
-      ipcRenderer.invoke('cards:write', workspace, cardId, content),
+    write: (
+      workspace: string,
+      cardId: string,
+      content: string,
+      ext?: '.md' | '.html'
+    ): Promise<string | null> =>
+      ipcRenderer.invoke('cards:write', workspace, cardId, content, ext),
     // Push the renderer's full per-session card mirror to main (id/path/title/type/focused).
     // Main exposes this via HTTP for the MCP list_cards tool. Called debounced.
     syncState: (sessions: Record<string, unknown>): void =>

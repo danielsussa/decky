@@ -117,7 +117,7 @@ const TOOLS = [
   {
     name: 'list_cards',
     description:
-      'List the cards (tabs) the user currently has open in the decky preview panel for this session: id, title, type, file path (when materialized), focused flag, and pinned flag. CALL THIS before "update the card" / "fix the typo in that list" / any request that references a card you did not just create — it is the only way to learn what the user is looking at. For markdown cards you can then Edit the returned `path` directly; the card live-reloads on save. Returns the focused card id as well.',
+      'Returns the user\'s current working context: ONLY the focused card in this session (the tab the user has visually highlighted). Other open tabs are NOT context — they exist but the user has not pointed at them. CALL THIS before "update the card" / "fix the typo in that list" / any request that references a card you did not just create. For markdown cards you can then Edit the returned `path` directly; the card live-reloads on save. Returns `{ card }` or `{ card: null }` when no card is focused.',
     inputSchema: { type: 'object', properties: {} }
   },
   {
@@ -462,19 +462,14 @@ async function handleCall(name, args) {
     }
     const data = await get(`/sessions/${encodeURIComponent(sessionId)}/cards`)
     const cards = (data && data.cards) || []
-    if (cards.length === 0) {
-      return 'no cards open in this session yet'
+    const focusedId = data && data.focused
+    const focused = focusedId ? cards.find((c) => c.id === focusedId) : null
+    if (!focused) {
+      return 'no card in focus — the user has not pointed at any card in this session. Other open tabs exist but are NOT context.'
     }
-    const focused = data && data.focused
-    const lines = cards.map((c) => {
-      const flags = []
-      if (c.id === focused) flags.push('focused')
-      if (c.pinned) flags.push('pinned')
-      const suffix = flags.length ? ` [${flags.join(', ')}]` : ''
-      const loc = c.path ? ` → ${c.path}` : c.url ? ` → ${c.url}` : ''
-      return `- ${c.id} (${c.type}) "${c.title}"${loc}${suffix}`
-    })
-    return lines.join('\n')
+    const loc = focused.path ? ` → ${focused.path}` : focused.url ? ` → ${focused.url}` : ''
+    const pin = focused.pinned ? ' [pinned]' : ''
+    return `focused card (the user's current context):\n- ${focused.id} (${focused.type}) "${focused.title}"${loc}${pin}\n\nOther tabs exist in this session but are NOT context. Use search_cards to look up anything else.`
   }
 
   if (name === 'search_cards') {

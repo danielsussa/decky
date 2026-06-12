@@ -9,6 +9,7 @@ export interface CardSearchHit {
   line: number
   score: number
   mtime: number
+  tags?: string[]
 }
 
 interface CardSearchProps {
@@ -97,6 +98,23 @@ export default function CardSearch({
                     <span className="palette-item-label">{h.title}</span>
                     <span className="palette-item-hint">{h.id}</span>
                   </div>
+                  {h.tags && h.tags.length > 0 && (
+                    <div className="card-search-tags">
+                      {h.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="card-tag-chip"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setQ(`#${tag}`)
+                            setSel(0)
+                          }}
+                        >
+                          #{tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {h.snippet && <div className="card-search-snippet">{h.snippet}</div>}
                 </div>
               </div>

@@ -89,6 +89,18 @@ const messages = {
   'ws.closeSession': { pt: 'fechar sessão', en: 'close session' },
   'ws.newSession': { pt: 'nova sessão', en: 'new session' },
   'ws.addFolder': { pt: 'Adicionar pasta…', en: 'Add folder…' },
+  'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
+  'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
+  'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },
+  'ws.stashEmpty': { pt: 'nada salvo aqui', en: 'nothing saved here' },
+  'ws.stashCardCount': { pt: 'cards', en: 'cards' },
+  'ws.stashDiscard': { pt: 'descartar', en: 'discard' },
+  'ws.stashChipOne': { pt: 'stash', en: 'stash' },
+  'ws.stashChipMany': { pt: 'stashes', en: 'stashes' },
+  'ws.stashRestoreHint': {
+    pt: 'click: reviver · shift: nova sessão · cmd: manter no stash',
+    en: 'click: revive · shift: new session · cmd: keep in stash'
+  },
 
   // diff preview
   'diff.empty': { pt: 'sem mudanças no diff', en: 'no changes in diff' },

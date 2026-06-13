@@ -13,7 +13,7 @@ import CardSearch from './components/CardSearch'
 import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import FirstRunModal from './components/FirstRunModal'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
-import type { PreviewSource } from '../../shared/preview'
+import type { PreviewSource, StashEntry } from '../../shared/preview'
 import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
 import { t } from './lib/i18n'
 import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '../../shared/cli-spec'
@@ -108,6 +108,10 @@ interface WorkspaceState {
   previews?: Record<string, Record<string, PreviewSource>>
   titles?: Record<string, string>
   pinned?: Record<string, PreviewSource>
+  // "Save for later" — closed sessions stashed by the user via the close-popover.
+  // Restore = re-spawn the same Session (claudeSessionId resumes claude transcript)
+  // with previews rehydrated. Workspace-scoped, same as `pinned`.
+  stash?: StashEntry[]
 }
 
 function pickTitles(sessions: Session[], titles: Record<string, string>): Record<string, string> {
@@ -393,7 +397,10 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
 // Markdown stays as the raw text of a `<script type="text/markdown">` block (safer than a JS
 // string literal — only `</script>` would break out, not backticks/dollar signs).
 function wrapMarkdownAsHtml(content: string, title?: string): string {
-  const safeTitle = (title ?? '').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  // Prefer caller-provided title; else first markdown heading; else "Card".
+  const headingMatch = content.match(/^#{1,6}\s+(.+?)\s*$/m)
+  const rawTitle = (title ?? headingMatch?.[1] ?? '').trim()
+  const safeTitle = rawTitle.replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[ch] ?? ch)
   // Escape `</script>` inside the content so it can't break out of the markdown holder.
   const safeContent = content.replace(/<\/script/gi, '<\\/script')
   return `<!doctype html>
@@ -430,6 +437,42 @@ function toWorkspaceRelative(path: string, workspace: string | null): string {
   return path
 }
 
+function serializePreviewSource(src: PreviewSource, workspace: string | null): PreviewSource {
+  if (src.type === 'markdown' && src.path) {
+    return {
+      type: 'markdown',
+      content: '',
+      path: toWorkspaceRelative(src.path, workspace),
+      title: src.title
+    }
+  }
+  if (src.type === 'editor') {
+    return {
+      type: 'editor',
+      content: '',
+      path: toWorkspaceRelative(src.path, workspace),
+      title: src.title
+    }
+  }
+  if (src.type === 'xlsx') {
+    return { type: 'xlsx', path: toWorkspaceRelative(src.path, workspace), title: src.title }
+  }
+  if (src.type === 'html') {
+    return {
+      type: 'html',
+      path: toWorkspaceRelative(src.path, workspace),
+      title: src.title,
+      favicon: src.favicon
+    }
+  }
+  if (src.type === 'form') {
+    // Forms are tied to a live MCP await on the agent side. Persisting them across
+    // reloads would leave the user with a SEND button that 404s. Drop to 'none'.
+    return { type: 'none' }
+  }
+  return src
+}
+
 function serializePreviews(
   byCard: Record<string, Record<string, PreviewSource>>,
   workspace: string | null
@@ -438,43 +481,42 @@ function serializePreviews(
   for (const [sid, cards] of Object.entries(byCard)) {
     out[sid] = {}
     for (const [cid, src] of Object.entries(cards)) {
-      if (src.type === 'markdown' && src.path) {
-        out[sid][cid] = {
-          type: 'markdown',
-          content: '',
-          path: toWorkspaceRelative(src.path, workspace),
-          title: src.title
-        }
-      } else if (src.type === 'editor') {
-        out[sid][cid] = {
-          type: 'editor',
-          content: '',
-          path: toWorkspaceRelative(src.path, workspace),
-          title: src.title
-        }
-      } else if (src.type === 'xlsx') {
-        out[sid][cid] = {
-          type: 'xlsx',
-          path: toWorkspaceRelative(src.path, workspace),
-          title: src.title
-        }
-      } else if (src.type === 'html') {
-        out[sid][cid] = {
-          type: 'html',
-          path: toWorkspaceRelative(src.path, workspace),
-          title: src.title,
-          favicon: src.favicon
-        }
-      } else if (src.type === 'form') {
-        // Forms are tied to a live MCP await on the agent side. Persisting them across
-        // reloads would leave the user with a SEND button that 404s. Drop to 'none'.
-        out[sid][cid] = { type: 'none' }
-      } else {
-        out[sid][cid] = src
-      }
+      out[sid][cid] = serializePreviewSource(src, workspace)
     }
   }
   return out
+}
+
+function serializeStash(stash: StashEntry[], workspace: string | null): StashEntry[] {
+  return stash.map((entry) => ({
+    ...entry,
+    cards: entry.cards.map((c) => ({
+      cardId: c.cardId,
+      source: serializePreviewSource(c.source as PreviewSource, workspace)
+    }))
+  }))
+}
+
+async function rehydrateStash(
+  stash: StashEntry[] | undefined,
+  workspace: string
+): Promise<StashEntry[]> {
+  if (!stash?.length) return []
+  // Reuse the preview rehydrate IPC (reads file-backed content + resolves paths) by
+  // packing each entry as a single "session" keyed by entry.id, then unpacking.
+  const byCard: Record<string, Record<string, PreviewSource>> = {}
+  for (const entry of stash) {
+    byCard[entry.id] = {}
+    for (const c of entry.cards) byCard[entry.id][c.cardId] = c.source as PreviewSource
+  }
+  const re = await window.deck.preview.rehydrate(byCard, workspace)
+  return stash.map((entry) => {
+    const cards = re[entry.id] ?? {}
+    return {
+      ...entry,
+      cards: entry.cards.map((c) => ({ cardId: c.cardId, source: cards[c.cardId] ?? c.source }))
+    }
+  })
 }
 
 function App(): React.JSX.Element {
@@ -524,6 +566,10 @@ function App(): React.JSX.Element {
   >({})
   // Pinned cards are workspace-global: shown in every session, source kept here.
   const [pinned, setPinned] = useState<Record<string, PreviewSource>>({})
+  // "Save for later" stash for the ACTIVE workspace. Each entry = a closed session snapshot
+  // (Session + its previews). Persisted in workspace.json next to `pinned`. Cross-workspace
+  // close (App.tsx ~handleClose else-branch) appends straight to the file without touching this.
+  const [stash, setStash] = useState<StashEntry[]>([])
   const [titles, setTitles] = useState<Record<string, string>>({})
   const [wsLoaded, setWsLoaded] = useState(false)
   const [lastWorkspaceResolved, setLastWorkspaceResolved] = useState(false)
@@ -628,6 +674,7 @@ function App(): React.JSX.Element {
     previewsByCard,
     titles,
     pinned,
+    stash,
     wsLoaded
   })
   stateRef.current = {
@@ -641,6 +688,7 @@ function App(): React.JSX.Element {
     previewsByCard,
     titles,
     pinned,
+    stash,
     wsLoaded
   }
 
@@ -1003,9 +1051,35 @@ function App(): React.JSX.Element {
           focusedCardBySession: filterToSessionIds(s.focusedCardBySession, ids),
           previews: serializePreviews(filterToSessionIds(s.previewsByCard, ids), ws),
           titles: pickTitles(s.sessions, s.titles),
-          pinned: serializePreviews({ p: s.pinned }, ws).p
+          pinned: serializePreviews({ p: s.pinned }, ws).p,
+          stash: serializeStash(s.stash, ws)
         })
         .finally(() => void window.deck.app.flushDone())
+    })
+    // Main intercepted a will-navigate to a different card:// URL inside an embedded card
+    // page. Translate to abs file path and dispatch decky:open-path, which already does the
+    // "focus existing tab if same path, else create new tab" logic.
+    const unsubOpenTab = window.deck.web.onOpenTab(({ url }) => {
+      try {
+        const u = new URL(url)
+        if (u.protocol !== 'card:') return
+        // Resolve via the existing IPC: gives us the abs path corresponding to host+pathname.
+        // We don't have one (resolve goes path→url). Instead, decode the URL's pathname.
+        // host is a stable slug per workspace cards dir; main owns the mapping. We just
+        // need the abs file path — let main resolve it.
+        void window.deck.app.cardUrlToPath(url).then((abs: string | null) => {
+          if (!abs) return
+          const s = stateRef.current
+          if (!s.activeId) return
+          window.dispatchEvent(
+            new CustomEvent('decky:open-path', {
+              detail: { path: abs, sessionId: s.activeId, cwd: s.workspace ?? undefined }
+            })
+          )
+        })
+      } catch {
+        // bad URL, ignore
+      }
     })
     return () => {
       unsubData()
@@ -1021,6 +1095,7 @@ function App(): React.JSX.Element {
       unsubCloseTab()
       unsubCliSettings()
       unsubFlush()
+      unsubOpenTab()
     }
   }, [])
 
@@ -1099,7 +1174,8 @@ function App(): React.JSX.Element {
         focusedCardBySession: filterToSessionIds(focusedCardBySession, prevIds),
         previews: serializePreviews(filterToSessionIds(previewsByCard, prevIds), prevWs),
         titles: pickTitles(sessions, titles),
-        pinned: serializePreviews({ p: pinned }, prevWs).p
+        pinned: serializePreviews({ p: pinned }, prevWs).p,
+        stash: serializeStash(stash, prevWs)
       })
     }
     // Drop the previous workspace's cached session list so the tree re-reads it fresh next expand.
@@ -1159,6 +1235,8 @@ function App(): React.JSX.Element {
           ? ((await window.deck.preview.rehydrate({ p: data.pinned }, workspace)).p ?? {})
           : {}
         if (!cancelled) setPinned(pinnedRe)
+        const stashRe = await rehydrateStash(data.stash, workspace)
+        if (!cancelled) setStash(stashRe)
       } else {
         const def = defaultCliSession(workspace, defaultCli ?? 'claude')
         pendingActiveRef.current = null
@@ -1173,6 +1251,7 @@ function App(): React.JSX.Element {
         setFocusedCardBySession((prev) => mergeSessionScopedMap(prev, {}, wsIds))
         setPreviewsByCard((prev) => mergeSessionScopedMap(prev, {}, wsIds))
         setPinned({})
+        setStash([])
       }
       void window.deck.state.set(LAST_WORKSPACE_KEY, workspace)
       setWsLoaded(true)
@@ -1212,7 +1291,8 @@ function App(): React.JSX.Element {
         focusedCardBySession: filterToSessionIds(focusedCardBySession, ids),
         previews: serializePreviews(filterToSessionIds(previewsByCard, ids), workspace),
         titles: pickTitles(sessions, titles),
-        pinned: serializePreviews({ p: pinned }, workspace).p
+        pinned: serializePreviews({ p: pinned }, workspace).p,
+        stash: serializeStash(stash, workspace)
       })
     }, 400)
     return () => clearTimeout(t)
@@ -1225,7 +1305,8 @@ function App(): React.JSX.Element {
     focusedCardBySession,
     previewsByCard,
     titles,
-    pinned
+    pinned,
+    stash
   ])
 
   useEffect(() => {
@@ -1873,8 +1954,38 @@ function App(): React.JSX.Element {
     }
   }, [focusedCardBySession])
 
-  const handleClose = (ws: string, id: string): void => {
+  const handleClose = (ws: string, id: string, mode: 'save' | 'discard' = 'discard'): void => {
     const isActiveWs = ws === workspace
+    // Build the stash entry BEFORE we wipe the session's state below. Skip if there's
+    // nothing meaningful to save (no own cards) — popover already gates on this, but
+    // belt-and-suspenders for keyboard / programmatic callers.
+    let entry: StashEntry | null = null
+    if (mode === 'save' && isActiveWs) {
+      const sess = sessions.find((s) => s.id === id)
+      const sessPrev = previewsByCard[id] ?? {}
+      const ownCardIds = (cardsBySession[id] ?? []).filter((cid) => !pinned[cid])
+      if (sess && ownCardIds.length > 0) {
+        entry = {
+          id: `stash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          savedAt: Date.now(),
+          title: aiTitles[id] || titles[id] || sess.label,
+          session: {
+            id: sess.id,
+            label: sess.label,
+            project: sess.project,
+            cwd: sess.cwd,
+            kind: sess.kind,
+            cliKind: sess.cliKind,
+            claudeSessionId: sess.claudeSessionId
+          },
+          focusedCardId: focusedCardBySession[id] ?? undefined,
+          cards: ownCardIds
+            .filter((cid) => sessPrev[cid])
+            .map((cid) => ({ cardId: cid, source: sessPrev[cid] }))
+        }
+      }
+    }
+    if (entry) setStash((prev) => [entry as StashEntry, ...prev])
     if (isActiveWs) {
       setSessions((prev) => {
         const idx = prev.findIndex((s) => s.id === id)
@@ -1899,11 +2010,45 @@ function App(): React.JSX.Element {
       void (async () => {
         const data = await window.deck.workspace.read<WorkspaceState>(ws)
         if (!data || !Array.isArray(data.sessions)) return
+        const closedSess = data.sessions.find((s) => s.id === id)
         const nextSessions = data.sessions.filter((s) => s.id !== id)
         if (nextSessions.length === data.sessions.length) return
         const remaining = new Set(nextSessions.map((s) => s.id))
         const nextActive =
           data.activeId && remaining.has(data.activeId) ? data.activeId : nextSessions[0]?.id
+        // Cross-workspace "save for later": build the entry from on-disk data (it's already
+        // in wire format) and append. The previewsByCard for this session lives in the workspace's
+        // own previews map — pinned cards are workspace-global so we exclude them here too.
+        let nextStash: StashEntry[] | undefined = data.stash
+        if (mode === 'save' && closedSess) {
+          const sessCards = data.previews?.[id] ?? {}
+          const pinnedIds = new Set(Object.keys(data.pinned ?? {}))
+          const ownCardIds = (data.cardsBySession?.[id] ?? []).filter((cid) => !pinnedIds.has(cid))
+          if (ownCardIds.length > 0) {
+            const newEntry: StashEntry = {
+              id: `stash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+              savedAt: Date.now(),
+              title: data.titles?.[id] || closedSess.label,
+              session: {
+                id: closedSess.id,
+                label: closedSess.label,
+                project: closedSess.project,
+                cwd: closedSess.cwd,
+                kind: closedSess.kind,
+                cliKind: closedSess.cliKind,
+                claudeSessionId: closedSess.claudeSessionId
+              },
+              focusedCardId: data.focusedCardBySession?.[id] ?? undefined,
+              cards: ownCardIds
+                .filter((cid) => sessCards[cid])
+                .map((cid) => ({
+                  cardId: cid,
+                  source: sessCards[cid] as unknown as PreviewSource
+                }))
+            }
+            nextStash = [newEntry, ...(data.stash ?? [])]
+          }
+        }
         void window.deck.workspace.write(ws, {
           ...data,
           sessions: nextSessions,
@@ -1913,7 +2058,8 @@ function App(): React.JSX.Element {
           previews: filterToSessionIds(data.previews ?? {}, remaining),
           titles: data.titles
             ? Object.fromEntries(Object.entries(data.titles).filter(([k]) => remaining.has(k)))
-            : undefined
+            : undefined,
+          stash: nextStash
         })
       })()
     }
@@ -1957,6 +2103,52 @@ function App(): React.JSX.Element {
     setActiveId(def.id)
   }
 
+  // Restore a "save for later" entry as a session.
+  // - revive=true (click default): reuse entry.session as-is so claude --session-id resumes
+  //   the original transcript. If the same id is somehow already live, fall back to a fresh id.
+  // - revive=false (Shift+click): mint a fresh sessionId/claudeSessionId, cards still come back.
+  // - keep=true (Cmd/Ctrl+click): leave the entry in the stash; otherwise consume it.
+  const restoreFromStash = (entryId: string, opts: { revive: boolean; keep: boolean }): void => {
+    const entry = stash.find((e) => e.id === entryId)
+    if (!entry) return
+    const idCollision =
+      sessions.some((s) => s.id === entry.session.id) ||
+      liveSessions.some((s) => s.id === entry.session.id)
+    const revive = opts.revive && !idCollision
+    const baseSess: Session = revive
+      ? {
+          id: entry.session.id,
+          label: entry.session.label,
+          project: entry.session.project,
+          cwd: entry.session.cwd,
+          kind: entry.session.kind,
+          cliKind: entry.session.cliKind,
+          claudeSessionId: entry.session.claudeSessionId
+        }
+      : defaultCliSession(
+          entry.session.cwd,
+          entry.session.cliKind ?? defaultCli ?? 'claude'
+        )
+    const targetId = baseSess.id
+    const cardMap: Record<string, PreviewSource> = {}
+    for (const c of entry.cards) cardMap[c.cardId] = c.source as PreviewSource
+    setSessions((prev) => [...prev, baseSess])
+    setCardsBySession((prev) => ({ ...prev, [targetId]: entry.cards.map((c) => c.cardId) }))
+    setPreviewsByCard((prev) => ({ ...prev, [targetId]: cardMap }))
+    if (entry.focusedCardId && cardMap[entry.focusedCardId]) {
+      setFocusedCardBySession((prev) => ({ ...prev, [targetId]: entry.focusedCardId ?? null }))
+    } else {
+      const first = entry.cards[0]?.cardId ?? null
+      setFocusedCardBySession((prev) => ({ ...prev, [targetId]: first }))
+    }
+    setActiveId(targetId)
+    if (!opts.keep) setStash((prev) => prev.filter((e) => e.id !== entryId))
+  }
+
+  const discardStash = (entryId: string): void => {
+    setStash((prev) => prev.filter((e) => e.id !== entryId))
+  }
+
   const addFolder = async (): Promise<void> => {
     const p = await window.deck.app.pickFolder()
     if (p) setWorkspace(p)
@@ -1964,14 +2156,54 @@ function App(): React.JSX.Element {
 
   // Open a browser card in the active session, focused. Empty url = "nova aba" (URL bar
   // auto-focuses); with url = navigates straight there (used by palette `//query` shortcut).
+  // If a tab already shows the same URL in the active session, focus it instead of opening
+  // a duplicate. Empty url ("nova aba") always creates a fresh card — every blank web tab is
+  // its own thing, not a duplicate.
   const openWebTab = (url: string = ''): void => {
     if (!activeId) return
     const aId = activeId
+    if (url) {
+      const sessCards = cardsBySession[aId] ?? []
+      const sessPreviews = previewsByCard[aId] ?? {}
+      for (const cid of sessCards) {
+        const src = sessPreviews[cid]
+        if (src?.type === 'web' && src.url === url) {
+          setFocusedCardBySession((p) => ({ ...p, [aId]: cid }))
+          return
+        }
+      }
+    }
     const id = `web-${Date.now().toString(36)}`
     setCardsBySession((p) => ({ ...p, [aId]: [...(p[aId] ?? []), id] }))
     setPreviewsByCard((p) => ({
       ...p,
       [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url } }
+    }))
+    setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
+  }
+
+  // Opens the workspace's tags-index.html as an HTML card in the active session.
+  // Triggered from the command palette (Cmd+P). De-dupes — if there's already a tab pointing
+  // at the same tags-index.html path, focus that one instead of opening a second.
+  const openTagsIndex = (): void => {
+    if (!activeId || !workspace) return
+    const path = tagsIndexPathByWs[workspace]
+    if (!path) return
+    const aId = activeId
+    const sessCards = cardsBySession[aId] ?? []
+    const sessPreviews = previewsByCard[aId] ?? {}
+    for (const cid of sessCards) {
+      const src = sessPreviews[cid]
+      if (src?.type === 'html' && src.path === path) {
+        setFocusedCardBySession((p) => ({ ...p, [aId]: cid }))
+        return
+      }
+    }
+    const id = `tags-${Date.now().toString(36)}`
+    setCardsBySession((p) => ({ ...p, [aId]: [...(p[aId] ?? []), id] }))
+    setPreviewsByCard((p) => ({
+      ...p,
+      [aId]: { ...(p[aId] ?? {}), [id]: { type: 'html', path, title: 'Tags' } }
     }))
     setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
   }
@@ -2394,27 +2626,6 @@ function App(): React.JSX.Element {
         )
       }
     })
-    // Empty session → show the workspace's tags-index.html as the default tab (replaces
-    // the "nenhum card ainda" empty state). It's a regular HTML card pointing at the
-    // materialized file in <workspace>/.decky/cards/tags-index.html.
-    const tagsIdxPath = sessionCwd ? tagsIndexPathByWs[sessionCwd] : undefined
-    if (out.length === 0 && tagsIdxPath) {
-      const virtualId = '__tags-index'
-      out.push({
-        id: virtualId,
-        title: 'Tags',
-        favicon: undefined,
-        pinned: false,
-        render: () => (
-          <Preview
-            source={{ type: 'html', path: tagsIdxPath, title: 'Tags' }}
-            cardId={virtualId}
-            sessionId={sessionId}
-            workspaceCwd={sessionCwd}
-          />
-        )
-      })
-    }
     return out
   }
   // Per-session deckCards. Built for EVERY live session (LRU pool, cross-workspace) — not
@@ -2470,6 +2681,12 @@ function App(): React.JSX.Element {
         }))
       : []),
     { id: 'web:new', label: t('cmd.newWebTab'), hint: t('cmd.webTabHint'), run: openWebTab },
+    {
+      id: 'tags:open',
+      label: 'Abrir índice de tags',
+      hint: 'Bento dos cards do workspace',
+      run: openTagsIndex
+    },
     {
       id: 'notify:test',
       label: t('cmd.testNotification'),
@@ -2597,12 +2814,18 @@ function App(): React.JSX.Element {
                 mode={mode}
                 themeFor={themeFor}
                 nameOf={projectFromCwd}
+                ownCardCount={(sid) =>
+                  (cardsBySession[sid] ?? []).filter((cid) => !pinned[cid]).length
+                }
+                stash={stash}
                 onToggleExpand={toggleExpand}
                 onSelectSession={selectSession}
                 onNewSession={newSessionIn}
                 onCloseSession={handleClose}
                 onCloseWorkspace={closeWorkspace}
                 onAddFolder={() => void addFolder()}
+                onRestoreStash={restoreFromStash}
+                onDiscardStash={discardStash}
               />
             </ResizableSplit>
           </section>

@@ -345,6 +345,27 @@ class WebViewsManager {
     const fire = (): void => emit(cardId)
     wc.on('did-start-loading', fire)
     wc.on('did-stop-loading', fire)
+    // Intercept clicks on links INSIDE a card:// page — instead of navigating the embedded
+    // WebContentsView (which would replace e.g. the tags-index with the clicked card), tell
+    // the renderer to open the target as a NEW decky tab (with de-dup against existing tabs).
+    wc.on('will-navigate', (e, url) => {
+      try {
+        const target = new URL(url)
+        if (target.protocol !== 'card:') return
+        const current = wc.getURL()
+        const currentParsed = current ? new URL(current) : null
+        if (
+          currentParsed &&
+          currentParsed.protocol === 'card:' &&
+          (currentParsed.hostname !== target.hostname || currentParsed.pathname !== target.pathname)
+        ) {
+          e.preventDefault()
+          this.getWin()?.webContents.send('card:open-tab', { url })
+        }
+      } catch {
+        // not a parseable URL — let the default navigation behavior decide
+      }
+    })
     wc.on('did-navigate', (_e, url) => {
       const s = this.views.get(cardId)
       // Navegação pra página de erro interna (data: URL carregada pelo did-fail-load handler).
@@ -569,10 +590,20 @@ class WebViewsManager {
     }
     // Same channel the old <webview> code piped clicks through — main forwards to the renderer.
     wc.on('console-message', (e) => {
-      const m = /^__DECKY_POPUP__:(.+)$/.exec(e.message ?? '')
-      if (!m) return
-      const win = this.getWin()
-      win?.webContents.send('app:open-url', m[1])
+      const msg = e.message ?? ''
+      const m = /^__DECKY_POPUP__:(.+)$/.exec(msg)
+      if (m) {
+        const win = this.getWin()
+        win?.webContents.send('app:open-url', m[1])
+        return
+      }
+      // Errors/warnings from inside card pages were invisible before — leaving silent bugs
+      // like "card:// page stuck on carregando…" without ground truth in the logs. Forward
+      // anything at warning level or worse to decky-startup.log so it's grepable next time.
+      if (e.level === 'warning' || e.level === 'error') {
+        const where = e.sourceId ? `${e.sourceId}:${e.lineNumber ?? '?'}` : 'unknown'
+        wlog(`[card ${cardId}] console.${e.level} @ ${where}: ${msg.slice(0, 500)}`)
+      }
     })
   }
 

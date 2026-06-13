@@ -25,7 +25,7 @@ interface WebPreviewProps {
 function normalizeUrl(raw: string): string {
   const s = raw.trim()
   if (!s) return s
-  if (/^https?:\/\//i.test(s) || /^(file|about|data):/i.test(s)) return s
+  if (/^https?:\/\//i.test(s) || /^(file|about|data|card|decky-asset):/i.test(s)) return s
   if (/^localhost(:\d+)?(\/|$)/i.test(s) || /^127\.0\.0\.1(:\d+)?(\/|$)/i.test(s))
     return `http://${s}`
   // Heurística "parece host?": sem espaços E tem ponto antes da primeira barra

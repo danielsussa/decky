@@ -1980,6 +1980,127 @@ textarea.form-input {
   color: var(--red, #f48771);
 }
 
+/* Anchor for the inline close-popover so we can position-absolute it next to the row. */
+.wstree-session {
+  position: relative;
+}
+.wstree-close-menu {
+  position: absolute;
+  top: 100%;
+  right: 4px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  margin-top: 2px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-1, var(--bg-3));
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.wstree-close-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.wstree-close-menu-save {
+  color: var(--text-1) !important;
+}
+.wstree-close-menu-save:hover,
+.wstree-close-menu-save:focus {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  outline: none;
+}
+.wstree-close-menu-discard:hover {
+  background: color-mix(in srgb, var(--red, #f48771) 18%, transparent);
+  color: var(--red, #f48771) !important;
+}
+
+/* Chip "N stashes" no header do workspace — toggle do bloco abaixo das sessões. */
+.wstree-stash-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+  padding: 1px 8px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 9px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wstree-stash-chip:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+/* Lista de stashes abaixo das sessões — só renderiza quando o chip foi clicado. */
+.wstree-stash {
+  display: flex;
+  flex-direction: column;
+  margin-top: 2px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--bg-3);
+}
+.wstree-stash-list {
+  display: flex;
+  flex-direction: column;
+}
+.wstree-stash-row {
+  display: flex;
+  align-items: center;
+  border-left: 2px solid transparent;
+}
+.wstree-stash-row:hover {
+  background: var(--bg-2);
+}
+.wstree-stash-row:hover .wstree-x {
+  opacity: 1;
+}
+.wstree-stash-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 4px 5px 26px;
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.wstree-stash-icon {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+.wstree-stash-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wstree-stash-meta {
+  font-size: 10px;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
 /* Hosts the active workspace's session terminals (active visible, rest mounted+hidden). */
 .termhost {
   /* Fill via height:100% (not flex:1) — the parent .panel-body-flush isn't a flex container,

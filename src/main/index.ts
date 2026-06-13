@@ -45,6 +45,7 @@ import { registerDevRebuildHandlers } from './dev-rebuild'
 import { getBuildInfo } from './build-info'
 import { registerGitHandlers } from './git-stats'
 import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
+import { registerCardScheme, setupCardProtocol, cardUrlToAbsPath } from './card-protocol'
 import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
 import { setupWebViews } from './web-views'
 import { setupHistory } from './history'
@@ -52,6 +53,7 @@ import { setupHtmlServer } from './html-server'
 
 // Privileged scheme registration must happen before app is ready.
 registerAssetScheme()
+registerCardScheme()
 
 // Disable FedCM globally. Google Identity Services (used by Pinterest, Spotify, many sites'
 // "Continue with Google") calls navigator.credentials.get({identity}) FIRST and only falls
@@ -232,6 +234,7 @@ app
     registerDevRebuildHandlers(() => mainWindow)
     registerGitHandlers()
     setupAssetProtocol()
+    setupCardProtocol()
     // Global default UA: strip the Electron/app token so any web surface that falls back to it
     // (a popup in the instant before the deckweb partition UA applies) still reads as plain Chrome.
     // The per-partition setUserAgent in setupWebSession is the main path; this is the safety net.
@@ -346,6 +349,8 @@ app
     // Explicit "open in the OS browser" affordance — used by the external-link button on the
     // web card, since every other window.open in the renderer now routes to an internal card.
     ipcMain.handle('app:open-external', (_e, url: string) => shell.openExternal(url))
+    // Reverse-lookup for card:// URLs intercepted by will-navigate inside embedded card pages.
+    ipcMain.handle('app:card-url-to-path', (_e, url: string) => cardUrlToAbsPath(url))
 
     // Packaged: getAppPath() is .../app.asar, but claude spawns dk-mcp with a plain
     // `node` (no asar support), so point at the unpacked copy (see asarUnpack bin/**).

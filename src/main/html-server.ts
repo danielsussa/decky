@@ -1,8 +1,36 @@
 import { createServer, type Server } from 'node:http'
 import { readFile, unlink } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { extname, join, normalize as normalizePath, relative, resolve as resolvePath } from 'node:path'
 import { app, ipcMain } from 'electron'
 import { diag } from './diag'
+
+// Bundle marked locally as a virtual route. The old wrapper imported it from
+// https://esm.sh/marked@12 at every card open; on the first render of a fresh card://
+// page the import sometimes never resolved (race between the persist:deckweb session
+// warm-up and a cross-origin ESM fetch), leaving the page stuck on "carregando…". A
+// local copy removes the network round-trip and any session-warm-up race.
+const requireForResolve = createRequire(import.meta.url)
+function loadMarkedSource(): string {
+  try {
+    return readFileSync(requireForResolve.resolve('marked'), 'utf-8')
+  } catch (e) {
+    console.error('[html-server] failed to load marked.esm.js — markdown cards may not render', e)
+    return ''
+  }
+}
+const MARKED_JS = loadMarkedSource()
+const MARKED_URL = '/__decky/lib/marked.js'
+
+// Existing .html cards on disk still reference https://esm.sh/marked@12 (and the older /v13/
+// path it sometimes redirected through). Rewrite to the local virtual route when serving so
+// legacy cards switch over without needing to be regenerated.
+// Bound `marked` with a non-word lookahead so `marked-utils` etc don't match.
+const ESM_MARKED_RE = /https:\/\/esm\.sh\/marked(?=[@/'"\s)])(?:@\d+(?:\.\d+(?:\.\d+)?)?)?(?:\/[^"'\s)]*)?/g
+export function rewriteMarkedImports(html: string): string {
+  return MARKED_JS ? html.replace(ESM_MARKED_RE, MARKED_URL) : html
+}
 
 // Serves a local directory over an ephemeral http://127.0.0.1:<port> so HTML cards opened from
 // preview_show can do fetch / ES modules / Service Workers — all the things file:// blocks.
@@ -51,13 +79,18 @@ const servers = new Map<string, DirServer>()
 // renderer's wrapMarkdownAsHtml, so `.md` files requested directly from the html-server
 // render formatted (instead of "octet-stream" raw text) when the user navigates the URL
 // bar of an html card to a .md sibling.
-function wrapMarkdownAsHtml(content: string): string {
+export function wrapMarkdownAsHtml(content: string): string {
   const safeContent = content.replace(/<\/script/gi, '<\\/script')
+  // Extract first heading as page title so tab strip / window title shows something
+  // meaningful instead of "Card". Falls back to "Card" only when content has no headings.
+  const headingMatch = content.match(/^#{1,6}\s+(.+?)\s*$/m)
+  const rawTitle = headingMatch ? headingMatch[1].trim() : 'Card'
+  const title = rawTitle.replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[ch] ?? ch)
   return `<!doctype html>
 <html lang="pt-br">
 <head>
 <meta charset="utf-8" />
-<title>Card</title>
+<title>${title}</title>
 <link rel="stylesheet" href="/__decky/default.css">
 <style>
   body { padding: 24px; margin: 0; }
@@ -67,7 +100,7 @@ function wrapMarkdownAsHtml(content: string): string {
 <article class="md-body" id="content">carregando…</article>
 <script type="text/markdown" id="md-src">${safeContent}</script>
 <script type="module">
-  import { marked } from 'https://esm.sh/marked@12'
+  import { marked } from '${MARKED_URL}'
   const src = document.getElementById('md-src').textContent
   document.getElementById('content').innerHTML = marked.parse(src, { gfm: true, breaks: false })
 </script>
@@ -567,6 +600,15 @@ const MERMAID_JS =
 })();
 `
 
+// Accessors for the inline default CSS + widget routes — exported so the card:// protocol
+// handler in card-protocol.ts serves the SAME bytes the http server does.
+export function getDefaultCardCss(): string {
+  return DEFAULT_CARD_CSS
+}
+export function getVirtualRoutes(): Record<string, { body: string; mime: string }> {
+  return VIRTUAL_ROUTES
+}
+
 // Virtual routes — paths served from inline strings, not from disk.
 const VIRTUAL_ROUTES: Record<string, { body: string; mime: string }> = {
   '/__decky/widgets/flow.js': { body: FLOW_JS, mime: 'text/javascript; charset=utf-8' },
@@ -574,7 +616,11 @@ const VIRTUAL_ROUTES: Record<string, { body: string; mime: string }> = {
     body: CHECKLIST_JS,
     mime: 'text/javascript; charset=utf-8'
   },
-  '/__decky/widgets/mermaid.js': { body: MERMAID_JS, mime: 'text/javascript; charset=utf-8' }
+  '/__decky/widgets/mermaid.js': { body: MERMAID_JS, mime: 'text/javascript; charset=utf-8' },
+  // Local marked bundle — replaces the old https://esm.sh/marked@12 import. The empty body
+  // case (MARKED_JS load failed) is intentional: serves an empty module that throws on use,
+  // surfacing the failure in devtools instead of leaving the page silently stuck.
+  [MARKED_URL]: { body: MARKED_JS, mime: 'text/javascript; charset=utf-8' }
 }
 
 const DEFAULT_CSS_PATH = '/__decky/default.css'
@@ -586,7 +632,7 @@ const HEAD_CLOSE_RE = /<\/head\s*>/i
 const HEAD_OPEN_RE = /<head\b[^>]*>/i
 const HTML_OPEN_RE = /<html\b[^>]*>/i
 
-function injectDefaultCss(html: string): string {
+export function injectDefaultCss(html: string): string {
   if (HAS_THEME_RE.test(html)) return html
   const linkTag = `<link rel="stylesheet" href="${DEFAULT_CSS_PATH}">`
   // Caso normal: tem </head> — injeta antes.
@@ -704,8 +750,12 @@ async function serveDir(absDir: string): Promise<DirServer> {
           const mime = MIME[ext] ?? 'application/octet-stream'
           // HTML: peek at the markup — se não tem <style>/<link> próprio, injeta o
           // WS-default. Caso contrário, serve cru. Outros tipos passam direto.
+          // Também troca `https://esm.sh/marked@N` pelo bundle local — legacy cards salvos
+          // com o import remoto rodam no mesmo runtime sem precisar regerar.
           const body =
-            ext === '.html' || ext === '.htm' ? injectDefaultCss(buf.toString('utf-8')) : buf
+            ext === '.html' || ext === '.htm'
+              ? rewriteMarkedImports(injectDefaultCss(buf.toString('utf-8')))
+              : buf
           res.writeHead(200, {
             'content-type': mime,
             // No-store so editing the HTML and reloading the card always reflects the latest
@@ -747,10 +797,27 @@ export async function resolveHtmlUrl(absPath: string): Promise<string> {
   return `${info.baseUrl}/${encodeURIComponent(base)}`
 }
 
+import { cardUrlFor, registerCardsDir } from './card-protocol'
+import { dirname } from 'node:path'
+
+// Walk UP from a file path until we find a `.decky/cards` or `.decky-dev/cards` segment;
+// return that whole prefix (the cards root). Returns null if we never see it.
+function findCardsRoot(absPath: string): string | null {
+  const m = absPath.match(/^(.+\/\.decky(?:-dev)?\/cards)\//)
+  return m ? m[1] : null
+}
+
 export function setupHtmlServer(): void {
   ipcMain.handle('html:resolve', async (_e, path: string) => {
     if (typeof path !== 'string' || !path) throw new Error('html:resolve: path required')
-    return resolveHtmlUrl(path)
+    // Switched from http://127.0.0.1 to card:// (custom protocol). The cards dir is the
+    // file's PARENT — which for `.decky/cards/foo/bar.html` is `.decky/cards/foo`. But the
+    // protocol needs to serve everything under the WORKSPACE cards root, not just the
+    // file's immediate parent, so it can resolve subdirs (`/decky/plano-x.html`) too.
+    // The cards root is the closest ancestor containing `.decky/cards/` — walk up.
+    const cardsRoot = findCardsRoot(path) ?? dirname(path)
+    registerCardsDir(cardsRoot)
+    return cardUrlFor(path, cardsRoot)
   })
   app.on('before-quit', () => {
     for (const s of servers.values()) {

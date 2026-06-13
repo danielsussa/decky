@@ -1,3 +1,5 @@
+import type { CliKind } from './cli-spec'
+
 export type FormFieldType =
   | 'text'
   | 'textarea'
@@ -54,3 +56,25 @@ export type PreviewSourceWire =
   | { type: 'editor'; path: string; title?: string }
   | { type: 'xlsx'; path: string; title?: string }
   | { type: 'form'; spec: FormSpec }
+
+// "Save for later" snapshot of a closed session — the session object is preserved
+// whole so revive can spawn the same pty (claudeSessionId → claude resumes the
+// transcript) and the cards rehydrate via the existing pinned/previews pipeline.
+export type StashSessionMeta = {
+  id: string
+  label: string
+  project?: string
+  cwd: string
+  kind: 'claude' | 'shell'
+  cliKind?: CliKind
+  claudeSessionId?: string
+}
+
+export type StashEntry = {
+  id: string
+  savedAt: number
+  title: string
+  session: StashSessionMeta
+  focusedCardId?: string
+  cards: Array<{ cardId: string; source: PreviewSourceWire }>
+}

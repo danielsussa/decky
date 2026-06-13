@@ -253,6 +253,8 @@ const deckApi = {
       return () => ipcRenderer.removeListener('app:open-url', listener)
     },
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('app:open-external', url),
+    cardUrlToPath: (url: string): Promise<string | null> =>
+      ipcRenderer.invoke('app:card-url-to-path', url),
     // Main forwards decky chrome shortcuts (Cmd+P etc) caught by focused web cards so the
     // renderer can replay them as a real KeyboardEvent on window.
     onShortcut: (
@@ -357,6 +359,14 @@ const deckApi = {
       const listener = (_: unknown, msg: Parameters<typeof callback>[0]): void => callback(msg)
       ipcRenderer.on('web:controlling', listener)
       return () => ipcRenderer.removeListener('web:controlling', listener)
+    },
+    // Main asks renderer to open a card:// URL as a NEW decky tab (with de-dup) instead of
+    // navigating the WebContentsView away from the current page. Triggered by `will-navigate`
+    // inside the embedded card pages.
+    onOpenTab: (callback: (msg: { url: string }) => void): (() => void) => {
+      const listener = (_: unknown, msg: { url: string }): void => callback(msg)
+      ipcRenderer.on('card:open-tab', listener)
+      return () => ipcRenderer.removeListener('card:open-tab', listener)
     }
   },
   html: {

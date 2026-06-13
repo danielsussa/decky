@@ -138,6 +138,7 @@ export interface DeckAPI {
     flushDone: () => void
     onOpenUrl: (callback: (url: string) => void) => () => void
     openExternal: (url: string) => Promise<void>
+    cardUrlToPath: (url: string) => Promise<string | null>
     onShortcut: (
       callback: (msg: {
         key: string
@@ -236,6 +237,7 @@ export interface DeckAPI {
     ) => () => void
     getControlling: (cardId: string) => Promise<boolean>
     onControlling: (callback: (msg: { cardId: string; controlling: boolean }) => void) => () => void
+    onOpenTab: (callback: (msg: { url: string }) => void) => () => void
   }
   widget: {
     onCall: (

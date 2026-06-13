@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
 import { extname, join, normalize as normalizePath, relative, resolve as resolvePath } from 'node:path'
 import { app, ipcMain } from 'electron'
 import { diag } from './diag'
@@ -613,6 +613,50 @@ async function serveDir(absDir: string): Promise<DirServer> {
     try {
       const u = new URL(req.url || '/', 'http://localhost')
       const pathname = decodeURIComponent(u.pathname)
+      // Card-mutation endpoint used by the tags-index bento page to delete a card by id.
+      // Card id is workspace-relative (e.g. "decky/plano-x"); we resolve and unlink BOTH
+      // .html and .md siblings (legacy fallback), and validate the resolved paths stay
+      // inside this server's directory.
+      if (req.method === 'POST' && pathname === '/__decky/cards/delete') {
+        let body = ''
+        req.on('data', (chunk) => (body += chunk))
+        req.on('end', () => {
+          try {
+            const parsed = JSON.parse(body || '{}') as { id?: unknown }
+            const id = typeof parsed.id === 'string' ? parsed.id : ''
+            if (!id) {
+              res.writeHead(400, { 'content-type': 'application/json' })
+              res.end('{"error":"id required"}')
+              return
+            }
+            // Sanitize each path segment but keep "/" structure.
+            const safe = id
+              .split('/')
+              .map((seg) => seg.replace(/[^a-zA-Z0-9._-]/g, '-'))
+              .filter(Boolean)
+              .join('/')
+            void Promise.all(
+              ['.html', '.md'].map(async (ext) => {
+                const target = join(key, safe + ext)
+                const rel = relative(key, target)
+                if (rel.startsWith('..') || rel === '..') return
+                try {
+                  await unlink(target)
+                } catch {
+                  // Missing sibling is fine — we delete both if they exist.
+                }
+              })
+            ).then(() => {
+              res.writeHead(200, { 'content-type': 'application/json' })
+              res.end('{"ok":true}')
+            })
+          } catch (err) {
+            res.writeHead(500, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ error: String(err) }))
+          }
+        })
+        return
+      }
       // Special-case the bundled WS-default stylesheet — virtual path, not on disk. Injected
       // automatically into HTML cards that don't ship their own theme (see injectDefaultCss).
       if (pathname === DEFAULT_CSS_PATH) {

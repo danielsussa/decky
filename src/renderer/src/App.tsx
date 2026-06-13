@@ -1184,17 +1184,19 @@ function App(): React.JSX.Element {
   }, [workspace])
 
   // When a workspace becomes active, ensure its tags-index.html exists and is being watched
-  // for regeneration. Idempotent — main keeps the watcher alive across workspace switches.
-  // Also resolves and caches the abs path so the empty-state tab can be built synchronously.
+  // for regeneration, THEN cache the abs path so the empty-state tab can be built synchronously.
+  // Serializing matters — if path() resolved before ensure() finished writing the file, the
+  // virtual tab would mount, hit the http server, and get 404 ("not found"). The cache miss
+  // also keeps the file fresh on every workspace re-activation.
   useEffect(() => {
     if (!wsLoaded || !workspace) return
     const ws = workspace
-    void window.deck.tagsIndex.ensure(ws)
-    if (!tagsIndexPathByWs[ws]) {
-      void window.deck.tagsIndex.path(ws).then((p) => {
-        if (p) setTagsIndexPathByWs((prev) => ({ ...prev, [ws]: p }))
-      })
-    }
+    void (async () => {
+      await window.deck.tagsIndex.ensure(ws)
+      if (tagsIndexPathByWs[ws]) return
+      const p = await window.deck.tagsIndex.path(ws)
+      if (p) setTagsIndexPathByWs((prev) => ({ ...prev, [ws]: p }))
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsLoaded, workspace])
 

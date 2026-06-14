@@ -1,7 +1,6 @@
 import { app } from 'electron'
 import { openHistoryDb, closeHistoryDb, historyDbPath } from '@decky/server'
 import { flushAll as flushOpenVisits } from '@decky/server'
-import { registerHistoryIpc } from '@decky/server'
 import { diag } from '@decky/server'
 
 // Boot the history subsystem: opens the global SQLite DB, registers IPC, wires graceful
@@ -15,7 +14,6 @@ export function setupHistory(): void {
     console.error('[history] failed to open db:', err)
     return
   }
-  registerHistoryIpc()
   app.on('before-quit', () => {
     try {
       flushOpenVisits()

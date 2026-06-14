@@ -1,6 +1,5 @@
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ipcMain } from 'electron'
 import { deckStateDir } from '@decky/shared/node'
 import type { DeckyWsServer } from './ws-server'
 
@@ -52,13 +51,8 @@ export async function setState(key: string, value: unknown): Promise<void> {
   await writeChain
 }
 
-export function registerStateHandlers(): void {
-  ipcMain.handle('state:get', async (_e, key: string) => getState(key))
-  ipcMain.handle('state:set', async (_e, key: string, value: unknown) => {
-    await setState(key, value)
-    return true
-  })
-  ipcMain.handle('state:get-all', async () => load())
+export async function loadAllState(): Promise<State> {
+  return load()
 }
 
 export function registerStateWsHandlers(ws: DeckyWsServer): void {

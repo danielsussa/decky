@@ -513,7 +513,17 @@ async function handleRequest(
   // GET /widgets/list — catalog of registered widget types + currently-mounted instances.
   // Used by MCP `list_widgets` so the AI can discover available widgets without hardcoded docs.
   if (req.method === 'GET' && url === '/widgets/list') {
-    const outcome = await awaitWidgetCall(getWindow, getWsServer, { kind: 'list' })
+    const outcome = await awaitWidgetCall({
+        getWsServer,
+        emitIpc: (payload) => {
+          const win = getWindow()
+          if (win && !win.isDestroyed()) win.webContents.send('widget:call', payload)
+        },
+        hasIpcConsumer: () => {
+          const win = getWindow()
+          return !!(win && !win.isDestroyed())
+        }
+      }, { kind: 'list' })
     if (outcome.error) {
       sendJson(res, 502, { error: outcome.error })
       return
@@ -552,7 +562,17 @@ async function handleRequest(
         sendJson(res, 400, { error: 'key required for /widget/get' })
         return
       }
-      const outcome = await awaitWidgetCall(getWindow, getWsServer, {
+      const outcome = await awaitWidgetCall({
+        getWsServer,
+        emitIpc: (payload) => {
+          const win = getWindow()
+          if (win && !win.isDestroyed()) win.webContents.send('widget:call', payload)
+        },
+        hasIpcConsumer: () => {
+          const win = getWindow()
+          return !!(win && !win.isDestroyed())
+        }
+      }, {
         kind: isInvoke ? 'invoke' : 'get',
         cardId: body.cardId,
         widgetId: body.widgetId,

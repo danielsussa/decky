@@ -1,4 +1,3 @@
-import { ipcMain, type BrowserWindow } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { DeckyWsServer } from './ws-server'
 
@@ -24,7 +23,11 @@ export type WidgetCallPayload = {
   key?: string
 }
 
-function applyReply(msg: { reqId?: string; result?: unknown; error?: string }): void {
+export function applyWidgetReply(msg: {
+  reqId?: string
+  result?: unknown
+  error?: string
+}): void {
   if (!msg || typeof msg.reqId !== 'string') return
   const p = pending.get(msg.reqId)
   if (!p) return
@@ -33,29 +36,32 @@ function applyReply(msg: { reqId?: string; result?: unknown; error?: string }): 
   p.resolve({ result: msg.result, error: msg.error })
 }
 
-export function registerWidgetBridge(
-  _getWindow: () => BrowserWindow | null,
-  getWsServer: () => DeckyWsServer | null
-): void {
-  ipcMain.on('widget:call-reply', (_e, msg) => applyReply(msg))
+export function registerWidgetBridge(getWsServer: () => DeckyWsServer | null): void {
   const ws = getWsServer()
   if (!ws) return
   ws.handle<{ reqId?: string; result?: unknown; error?: string }, void>(
     'widget:call-reply',
-    (payload) => applyReply(payload ?? {})
+    (payload) => applyWidgetReply(payload ?? {})
   )
 }
 
+// Adapter de "emit widget:call". O shim Electron passa um emit que faz webContents.send,
+// e o WS broadcast já tá embutido aqui. Pure — sem BrowserWindow.
 export async function awaitWidgetCall(
-  getWindow: () => BrowserWindow | null,
-  getWsServer: () => DeckyWsServer | null,
+  options: {
+    getWsServer: () => DeckyWsServer | null
+    /** Hook opcional pra emitir o mesmo payload via IPC pro Electron renderer. */
+    emitIpc?: (payload: WidgetCallPayload) => void
+    /** Permite o caller validar se alguém pode atender (ex: tem WebContents vivo). */
+    hasIpcConsumer?: () => boolean
+  },
   call: Omit<WidgetCallPayload, 'reqId'>,
   timeoutMs = 5000
 ): Promise<{ result?: unknown; error?: string }> {
-  const win = getWindow()
-  const ws = getWsServer()
-  // Sem janela aberta E sem WS clients = ninguém pra atender. Falha rápido.
-  if ((!win || win.isDestroyed()) && (!ws || ws.clientCount() === 0)) {
+  const ws = options.getWsServer()
+  const hasIpc = options.hasIpcConsumer?.() ?? false
+  // Ninguém pra atender = falha rápido.
+  if (!hasIpc && (!ws || ws.clientCount() === 0)) {
     return { error: 'no active window or ws client' }
   }
   const reqId = randomUUID()
@@ -66,7 +72,7 @@ export async function awaitWidgetCall(
       resolve({ error: 'widget call timed out' })
     }, timeoutMs)
     pending.set(reqId, { resolve, timer })
-    if (win && !win.isDestroyed()) win.webContents.send('widget:call', payload)
+    if (hasIpc) options.emitIpc?.(payload)
     ws?.broadcast('widget:call', payload)
   })
 }

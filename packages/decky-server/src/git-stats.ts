@@ -1,4 +1,3 @@
-import { ipcMain } from 'electron'
 import { exec } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -24,7 +23,7 @@ function run(cmd: string, cwd: string, timeoutMs: number): Promise<string> {
   })
 }
 
-async function diffStats(cwd: string): Promise<DiffStats> {
+export async function diffStats(cwd: string): Promise<DiffStats> {
   if (!cwd || !isGitRepo(cwd)) return { isRepo: false, additions: 0, deletions: 0 }
   const [numstat, headRef] = await Promise.all([
     run('git diff HEAD --numstat', cwd, 1500),
@@ -52,14 +51,9 @@ async function diffStats(cwd: string): Promise<DiffStats> {
   return { isRepo: true, additions: add, deletions: del, branch }
 }
 
-async function diffText(cwd: string): Promise<string> {
+export async function diffText(cwd: string): Promise<string> {
   if (!cwd || !isGitRepo(cwd)) return ''
   return run('git diff HEAD', cwd, 4000)
-}
-
-export function registerGitHandlers(): void {
-  ipcMain.handle('git:diff-stats', (_e, cwd: string) => diffStats(cwd))
-  ipcMain.handle('git:diff-text', (_e, cwd: string) => diffText(cwd))
 }
 
 export function registerGitWsHandlers(ws: DeckyWsServer): void {

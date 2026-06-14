@@ -24,7 +24,7 @@ import {
   getSessionTitles,
   rehydratePreviews
 } from './preview-server'
-import { registerWorkspaceHandlers } from '@decky/server'
+import { registerLegacyIpcBridges } from './legacy-ipc'
 import { registerCardsHandlers } from './cards-store'
 import { registerTagsIndexHandlers } from './tags-index-watcher'
 import { searchCards } from '@decky/server'
@@ -39,8 +39,8 @@ import { ensureDeckInstruction } from '@decky/server'
 import { ensureDeckyHooks } from '@decky/server'
 import { resolveClaudeBin, readAiTitle } from '@decky/server'
 import { initCliPaths } from '@decky/server'
-import { registerStateHandlers, registerStateWsHandlers, getState } from '@decky/server'
-import { registerCliHandlers, registerCliWsHandlers } from '@decky/server'
+import { registerStateWsHandlers, getState } from '@decky/server'
+import { registerCliWsHandlers } from '@decky/server'
 import { registerGitWsHandlers } from '@decky/server'
 import { registerWorkspaceWsHandlers } from '@decky/server'
 import { registerTagsIndexWsHandlers } from '@decky/server'
@@ -48,7 +48,6 @@ import { registerHistoryWsHandlers } from '@decky/server'
 import { startWsServer, type DeckyWsServer } from '@decky/server'
 import { registerDevRebuildHandlers } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
-import { registerGitHandlers } from '@decky/server'
 import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
 import { registerCardScheme, setupCardProtocol, cardUrlToAbsPath } from './card-protocol'
 import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
@@ -236,8 +235,7 @@ app
     Menu.setApplicationMenu(buildMenu(() => mainWindow))
 
     registerPtyHandlers(() => mainWindow, () => wsServer)
-    registerStateHandlers()
-    registerCliHandlers()
+    registerLegacyIpcBridges()
     // Fase 2 — WS server na 127.0.0.1:<porta-livre>. Roda em paralelo aos IPCs por enquanto;
     // os handlers WS expõem o mesmo protocolo. Próximas PRs migram o preload domínio a domínio,
     // e quando todos os domínios migrarem o ipcMain.handle vira redundante e some.
@@ -299,14 +297,12 @@ app
     } catch (err) {
       console.error('[ws-server] failed to start:', err)
     }
-    registerWorkspaceHandlers()
     registerCardsHandlers(() => wsServer)
     registerTagsIndexHandlers()
     registerCardMirrorHandlers(() => mainWindow, () => wsServer)
-    registerWidgetBridge(() => mainWindow, () => wsServer)
+    registerWidgetBridge(() => wsServer)
     registerFileWatchHandlers(() => mainWindow, () => wsServer)
     registerDevRebuildHandlers(() => mainWindow, () => wsServer)
-    registerGitHandlers()
     setupAssetProtocol()
     setupCardProtocol()
     // Global default UA: strip the Electron/app token so any web surface that falls back to it

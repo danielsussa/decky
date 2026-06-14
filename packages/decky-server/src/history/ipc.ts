@@ -1,4 +1,3 @@
-import { ipcMain } from 'electron'
 import { getHistoryDb } from './db'
 import { getWorkspaceMeta, setWorkspaceIsolated } from './workspace-id'
 import type { DeckyWsServer } from '../ws-server'
@@ -99,16 +98,6 @@ export function suggestVisits(payload: {
     ORDER BY hits DESC, last_visited DESC
     LIMIT ?`
   return db.prepare(sql).all(...params) as SuggestionRow[]
-}
-
-export function registerHistoryIpc(): void {
-  ipcMain.handle('history:list-recent', (_e, payload) => listRecentVisits(payload))
-  ipcMain.handle('history:suggest', (_e, payload) => suggestVisits(payload))
-  ipcMain.handle('history:get-workspace-meta', (_e, cwd: string) => getWorkspaceMeta(cwd))
-  ipcMain.handle('history:set-workspace-isolated', (_e, cwd: string, isolated: boolean) => {
-    setWorkspaceIsolated(cwd, isolated)
-    return true
-  })
 }
 
 export function registerHistoryWsHandlers(ws: DeckyWsServer): void {

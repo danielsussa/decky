@@ -1,6 +1,5 @@
 import { readFile, writeFile, mkdir, rename, access } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { ipcMain } from 'electron'
 import { workspaceStatePath, workspaceDir } from '@decky/shared/node'
 import { migrateWorkspaceDir } from './migrate'
 import type { DeckyWsServer } from './ws-server'
@@ -59,13 +58,6 @@ export async function writeWorkspaceFile(cwd: string, state: unknown): Promise<b
   writeChains.set(cwd, next)
   await next
   return true
-}
-
-export function registerWorkspaceHandlers(): void {
-  ipcMain.handle('workspace:read', (_e, cwd: string) => readWorkspaceFile(cwd))
-  ipcMain.handle('workspace:write', (_e, cwd: string, state: unknown) =>
-    writeWorkspaceFile(cwd, state)
-  )
 }
 
 export function registerWorkspaceWsHandlers(ws: DeckyWsServer): void {

@@ -2,9 +2,9 @@ import { app, ipcMain, type BrowserWindow } from 'electron'
 import { spawn } from 'node:child_process'
 import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { deckStateDir } from './paths'
+import { deckStateDir } from '@decky/shared/node'
 import { loginShellPath } from './pty'
-import { diag } from './diag'
+import { diag } from '@decky/server'
 
 // Dev-only "rebuild & relaunch" button. It exists solely for developing decky against the
 // REAL installed .app: the packaged bundle loads its code from inside app.asar (NOT from out/),

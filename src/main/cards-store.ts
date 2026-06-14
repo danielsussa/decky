@@ -2,8 +2,8 @@ import { writeFile, mkdir, rename, readdir, stat, readFile, unlink, rmdir } from
 import type { Dirent } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { ipcMain } from 'electron'
-import { cardFilePath, safeCardId, workspaceCardsDir } from './paths'
-import { extractTags } from './cards-search'
+import { cardFilePath, safeCardId, workspaceCardsDir } from '@decky/shared/node'
+import { extractTags } from '@decky/server'
 
 // Serialize writes per-file so rapid successive updates to the same card don't clobber.
 const writeChains = new Map<string, Promise<void>>()

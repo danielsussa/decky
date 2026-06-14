@@ -1,0 +1,13 @@
+{
+  "name": "@decky/shared",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Tipos e utils compartilhados entre @decky/server e clients (Electron, PWA). Subentry '/node' contém utils que dependem de APIs Node (path/os) e NÃO podem ser importados do renderer.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "type": "commonjs"
+}

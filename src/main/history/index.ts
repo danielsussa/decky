@@ -1,8 +1,8 @@
 import { app } from 'electron'
-import { openHistoryDb, closeHistoryDb, historyDbPath } from './db'
+import { openHistoryDb, closeHistoryDb, historyDbPath } from '@decky/server'
 import { flushAll as flushOpenVisits } from './capture'
-import { registerHistoryIpc } from './ipc'
-import { diag } from '../diag'
+import { registerHistoryIpc } from '@decky/server'
+import { diag } from '@decky/server'
 
 // Boot the history subsystem: opens the global SQLite DB, registers IPC, wires graceful
 // shutdown so any in-flight dwell timers are flushed before the DB closes. Called once from

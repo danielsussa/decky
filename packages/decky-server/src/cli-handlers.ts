@@ -8,7 +8,7 @@ import {
   type CliKind,
   type DetectedCli,
   type CliInstallHint
-} from '../shared/cli-spec'
+} from '@decky/shared'
 
 function isCliKind(v: unknown): v is CliKind {
   return typeof v === 'string' && (CLI_KINDS as string[]).includes(v)

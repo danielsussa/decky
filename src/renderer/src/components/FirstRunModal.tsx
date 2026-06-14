@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CLI_KINDS, CLI_SPECS, type CliKind, type DetectedCli } from '../../../shared/cli-spec'
+import { CLI_KINDS, CLI_SPECS, type CliKind, type DetectedCli } from '@decky/shared'
 import { t } from '../lib/i18n'
 
 interface FirstRunModalProps {

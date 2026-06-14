@@ -1,7 +1,7 @@
 import Terminal from './Terminal'
 import type { Session } from '../types'
 import type { Mode, Theme } from '../../../shared/themes'
-import { CLI_SPECS } from '../../../shared/cli-spec'
+import { CLI_SPECS } from '@decky/shared'
 import { t } from '../lib/i18n'
 
 interface TerminalHostProps {

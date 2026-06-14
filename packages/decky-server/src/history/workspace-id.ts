@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { workspaceDir } from '../paths'
+import { workspaceDir } from '@decky/shared/node'
 
 // History-specific metadata per workspace. Kept SEPARATE from workspace.json (owned by the
 // renderer-driven workspace-store) to avoid races and to keep concerns isolated.

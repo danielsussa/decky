@@ -1,5 +1,5 @@
-import { getHistoryDb } from './db'
-import { getWorkspaceMeta } from './workspace-id'
+import { getHistoryDb } from '@decky/server'
+import { getWorkspaceMeta } from '@decky/server'
 
 // Per-card "open visit" — the row in `visits` that's still accumulating dwell time. At most one
 // per cardId at any moment. On navigation, the previous one closes (committing dwell), a new

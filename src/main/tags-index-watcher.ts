@@ -1,7 +1,7 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { ipcMain } from 'electron'
-import { workspaceCardsDir } from './paths'
-import { writeTagsIndex, tagsIndexFileName } from './tags-index'
+import { workspaceCardsDir } from '@decky/shared/node'
+import { writeTagsIndex, tagsIndexFileName } from '@decky/server'
 
 // Watches each workspace's .decky/cards/ directory; on any change to an .html/.md inside,
 // regenerates <cardsDir>/tags-index.html. Ignores changes to the index file itself so

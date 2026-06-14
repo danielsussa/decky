@@ -1,4 +1,4 @@
-import type { CliKind } from './cli-spec'
+import type { CliKind } from '@decky/shared'
 
 export type FormFieldType =
   | 'text'

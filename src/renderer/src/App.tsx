@@ -16,7 +16,7 @@ import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
 import type { PreviewSource, StashEntry } from '../../shared/preview'
 import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
 import { t } from './lib/i18n'
-import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '../../shared/cli-spec'
+import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '@decky/shared'
 import {
   applyTheme,
   assignNewWorkspaceTheme,

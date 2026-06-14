@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir, rename, access } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { ipcMain } from 'electron'
-import { workspaceStatePath, workspaceDir } from './paths'
+import { workspaceStatePath, workspaceDir } from '@decky/shared/node'
 import { migrateWorkspaceDir } from './migrate'
 
 const FILE = 'workspace.json'

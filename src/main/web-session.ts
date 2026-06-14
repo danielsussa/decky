@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, session, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { diag } from './diag'
+import { diag } from '@decky/server'
 
 // All web cards share this partition (persist:deckweb). Cookies, storage, and the handlers
 // configured here are scoped to it — distinct from the app shell's own session so a bad cert

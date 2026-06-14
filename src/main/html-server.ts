@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { extname, join, normalize as normalizePath, relative, resolve as resolvePath } from 'node:path'
 import { app, ipcMain } from 'electron'
-import { diag } from './diag'
+import { diag } from '@decky/server'
 
 // Bundle marked locally as a virtual route. The old wrapper imported it from
 // https://esm.sh/marked@12 at every card open; on the first render of a fresh card://

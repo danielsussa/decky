@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 import type { PreviewSource } from '../shared/preview'
-import type { CliKind, DetectedCli, CliInstallHint } from '../shared/cli-spec'
+import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
 import { DEFAULT_LOCALE, LOCALE_ARG_PREFIX, normalizeLocale, type Locale } from '../shared/locale'
 
 const resolvedLocale: Locale = (() => {

@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ipcMain } from 'electron'
-import { deckStateDir } from './paths'
+import { deckStateDir } from '@decky/shared/node'
 
 const STATE_DIR = deckStateDir()
 const STATE_PATH = join(STATE_DIR, 'state.json')

@@ -24,9 +24,13 @@ const buildDefines = {
 
 export default defineConfig({
   main: {
-    // Não externalizar o pacote do monorepo handoff (shipado como source TS): o bundler compila
+    // Não externalizar packages do monorepo (shipados como source TS): o bundler compila
     // junto. Os demais deps de node_modules seguem externalizados.
-    plugins: [externalizeDepsPlugin({ exclude: ['@handoff/runtime-electron'] })],
+    plugins: [
+      externalizeDepsPlugin({
+        exclude: ['@handoff/runtime-electron', '@decky/server', '@decky/shared']
+      })
+    ],
     define: buildDefines
   },
   preload: {

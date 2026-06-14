@@ -4,8 +4,8 @@ import os from 'os'
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { sanitizeTranscript } from './transcript-repair'
-import { workspaceCardsDir } from './paths'
+import { sanitizeTranscript } from '@decky/server'
+import { workspaceCardsDir } from '@decky/shared/node'
 import {
   sessionHandoffSocketPath,
   startSessionHandoffBackend,

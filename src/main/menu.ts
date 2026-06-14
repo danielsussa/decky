@@ -1,6 +1,6 @@
 import { Menu, dialog, BrowserWindow, app, type MenuItemConstructorOptions } from 'electron'
 import { getDevInfo } from './dev-rebuild'
-import { getBuildInfo } from './build-info'
+import { getBuildInfo } from '@decky/shared'
 
 export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
   const isMac = process.platform === 'darwin'

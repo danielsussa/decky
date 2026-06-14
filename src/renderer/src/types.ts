@@ -1,4 +1,4 @@
-import type { CliKind } from '../../shared/cli-spec'
+import type { CliKind } from '@decky/shared'
 
 export interface Session {
   id: string

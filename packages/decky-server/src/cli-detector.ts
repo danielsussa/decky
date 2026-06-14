@@ -7,7 +7,7 @@ import {
   type CliKind,
   type CliSpec,
   type DetectedCli
-} from '../shared/cli-spec'
+} from '@decky/shared'
 import { getCustomPathSync } from './cli-paths'
 
 export type { DetectedCli }

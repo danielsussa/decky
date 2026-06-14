@@ -7,6 +7,9 @@
   "main": "./out/main/index.js",
   "author": "Daniel Kanczuk <danielsussa@gmail.com>",
   "homepage": "https://github.com/danielsussa/decky",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",

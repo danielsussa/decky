@@ -2,7 +2,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { ipcMain, type BrowserWindow } from 'electron'
-import { applyAutoFix } from './card-auto-fix'
+import { applyAutoFix } from '@decky/server'
 
 const DEBOUNCE_MS = 150
 

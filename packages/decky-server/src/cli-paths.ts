@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process'
 import { accessSync, constants, existsSync, statSync } from 'node:fs'
-import { CLI_KINDS, type CliKind } from '../shared/cli-spec'
+import { CLI_KINDS, type CliKind } from '@decky/shared'
 import { getState, setState } from './state-store'
 
 // Stored as { [kind]: absolute path }; null/missing means "no override, use auto-detect".

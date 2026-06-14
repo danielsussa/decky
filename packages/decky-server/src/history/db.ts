@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { deckStateDir } from '../paths'
+import { deckStateDir } from '@decky/shared/node'
 
 // Global history DB lives in deckStateDir() so it spans every workspace on this machine.
 // Each row carries workspace_id so the renderer can filter to the active workspace

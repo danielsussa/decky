@@ -7,7 +7,7 @@ import {
   type WebContents
 } from 'electron'
 import { WEB_PARTITION } from './web-session'
-import { diag } from './diag'
+import { diag } from '@decky/server'
 import {
   openVisit as historyOpenVisit,
   closeVisit as historyCloseVisit,

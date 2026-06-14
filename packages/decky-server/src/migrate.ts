@@ -1,7 +1,7 @@
 import { cp, access } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { deckStateDir, workspaceDir } from './paths'
+import { deckStateDir, workspaceDir } from '@decky/shared/node'
 
 async function exists(p: string): Promise<boolean> {
   try {

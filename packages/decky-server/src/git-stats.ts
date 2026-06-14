@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import { exec } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import type { DeckyWsServer } from './ws-server'
 
 export type DiffStats = {
   isRepo: boolean
@@ -59,4 +60,9 @@ async function diffText(cwd: string): Promise<string> {
 export function registerGitHandlers(): void {
   ipcMain.handle('git:diff-stats', (_e, cwd: string) => diffStats(cwd))
   ipcMain.handle('git:diff-text', (_e, cwd: string) => diffText(cwd))
+}
+
+export function registerGitWsHandlers(ws: DeckyWsServer): void {
+  ws.handle<{ cwd: string }, DiffStats>('git:diff-stats', (args) => diffStats(args?.cwd ?? ''))
+  ws.handle<{ cwd: string }, string>('git:diff-text', (args) => diffText(args?.cwd ?? ''))
 }

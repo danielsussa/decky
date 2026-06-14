@@ -38,7 +38,7 @@ export interface DeckAPI {
   }
   workspace: {
     read: <T = unknown>(cwd: string) => Promise<T | null>
-    write: (cwd: string, state: unknown) => Promise<true>
+    write: (cwd: string, state: unknown) => Promise<boolean>
   }
   cards: {
     write: (
@@ -157,7 +157,7 @@ export interface DeckAPI {
   }
   state: {
     get: <T = unknown>(key: string) => Promise<T | null>
-    set: (key: string, value: unknown) => Promise<true>
+    set: (key: string, value: unknown) => Promise<boolean>
   }
   theme: {
     setMode: (mode: 'dark' | 'light') => Promise<true>

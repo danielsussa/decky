@@ -1,6 +1,7 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { workspaceCardsDir } from '@decky/shared/node'
 import { writeTagsIndex, tagsIndexFileName } from './tags-index'
+import type { DeckyWsServer } from './ws-server'
 
 // Watches each workspace's .decky/cards/ directory; on any change to an .html/.md inside,
 // regenerates <cardsDir>/tags-index.html. Ignores changes to the index file itself so
@@ -66,4 +67,16 @@ export function stopAllTagsIndexWatchers(): void {
   debounces.clear()
   for (const w of watchers.values()) w.close()
   watchers.clear()
+}
+
+export function registerTagsIndexWsHandlers(ws: DeckyWsServer): void {
+  ws.handle<{ workspace: string }, void>('tagsIndex:ensure', async (args) => {
+    await ensureTagsIndexWatched(args?.workspace ?? '')
+  })
+  ws.handle<{ workspace: string }, void>('tagsIndex:rebuild', async (args) => {
+    await rebuildTagsIndex(args?.workspace ?? '')
+  })
+  ws.handle<{ workspace: string }, string>('tagsIndex:path', (args) =>
+    tagsIndexPath(args?.workspace ?? '')
+  )
 }

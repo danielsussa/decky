@@ -69,9 +69,9 @@ const deckApi = {
   },
   workspace: {
     read: <T = unknown>(cwd: string): Promise<T | null> =>
-      ipcRenderer.invoke('workspace:read', cwd),
-    write: (cwd: string, state: unknown): Promise<true> =>
-      ipcRenderer.invoke('workspace:write', cwd, state)
+      wsInvoke<T | null>('workspace:read', { cwd }),
+    write: (cwd: string, state: unknown): Promise<boolean> =>
+      wsInvoke('workspace:write', { cwd, state })
   },
   cards: {
     // Materialize a card to its file under the workspace's .decky/cards/. Returns the
@@ -135,14 +135,11 @@ const deckApi = {
     // Ensure the workspace's tags-index.html is being generated + watched. Idempotent.
     // Triggers an initial generation on the first call so the index file exists when the
     // renderer goes to open it as an empty-state tab.
-    ensure: (workspace: string): Promise<void> =>
-      ipcRenderer.invoke('tagsIndex:ensure', workspace),
+    ensure: (workspace: string): Promise<void> => wsInvoke('tagsIndex:ensure', { workspace }),
     // Force a regen now (sync — useful from a UI "rebuild index" button later).
-    rebuild: (workspace: string): Promise<void> =>
-      ipcRenderer.invoke('tagsIndex:rebuild', workspace),
+    rebuild: (workspace: string): Promise<void> => wsInvoke('tagsIndex:rebuild', { workspace }),
     // Absolute path to <workspace>/.decky[-dev]/cards/tags-index.html.
-    path: (workspace: string): Promise<string> =>
-      ipcRenderer.invoke('tagsIndex:path', workspace)
+    path: (workspace: string): Promise<string> => wsInvoke('tagsIndex:path', { workspace })
   },
   file: {
     watch: (path: string): Promise<true> => ipcRenderer.invoke('file:watch', path),
@@ -159,16 +156,16 @@ const deckApi = {
     }
   },
   claude: {
-    getBin: (): Promise<string> => ipcRenderer.invoke('claude:get-bin'),
+    getBin: (): Promise<string> => wsInvoke('claude:get-bin'),
     aiTitle: (cwd: string, uuid: string): Promise<string | null> =>
-      ipcRenderer.invoke('claude:ai-title', cwd, uuid)
+      wsInvoke('claude:ai-title', { cwd, uuid })
   },
   git: {
     diffStats: (
       cwd: string
     ): Promise<{ isRepo: boolean; additions: number; deletions: number; branch?: string }> =>
-      ipcRenderer.invoke('git:diff-stats', cwd),
-    diffText: (cwd: string): Promise<string> => ipcRenderer.invoke('git:diff-text', cwd)
+      wsInvoke('git:diff-stats', { cwd }),
+    diffText: (cwd: string): Promise<string> => wsInvoke('git:diff-text', { cwd })
   },
   // Fase 2 — 1º domínio migrado pro WS. Os 10 handlers `cli:*` vão via wsInvoke; renderer não
   // muda (mesma forma de Promise). Os ipcMain.handle('cli:*') no main continuam registrados
@@ -290,8 +287,8 @@ const deckApi = {
     }
   },
   state: {
-    get: <T = unknown>(key: string): Promise<T | null> => ipcRenderer.invoke('state:get', key),
-    set: (key: string, value: unknown): Promise<true> => ipcRenderer.invoke('state:set', key, value)
+    get: <T = unknown>(key: string): Promise<T | null> => wsInvoke<T | null>('state:get', { key }),
+    set: (key: string, value: unknown): Promise<boolean> => wsInvoke('state:set', { key, value })
   },
   theme: {
     // Tells main to set Electron's nativeTheme.themeSource so every embedded webContents

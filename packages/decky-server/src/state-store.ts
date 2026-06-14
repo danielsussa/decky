@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ipcMain } from 'electron'
 import { deckStateDir } from '@decky/shared/node'
+import type { DeckyWsServer } from './ws-server'
 
 const STATE_DIR = deckStateDir()
 const STATE_PATH = join(STATE_DIR, 'state.json')
@@ -58,4 +59,13 @@ export function registerStateHandlers(): void {
     return true
   })
   ipcMain.handle('state:get-all', async () => load())
+}
+
+export function registerStateWsHandlers(ws: DeckyWsServer): void {
+  ws.handle<{ key: string }, unknown>('state:get', (args) => getState(args?.key ?? ''))
+  ws.handle<{ key: string; value: unknown }, boolean>('state:set', async (args) => {
+    await setState(args?.key ?? '', args?.value)
+    return true
+  })
+  ws.handle<void, unknown>('state:get-all', () => load())
 }

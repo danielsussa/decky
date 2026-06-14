@@ -39,8 +39,11 @@ import { ensureDeckInstruction } from '@decky/server'
 import { ensureDeckyHooks } from '@decky/server'
 import { resolveClaudeBin, readAiTitle } from '@decky/server'
 import { initCliPaths } from '@decky/server'
-import { registerStateHandlers, getState } from '@decky/server'
+import { registerStateHandlers, registerStateWsHandlers, getState } from '@decky/server'
 import { registerCliHandlers, registerCliWsHandlers } from '@decky/server'
+import { registerGitWsHandlers } from '@decky/server'
+import { registerWorkspaceWsHandlers } from '@decky/server'
+import { registerTagsIndexWsHandlers } from '@decky/server'
 import { startWsServer, type DeckyWsServer } from '@decky/server'
 import { registerDevRebuildHandlers } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
@@ -238,6 +241,16 @@ app
       wsServer = await startWsServer()
       diag(`[ws-server] listening on ${wsServer.url}`)
       registerCliWsHandlers(wsServer)
+      registerStateWsHandlers(wsServer)
+      registerGitWsHandlers(wsServer)
+      registerWorkspaceWsHandlers(wsServer)
+      registerTagsIndexWsHandlers(wsServer)
+      // claude:* não tem arquivo dedicado — handlers vivem inline em index.ts.
+      wsServer.handle<void, string>('claude:get-bin', () => resolveClaudeBin())
+      wsServer.handle<{ cwd: string; uuid: string }, string | null>(
+        'claude:ai-title',
+        (args) => readAiTitle(args?.cwd ?? '', args?.uuid ?? '')
+      )
     } catch (err) {
       console.error('[ws-server] failed to start:', err)
     }

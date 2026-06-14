@@ -10,6 +10,7 @@
     "decky-server": "./bin/decky-server.ts"
   },
   "scripts": {
-    "start": "tsx bin/decky-server.ts"
+    "start": "tsx bin/decky-server.ts",
+    "build": "node build.mjs"
   }
 }

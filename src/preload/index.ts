@@ -259,7 +259,10 @@ const deckApi = {
   dev: {
     getInfo: (): Promise<{ enabled: boolean; repo?: string; accel: string }> =>
       wsInvoke('dev:get-info'),
-    rebuild: (): Promise<{ ok: boolean; error?: string }> => wsInvoke('dev:rebuild'),
+    // dev:rebuild runs electron-vite + (often) electron-builder + codesign — easily blows past
+    // the wsInvoke 10s default. Give it a generous ceiling that still bounds runaway behavior.
+    rebuild: (): Promise<{ ok: boolean; error?: string }> =>
+      wsInvoke('dev:rebuild', undefined, { timeoutMs: 10 * 60 * 1000 }),
     relaunch: (): Promise<void> => wsInvoke('dev:relaunch'),
     onOutput: (callback: (line: string) => void): (() => void) =>
       wsOn<string>('dev:rebuild-output', callback)

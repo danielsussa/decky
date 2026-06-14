@@ -66,11 +66,39 @@ function builtBundle(repo: string): string | null {
   return null
 }
 
+// Watchdog ceilings. The renderer's `running` spinner is single-shot — if the child wedges
+// (orphan grandchild holding stdio, sandbox stall, hung mv), the IPC promise never resolves
+// and the UI is stuck forever. These bound the worst case and force an `error` reply.
+const BUILD_TIMEOUT_MS = 6 * 60 * 1000
+const STEP_TIMEOUT_MS = 90 * 1000
+
 function run(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const c = spawn(cmd, args, { stdio: 'ignore' })
-    c.on('error', reject)
-    c.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exit ${code}`))))
+    let settled = false
+    const t = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try {
+        c.kill('SIGKILL')
+      } catch {
+        // process already gone
+      }
+      reject(new Error(`${cmd} timed out after ${STEP_TIMEOUT_MS}ms`))
+    }, STEP_TIMEOUT_MS)
+    c.on('error', (err) => {
+      if (settled) return
+      settled = true
+      clearTimeout(t)
+      reject(err)
+    })
+    c.on('close', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(t)
+      if (code === 0) resolve()
+      else reject(new Error(`${cmd} exit ${code}`))
+    })
   })
 }
 
@@ -86,13 +114,31 @@ function runBuild(
       // need the user's real toolchain (nvm/homebrew/node). Same fix pty.ts uses for claude.
       env: { ...process.env, FORCE_COLOR: '0', PATH: loginShellPath() }
     })
+    let settled = false
+    const finish = (code: number): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(t)
+      resolve(code)
+    }
+    // The build can wedge after the child appears to exit (orphan node/esbuild holds stdio,
+    // so `close` never fires). SIGKILL the child group; release the IPC with a non-zero code.
+    const t = setTimeout(() => {
+      send(`\n✗ build timed out after ${BUILD_TIMEOUT_MS / 1000}s — killing child\n`)
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // already dead
+      }
+      finish(124)
+    }, BUILD_TIMEOUT_MS)
     child.stdout.on('data', (b: Buffer) => send(b.toString()))
     child.stderr.on('data', (b: Buffer) => send(b.toString()))
     child.on('error', (err) => {
       send(`spawn error: ${err.message}\n`)
-      resolve(1)
+      finish(1)
     })
-    child.on('close', (c) => resolve(c ?? 1))
+    child.on('close', (c) => finish(c ?? 1))
   })
 }
 

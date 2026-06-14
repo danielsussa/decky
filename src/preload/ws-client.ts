@@ -117,14 +117,24 @@ function getWs(): Promise<WebSocket> {
   return wsPromise
 }
 
-export async function wsInvoke<T = unknown>(kind: string, args?: unknown): Promise<T> {
+export interface WsInvokeOptions {
+  /** Override the 10s default for handlers that legitimately take longer (e.g. dev:rebuild). */
+  timeoutMs?: number
+}
+
+export async function wsInvoke<T = unknown>(
+  kind: string,
+  args?: unknown,
+  opts?: WsInvokeOptions
+): Promise<T> {
   const ws = await getWs()
   const reqId = crypto.randomUUID()
+  const timeoutMs = opts?.timeoutMs ?? INVOKE_TIMEOUT_MS
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingInvokes.delete(reqId)
-      reject(new Error(`ws ${kind} timed out after ${INVOKE_TIMEOUT_MS}ms`))
-    }, INVOKE_TIMEOUT_MS)
+      reject(new Error(`ws ${kind} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
     pendingInvokes.set(reqId, {
       resolve: resolve as (v: unknown) => void,
       reject,

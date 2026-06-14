@@ -705,11 +705,19 @@ function App(): React.JSX.Element {
     setRebuildElapsedSec(0)
     setRebuildState('running')
     const start = Date.now()
-    const res = await window.deck.dev.rebuild()
-    // Stamp the precise final duration (the 1s-tick interval would otherwise leave us up to
-    // a second short of the real build time on the persistent ready/error label).
-    setRebuildElapsedSec(Math.floor((Date.now() - start) / 1000))
-    setRebuildState(res.ok ? 'ready' : 'error')
+    // try/catch is load-bearing: an IPC error (main throws, WS reply missing, watchdog kills
+    // the build) used to leave the UI stuck on the spinner forever. Always flip to 'error'.
+    try {
+      const res = await window.deck.dev.rebuild()
+      // Stamp the precise final duration (the 1s-tick interval would otherwise leave us up to
+      // a second short of the real build time on the persistent ready/error label).
+      setRebuildElapsedSec(Math.floor((Date.now() - start) / 1000))
+      setRebuildState(res.ok ? 'ready' : 'error')
+    } catch (err) {
+      setRebuildLog((prev) => prev + `\nIPC error: ${(err as Error).message ?? String(err)}\n`)
+      setRebuildElapsedSec(Math.floor((Date.now() - start) / 1000))
+      setRebuildState('error')
+    }
   }, [])
 
   // Tick a seconds counter while a rebuild is running so the user sees how long it's taking.

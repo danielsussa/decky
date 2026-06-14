@@ -8,6 +8,17 @@ interface AddServerModalProps {
   onConnect: (config: { host: string; path: string; identity: string }) => void
 }
 
+// Sugestões estáticas pros datalists. Sem SSH conectado ainda — não dá pra fazer completion
+// dinâmica do remote (`ssh user@host "ls ~"`). Quando o SSH connect estiver pronto (PR #25+),
+// estas viram apenas o fallback e a maior parte das opções vem do remote.
+const COMMON_PATHS = ['~/dev', '~/code', '~/projects', '~/repos', '~/src', '/opt', '/var/www']
+const COMMON_IDENTITIES = [
+  '~/.ssh/id_ed25519',
+  '~/.ssh/id_rsa',
+  '~/.ssh/id_ecdsa',
+  '~/.ssh/id_dsa'
+]
+
 export default function AddServerModal({
   onDismiss,
   onConnect
@@ -83,9 +94,15 @@ export default function AddServerModal({
               value={path}
               onChange={(e) => setPath(e.target.value)}
               placeholder="/home/user/projeto"
+              list="add-server-path-suggestions"
               autoComplete="off"
               spellCheck={false}
             />
+            <datalist id="add-server-path-suggestions">
+              {COMMON_PATHS.map((p) => (
+                <option key={p} value={p} />
+              ))}
+            </datalist>
             <span className="add-server-modal-help">{t('server.pathHelp')}</span>
           </label>
 
@@ -96,9 +113,15 @@ export default function AddServerModal({
               value={identity}
               onChange={(e) => setIdentity(e.target.value)}
               placeholder="~/.ssh/id_ed25519"
+              list="add-server-identity-suggestions"
               autoComplete="off"
               spellCheck={false}
             />
+            <datalist id="add-server-identity-suggestions">
+              {COMMON_IDENTITIES.map((p) => (
+                <option key={p} value={p} />
+              ))}
+            </datalist>
             <span className="add-server-modal-help">{t('server.identityHelp')}</span>
           </label>
 

@@ -284,6 +284,18 @@ app
       wsServer.handle<void, Record<string, string>>('sessions:get-titles', () =>
         getSessionTitles()
       )
+      // preview:get-all/rehydrate — funções puras no server.
+      wsServer.handle<void, Record<string, import('@decky/shared').PreviewSource>>(
+        'preview:get-all',
+        () => getPreviewSources()
+      )
+      wsServer.handle<
+        {
+          byCard: Record<string, Record<string, import('@decky/shared').PreviewSource>>
+          workspace?: string
+        },
+        Record<string, Record<string, import('@decky/shared').PreviewSource>>
+      >('preview:rehydrate', (args) => rehydratePreviews(args?.byCard ?? {}, args?.workspace))
     } catch (err) {
       console.error('[ws-server] failed to start:', err)
     }
@@ -291,7 +303,7 @@ app
     registerCardsHandlers(() => wsServer)
     registerTagsIndexHandlers()
     registerCardMirrorHandlers(() => mainWindow, () => wsServer)
-    registerWidgetBridge(() => mainWindow)
+    registerWidgetBridge(() => mainWindow, () => wsServer)
     registerFileWatchHandlers(() => mainWindow, () => wsServer)
     registerDevRebuildHandlers(() => mainWindow, () => wsServer)
     registerGitHandlers()

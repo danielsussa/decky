@@ -1,5 +1,6 @@
 import { ipcMain, type BrowserWindow } from 'electron'
 import { randomUUID } from 'node:crypto'
+import type { DeckyWsServer } from './ws-server'
 
 // Bridge for the MCP-side imperative API ("card_invoke" / "card_get") to reach a live React
 // widget in the renderer. Mirrors the prompt_form long-poll pattern: HTTP request parks a
@@ -23,27 +24,40 @@ export type WidgetCallPayload = {
   key?: string
 }
 
-export function registerWidgetBridge(_getWindow: () => BrowserWindow | null): void {
-  ipcMain.on(
+function applyReply(msg: { reqId?: string; result?: unknown; error?: string }): void {
+  if (!msg || typeof msg.reqId !== 'string') return
+  const p = pending.get(msg.reqId)
+  if (!p) return
+  clearTimeout(p.timer)
+  pending.delete(msg.reqId)
+  p.resolve({ result: msg.result, error: msg.error })
+}
+
+export function registerWidgetBridge(
+  _getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null
+): void {
+  ipcMain.on('widget:call-reply', (_e, msg) => applyReply(msg))
+  const ws = getWsServer()
+  if (!ws) return
+  ws.handle<{ reqId?: string; result?: unknown; error?: string }, void>(
     'widget:call-reply',
-    (_e, msg: { reqId?: string; result?: unknown; error?: string }) => {
-      if (!msg || typeof msg.reqId !== 'string') return
-      const p = pending.get(msg.reqId)
-      if (!p) return
-      clearTimeout(p.timer)
-      pending.delete(msg.reqId)
-      p.resolve({ result: msg.result, error: msg.error })
-    }
+    (payload) => applyReply(payload ?? {})
   )
 }
 
 export async function awaitWidgetCall(
   getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null,
   call: Omit<WidgetCallPayload, 'reqId'>,
   timeoutMs = 5000
 ): Promise<{ result?: unknown; error?: string }> {
   const win = getWindow()
-  if (!win || win.isDestroyed()) return { error: 'no active window' }
+  const ws = getWsServer()
+  // Sem janela aberta E sem WS clients = ninguém pra atender. Falha rápido.
+  if ((!win || win.isDestroyed()) && (!ws || ws.clientCount() === 0)) {
+    return { error: 'no active window or ws client' }
+  }
   const reqId = randomUUID()
   const payload: WidgetCallPayload = { ...call, reqId }
   return await new Promise((resolve) => {
@@ -52,6 +66,7 @@ export async function awaitWidgetCall(
       resolve({ error: 'widget call timed out' })
     }, timeoutMs)
     pending.set(reqId, { resolve, timer })
-    win.webContents.send('widget:call', payload)
+    if (win && !win.isDestroyed()) win.webContents.send('widget:call', payload)
+    ws?.broadcast('widget:call', payload)
   })
 }

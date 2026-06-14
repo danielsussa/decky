@@ -11,3 +11,4 @@ out
 .deck/
 .deck-dev/
 build/decky-signing.p12
+packages/decky-server/dist/

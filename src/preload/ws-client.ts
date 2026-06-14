@@ -134,6 +134,20 @@ export async function wsInvoke<T = unknown>(kind: string, args?: unknown): Promi
   })
 }
 
+/**
+ * Fire-and-forget send pro server (equivalente do ipcRenderer.send). Sem reqId, sem espera
+ * de reply — o server pode rodar um handler registrado ou ignorar. Falha silenciosamente
+ * se o socket estiver fechado.
+ */
+export async function wsSend(kind: string, args?: unknown): Promise<void> {
+  try {
+    const ws = await getWs()
+    ws.send(JSON.stringify({ v: 1, kind, args }))
+  } catch (err) {
+    console.warn(`[ws] send ${kind} failed:`, err)
+  }
+}
+
 /** Subscribe a um broadcast push do server (kind sem 'reply'). Retorna função de unsubscribe. */
 export function wsOn<T = unknown>(kind: string, handler: (args: T) => void): () => void {
   let set = broadcastHandlers.get(kind)

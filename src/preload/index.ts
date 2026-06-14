@@ -4,7 +4,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 import type { PreviewSource } from '@decky/shared'
 import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
 import { DEFAULT_LOCALE, LOCALE_ARG_PREFIX, normalizeLocale, type Locale } from '@decky/shared'
-import { wsInvoke, wsOn } from './ws-client'
+import { wsInvoke, wsOn, wsSend } from './ws-client'
 
 const resolvedLocale: Locale = (() => {
   const arg = process.argv.find((a) => a.startsWith(LOCALE_ARG_PREFIX))
@@ -81,18 +81,18 @@ const deckApi = {
       cardId: string,
       content: string,
       ext?: '.md' | '.html'
-    ): Promise<string | null> =>
-      ipcRenderer.invoke('cards:write', workspace, cardId, content, ext),
+    ): Promise<string | null> => wsInvoke('cards:write', { workspace, cardId, content, ext }),
     // Push the renderer's full per-session card mirror to main (id/path/title/type/focused).
     // Main exposes this via HTTP for the MCP list_cards tool. Called debounced.
-    syncState: (sessions: Record<string, unknown>): void =>
-      ipcRenderer.send('cards:state-sync', { sessions }),
+    syncState: (sessions: Record<string, unknown>): void => {
+      void wsSend('cards:state-sync', { sessions })
+    },
     // List every .md page under <workspace>/.decky/cards/ (recursive). Drives the
     // "Páginas do workspace" panel.
     list: (
       workspace: string
     ): Promise<{ id: string; path: string; title: string; mtime: number }[]> =>
-      ipcRenderer.invoke('cards:list', workspace),
+      wsInvoke('cards:list', { workspace }),
     // Full-text search across <workspace>/.decky/cards/ (recursive). Empty query
     // returns the most-recently-modified cards by mtime.
     search: (
@@ -109,11 +109,11 @@ const deckApi = {
         score: number
         mtime: number
       }[]
-    > => ipcRenderer.invoke('cards:search', workspace, query, limit),
+    > => wsInvoke('cards:search', { workspace, query, limit }),
     // Resolve a [[name]] wikilink to an absolute card path under <workspace>/.decky/cards/.
     // Returns null if no card matches by full id or basename.
     resolveWikilink: (workspace: string, name: string): Promise<string | null> =>
-      ipcRenderer.invoke('cards:resolve-wikilink', workspace, name),
+      wsInvoke('cards:resolve-wikilink', { workspace, name }),
     // List every card whose body contains [[<id>]] or [[<basename>]] pointing at cardPath.
     backlinks: (
       workspace: string,
@@ -127,9 +127,9 @@ const deckApi = {
         line: number
         mtime: number
       }[]
-    > => ipcRenderer.invoke('cards:backlinks', workspace, cardPath),
+    > => wsInvoke('cards:backlinks', { workspace, cardPath }),
     delete: (workspace: string, cardId: string): Promise<boolean> =>
-      ipcRenderer.invoke('cards:delete', workspace, cardId)
+      wsInvoke('cards:delete', { workspace, cardId })
   },
   tagsIndex: {
     // Ensure the workspace's tags-index.html is being generated + watched. Idempotent.

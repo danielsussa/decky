@@ -251,13 +251,32 @@ app
         'claude:ai-title',
         (args) => readAiTitle(args?.cwd ?? '', args?.uuid ?? '')
       )
+      // cards:* extras (search/resolve-wikilink/backlinks) também sem arquivo dedicado.
+      wsServer.handle<{ workspace: string; query: string; limit?: number }, unknown>(
+        'cards:search',
+        (args) =>
+          searchCards(
+            workspaceCardsDir(args?.workspace ?? ''),
+            args?.query ?? '',
+            typeof args?.limit === 'number' ? args.limit : 20,
+            'html'
+          )
+      )
+      wsServer.handle<{ workspace: string; name: string }, string | null>(
+        'cards:resolve-wikilink',
+        (args) => resolveWikilink(workspaceCardsDir(args?.workspace ?? ''), args?.name ?? '')
+      )
+      wsServer.handle<{ workspace: string; cardPath: string }, unknown>(
+        'cards:backlinks',
+        (args) => computeBacklinks(workspaceCardsDir(args?.workspace ?? ''), args?.cardPath ?? '')
+      )
     } catch (err) {
       console.error('[ws-server] failed to start:', err)
     }
     registerWorkspaceHandlers()
-    registerCardsHandlers()
+    registerCardsHandlers(() => wsServer)
     registerTagsIndexHandlers()
-    registerCardMirrorHandlers(() => mainWindow)
+    registerCardMirrorHandlers(() => mainWindow, () => wsServer)
     registerWidgetBridge(() => mainWindow)
     registerFileWatchHandlers(() => mainWindow, () => wsServer)
     registerDevRebuildHandlers(() => mainWindow)

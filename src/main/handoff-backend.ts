@@ -4,20 +4,11 @@
 // backend isolado. Resolve o vazamento cross-session/cross-workspace que o socket global
 // (/tmp/handoff-decky.sock) tinha: qualquer cliente dirigia o card focado em QUALQUER
 // sessão, então uma sessão A podia mexer num card de B sem nenhuma barreira.
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import type { WebContents } from 'electron'
 import { getWebViewsManager } from './web-views'
-import { getCardsForSession } from '@decky/server'
+import { getCardsForSession, normalizeAddressBarUrl, sessionHandoffSocketPath } from '@decky/server'
 import { startHandoffServer, type HandoffServerHandle } from '@handoff/runtime-electron'
 import { trackActivityStart, trackActivityEnd } from './handoff-activity'
-
-export function sessionHandoffSocketPath(sessionId: string): string {
-  // sessionId vem do pty (DECKY_SESSION_ID); slugify defensivamente — sessionId hoje é UUID
-  // mas se um dia for arbitrário, não quero `/` no path.
-  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')
-  return join(tmpdir(), `handoff-decky-${safe}.sock`)
-}
 
 interface SessionBackend {
   sessionId: string
@@ -29,17 +20,6 @@ interface SessionBackend {
 }
 
 const backends = new Map<string, SessionBackend>()
-
-// address-bar → URL (mesmo afordance do normalizeAddress dos outros hosts).
-function normalizeUrl(raw: string): string {
-  const s = raw.trim()
-  if (!s) return 'about:blank'
-  if (/^(https?|file|about|data|chrome):/i.test(s)) return s
-  if (/^localhost(:\d+)?(\/|$)/i.test(s) || /^127\.0\.0\.1(:\d+)?(\/|$)/i.test(s))
-    return `http://${s}`
-  if (/^[^\s]+\.[^\s]{2,}/.test(s) && !/\s/.test(s)) return `https://${s}`
-  return `https://www.google.com/search?q=${encodeURIComponent(s)}`
-}
 
 // Resolução do card alvo, SCOPED na sessão: foco da sessão → único card web da sessão →
 // qualquer card web da sessão (escolha estável). Cards de outras sessões NUNCA entram.
@@ -96,7 +76,7 @@ export function startSessionHandoffBackend(sessionId: string): HandoffServerHand
   const handle = startHandoffServer({
     socketPath,
     getActiveWebContents: () => activeWebCardWcForSession(backend),
-    normalizeUrl,
+    normalizeUrl: normalizeAddressBarUrl,
     // cmd vem do runtime; snapshot/see/wait JÁ são filtrados como passivos lá.
     onActivity: (kind, wc, cmd) => {
       if (kind === 'start') trackActivityStart(wc, `handoff-socket:${cmd}:${sessionId}`)

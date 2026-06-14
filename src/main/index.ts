@@ -259,7 +259,7 @@ app
     registerTagsIndexHandlers()
     registerCardMirrorHandlers(() => mainWindow)
     registerWidgetBridge(() => mainWindow)
-    registerFileWatchHandlers(() => mainWindow)
+    registerFileWatchHandlers(() => mainWindow, () => wsServer)
     registerDevRebuildHandlers(() => mainWindow)
     registerGitHandlers()
     setupAssetProtocol()

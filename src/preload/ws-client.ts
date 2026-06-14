@@ -1,10 +1,15 @@
 import { WS_URL_PREFIX } from '@decky/shared'
 
 // WS client minimalista usado pelo preload pra falar com o decky-server (loopback na Fase 2,
-// remoto via Tailscale na Fase 3). Lazy connect — abre na 1ª invoke, compartilha a conexão
-// entre chamadas concorrentes. Reset on close → próximo invoke reabre. Sem reconnect agressivo
-// nem queue de pendentes nessa versão; chamadas durante drop falham (10s timeout) e o caller
-// trata como erro normal de RPC.
+// remoto via Tailscale na Fase 3). Lazy connect — abre na 1ª invoke/on, compartilha a conexão
+// entre chamadas concorrentes. Reset on close → próximo invoke/on reabre.
+//
+// Listener único global no socket roteia todo tráfego entrante:
+//  - { kind: 'reply', reqId } → resolve a Promise registrada por wsInvoke
+//  - { kind: outro }           → entrega pra todos handlers registrados via wsOn
+//
+// Sem reconnect agressivo, sem queue de pendentes durante drop. Chamadas durante drop falham
+// (10s timeout). Broadcasts perdidos enquanto desconectado — POC suficiente.
 
 const INVOKE_TIMEOUT_MS = 10_000
 
@@ -14,6 +19,30 @@ function getWsUrl(): string | null {
   const arg = process.argv.find((a) => a.startsWith(WS_URL_PREFIX))
   cachedUrl = arg ? arg.slice(WS_URL_PREFIX.length) || null : null
   return cachedUrl
+}
+
+interface PendingInvoke {
+  resolve: (value: unknown) => void
+  reject: (err: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+const pendingInvokes = new Map<string, PendingInvoke>()
+const broadcastHandlers = new Map<string, Set<(args: unknown) => void>>()
+
+interface IncomingReply {
+  v: 1
+  kind: 'reply'
+  reqId: string
+  ok: boolean
+  result?: unknown
+  error?: string
+}
+
+interface IncomingBroadcast {
+  v: 1
+  kind: string
+  args?: unknown
 }
 
 let wsPromise: Promise<WebSocket> | null = null
@@ -45,50 +74,81 @@ function getWs(): Promise<WebSocket> {
     }
     ws.addEventListener('open', onOpen)
     ws.addEventListener('error', onError)
-    // Se cair depois de aberto, libera o cache pra próximo invoke reabrir.
+
+    // Listener único — roteia replies e broadcasts pros consumers corretos.
+    ws.addEventListener('message', (ev) => {
+      let msg: IncomingReply | IncomingBroadcast
+      try {
+        msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '')
+      } catch {
+        return
+      }
+      if (!msg || typeof msg.kind !== 'string') return
+      if (msg.kind === 'reply' && typeof (msg as IncomingReply).reqId === 'string') {
+        const reply = msg as IncomingReply
+        const pending = pendingInvokes.get(reply.reqId)
+        if (!pending) return
+        clearTimeout(pending.timer)
+        pendingInvokes.delete(reply.reqId)
+        if (reply.ok) pending.resolve(reply.result)
+        else pending.reject(new Error(reply.error || 'ws error'))
+        return
+      }
+      // Broadcast — entrega pra todos handlers do kind (cópia da Set pra permitir unsubscribe
+      // dentro do callback sem race).
+      const handlers = broadcastHandlers.get(msg.kind)
+      if (!handlers || handlers.size === 0) return
+      const args = (msg as IncomingBroadcast).args
+      for (const h of Array.from(handlers)) h(args)
+    })
+
+    // Se cair depois de aberto, libera o cache pra próximo invoke/on reabrir.
     ws.addEventListener('close', () => {
       wsPromise = null
+      // Rejeita invokes pendentes — não dá pra esperar reply de conexão morta.
+      for (const p of pendingInvokes.values()) {
+        clearTimeout(p.timer)
+        p.reject(new Error('ws closed'))
+      }
+      pendingInvokes.clear()
+      // Broadcasts ficam: próxima conexão herda os handlers.
     })
   })
   return wsPromise
-}
-
-interface WsReply {
-  v: 1
-  kind: 'reply'
-  reqId: string
-  ok: boolean
-  result?: unknown
-  error?: string
 }
 
 export async function wsInvoke<T = unknown>(kind: string, args?: unknown): Promise<T> {
   const ws = await getWs()
   const reqId = crypto.randomUUID()
   return new Promise<T>((resolve, reject) => {
-    const onMessage = (ev: MessageEvent): void => {
-      let msg: WsReply
-      try {
-        msg = JSON.parse(typeof ev.data === 'string' ? ev.data : '')
-      } catch {
-        return
-      }
-      if (msg.kind !== 'reply' || msg.reqId !== reqId) return
-      cleanup()
-      if (msg.ok) resolve(msg.result as T)
-      else reject(new Error(msg.error || `ws ${kind} failed`))
-    }
     const timer = setTimeout(() => {
-      cleanup()
+      pendingInvokes.delete(reqId)
       reject(new Error(`ws ${kind} timed out after ${INVOKE_TIMEOUT_MS}ms`))
     }, INVOKE_TIMEOUT_MS)
-    function cleanup(): void {
-      clearTimeout(timer)
-      ws.removeEventListener('message', onMessage)
-    }
-    ws.addEventListener('message', onMessage)
+    pendingInvokes.set(reqId, {
+      resolve: resolve as (v: unknown) => void,
+      reject,
+      timer
+    })
     ws.send(JSON.stringify({ v: 1, kind, reqId, args }))
   })
+}
+
+/** Subscribe a um broadcast push do server (kind sem 'reply'). Retorna função de unsubscribe. */
+export function wsOn<T = unknown>(kind: string, handler: (args: T) => void): () => void {
+  let set = broadcastHandlers.get(kind)
+  if (!set) {
+    set = new Set()
+    broadcastHandlers.set(kind, set)
+  }
+  set.add(handler as (args: unknown) => void)
+  // Garante que a conexão esteja sendo estabelecida (lazy) — broadcasts não funcionam sem ws aberto.
+  void getWs().catch(() => {
+    // sem WS URL ou connect falhou; handler permanece registrado pra próxima tentativa
+  })
+  return () => {
+    broadcastHandlers.get(kind)?.delete(handler as (args: unknown) => void)
+  }
 }
 
 /** Útil pra UI mostrar "WS desconectado". Não bloqueia — só reflete estado atual. */

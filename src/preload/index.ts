@@ -4,7 +4,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 import type { PreviewSource } from '@decky/shared'
 import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
 import { DEFAULT_LOCALE, LOCALE_ARG_PREFIX, normalizeLocale, type Locale } from '@decky/shared'
-import { wsInvoke } from './ws-client'
+import { wsInvoke, wsOn } from './ws-client'
 
 const resolvedLocale: Locale = (() => {
   const arg = process.argv.find((a) => a.startsWith(LOCALE_ARG_PREFIX))
@@ -142,18 +142,16 @@ const deckApi = {
     path: (workspace: string): Promise<string> => wsInvoke('tagsIndex:path', { workspace })
   },
   file: {
-    watch: (path: string): Promise<true> => ipcRenderer.invoke('file:watch', path),
-    unwatch: (path: string): Promise<true> => ipcRenderer.invoke('file:unwatch', path),
-    readText: (path: string): Promise<string | null> => ipcRenderer.invoke('file:read-text', path),
+    watch: (path: string): Promise<boolean> => wsInvoke('file:watch', { path }),
+    unwatch: (path: string): Promise<boolean> => wsInvoke('file:unwatch', { path }),
+    readText: (path: string): Promise<string | null> => wsInvoke('file:read-text', { path }),
+    // readBinary fica em IPC enquanto o protocolo WS não carrega binário (base64 ou frames).
     readBinary: (path: string): Promise<Uint8Array | null> =>
       ipcRenderer.invoke('file:read-binary', path),
     write: (path: string, content: string): Promise<boolean> =>
-      ipcRenderer.invoke('file:write', path, content),
-    onChanged: (callback: (msg: { path: string }) => void): (() => void) => {
-      const listener = (_: unknown, msg: { path: string }): void => callback(msg)
-      ipcRenderer.on('file:changed', listener)
-      return () => ipcRenderer.removeListener('file:changed', listener)
-    }
+      wsInvoke('file:write', { path, content }),
+    onChanged: (callback: (msg: { path: string }) => void): (() => void) =>
+      wsOn<{ path: string }>('file:changed', callback)
   },
   claude: {
     getBin: (): Promise<string> => wsInvoke('claude:get-bin'),

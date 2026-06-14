@@ -88,8 +88,8 @@ export interface DeckAPI {
     path: (workspace: string) => Promise<string>
   }
   file: {
-    watch: (path: string) => Promise<true>
-    unwatch: (path: string) => Promise<true>
+    watch: (path: string) => Promise<boolean>
+    unwatch: (path: string) => Promise<boolean>
     readText: (path: string) => Promise<string | null>
     readBinary: (path: string) => Promise<Uint8Array | null>
     write: (path: string, content: string) => Promise<boolean>

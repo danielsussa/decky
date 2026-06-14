@@ -1,11 +1,23 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { ipcMain, type BrowserWindow } from 'electron'
-import { applyAutoFix, readTextFile, readBinaryFile, writeTextFile } from '@decky/server'
+import {
+  applyAutoFix,
+  readTextFile,
+  readBinaryFile,
+  writeTextFile,
+  type DeckyWsServer
+} from '@decky/server'
 
 const DEBOUNCE_MS = 150
 
-export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null): void {
+// Watcher state vive aqui no shim por enquanto — vira broadcast WS unificado quando o
+// transport for o único caminho. Hoje emite NOS DOIS canais (IPC pro Electron renderer +
+// WS pra qualquer client conectado), pra a migração ficar reversível.
+export function registerFileWatchHandlers(
+  getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null
+): void {
   const refcounts = new Map<string, number>() // abs path -> refcount
   const dirWatchers = new Map<string, FSWatcher>() // dir -> watcher
   const dirPaths = new Map<string, Set<string>>() // dir -> set of watched abs paths
@@ -27,6 +39,7 @@ export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null)
         const finish = (): void => {
           const win = getWindow()
           if (win && !win.isDestroyed()) win.webContents.send('file:changed', { path })
+          getWsServer()?.broadcast('file:changed', { path })
         }
         if (isCardMd) {
           void applyAutoFix(path).finally(finish)
@@ -53,7 +66,8 @@ export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null)
     }
   }
 
-  ipcMain.handle('file:watch', (_e, path: string) => {
+  function watchPath(path: string): boolean {
+    if (!path) return false
     const n = (refcounts.get(path) ?? 0) + 1
     refcounts.set(path, n)
     if (n === 1) {
@@ -70,9 +84,10 @@ export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null)
       void applyAutoFix(path)
     }
     return true
-  })
+  }
 
-  ipcMain.handle('file:unwatch', (_e, path: string) => {
+  function unwatchPath(path: string): boolean {
+    if (!path) return false
     const n = (refcounts.get(path) ?? 0) - 1
     if (n > 0) {
       refcounts.set(path, n)
@@ -90,11 +105,26 @@ export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null)
       }
     }
     return true
-  })
+  }
 
-  // FS read/write delegam pra @decky/server/file-ops (puro). Watcher state segue aqui
-  // por enquanto — vira broadcast WS no próximo passo.
+  // ── IPC (legado, sai quando file:* completamente migrar pro WS) ────────────
+  ipcMain.handle('file:watch', (_e, path: string) => watchPath(path))
+  ipcMain.handle('file:unwatch', (_e, path: string) => unwatchPath(path))
   ipcMain.handle('file:read-text', (_e, path: string) => readTextFile(path))
   ipcMain.handle('file:read-binary', (_e, path: string) => readBinaryFile(path))
   ipcMain.handle('file:write', (_e, path: string, content: string) => writeTextFile(path, content))
+
+  // ── WS (canal real do remote engine) ───────────────────────────────────────
+  // file:read-binary fica de fora — Uint8Array não serializa por JSON. Vira quando o
+  // protocolo aceitar binário (base64 ou frames ArrayBuffer).
+  const ws = getWsServer()
+  if (!ws) return
+  ws.handle<{ path: string }, boolean>('file:watch', (args) => watchPath(args?.path ?? ''))
+  ws.handle<{ path: string }, boolean>('file:unwatch', (args) => unwatchPath(args?.path ?? ''))
+  ws.handle<{ path: string }, string | null>('file:read-text', (args) =>
+    readTextFile(args?.path ?? '')
+  )
+  ws.handle<{ path: string; content: string }, boolean>('file:write', (args) =>
+    writeTextFile(args?.path ?? '', args?.content ?? '')
+  )
 }

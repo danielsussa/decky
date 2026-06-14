@@ -40,7 +40,8 @@ import { ensureDeckyHooks } from '@decky/server'
 import { resolveClaudeBin, readAiTitle } from '@decky/server'
 import { initCliPaths } from '@decky/server'
 import { registerStateHandlers, getState } from '@decky/server'
-import { registerCliHandlers } from '@decky/server'
+import { registerCliHandlers, registerCliWsHandlers } from '@decky/server'
+import { startWsServer, type DeckyWsServer } from '@decky/server'
 import { registerDevRebuildHandlers } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
 import { registerGitHandlers } from '@decky/server'
@@ -67,6 +68,7 @@ registerCardScheme()
 app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAuthz,FedCmIdpSigninStatusEnabled,FedCmAutoSelectedFlag')
 
 let mainWindow: BrowserWindow | null = null
+let wsServer: DeckyWsServer | null = null
 
 // DECKY_DEV runs a fully isolated dev instance alongside the installed app: its own name +
 // userData (→ separate single-instance lock, so both run), paired with DECKY_STATE_DIR /
@@ -225,6 +227,16 @@ app
     registerPtyHandlers(() => mainWindow)
     registerStateHandlers()
     registerCliHandlers()
+    // Fase 2 — WS server na 127.0.0.1:<porta-livre>. Roda em paralelo aos IPCs por enquanto;
+    // os handlers WS expõem o mesmo protocolo. Próximas PRs migram o preload domínio a domínio,
+    // e quando todos os domínios migrarem o ipcMain.handle vira redundante e some.
+    try {
+      wsServer = await startWsServer()
+      diag(`[ws-server] listening on ${wsServer.url}`)
+      registerCliWsHandlers(wsServer)
+    } catch (err) {
+      console.error('[ws-server] failed to start:', err)
+    }
     registerWorkspaceHandlers()
     registerCardsHandlers()
     registerTagsIndexHandlers()
@@ -404,6 +416,9 @@ app.on('before-quit', (e) => {
   didFlush = true
   killAllPtys()
   stopPreviewServer()
+  // Best-effort close do WS server. Não bloqueia o quit — sessions WS fechadas pelo OS de qualquer jeito.
+  void wsServer?.close().catch(() => {})
+  wsServer = null
   const win = mainWindow
   if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
   e.preventDefault()

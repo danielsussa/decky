@@ -1,9 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
-import type { PreviewSource } from '../shared/preview'
+import type { PreviewSource } from '@decky/shared'
 import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
-import { DEFAULT_LOCALE, LOCALE_ARG_PREFIX, normalizeLocale, type Locale } from '../shared/locale'
+import { DEFAULT_LOCALE, LOCALE_ARG_PREFIX, normalizeLocale, type Locale } from '@decky/shared'
 
 const resolvedLocale: Locale = (() => {
   const arg = process.argv.find((a) => a.startsWith(LOCALE_ARG_PREFIX))

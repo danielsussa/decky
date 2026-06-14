@@ -1,4 +1,4 @@
-import type { Locale } from '../../../shared/locale'
+import type { Locale } from '@decky/shared'
 
 // Tiny string dictionary, no runtime deps. Keys are flat dotted ids; values are
 // language → string. For inline-interpolated messages we split into prefix/suffix

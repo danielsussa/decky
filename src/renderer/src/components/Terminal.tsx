@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { xtermTheme, type Mode, type Theme } from '../../../shared/themes'
+import { xtermTheme, type Mode, type Theme } from '@decky/shared'
 
 // xterm's onData carries genuine keystrokes AND automatic terminal→app reports the TUI
 // solicits: cursor-position/DA/DSR replies, focus in/out, and mouse tracking (motion reports

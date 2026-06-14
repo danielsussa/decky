@@ -1,7 +1,7 @@
 import { ChevronRight, ChevronDown, FolderPlus, Plus, X, Bookmark, Clock } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { Mode, Theme } from '../../../shared/themes'
-import type { StashEntry } from '../../../shared/preview'
+import type { Mode, Theme } from '@decky/shared'
+import type { StashEntry } from '@decky/shared'
 import { t } from '../lib/i18n'
 
 export interface TreeSession {

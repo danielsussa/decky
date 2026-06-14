@@ -5,7 +5,7 @@ import {
   conflictFor,
   eventToAccel,
   type ActionId
-} from '../../../shared/keymap'
+} from '@decky/shared'
 import { t } from '../lib/i18n'
 
 interface ShortcutsPanelProps {

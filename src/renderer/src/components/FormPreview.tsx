@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { FormField, FormSpec } from '../../../shared/preview'
+import type { FormField, FormSpec } from '@decky/shared'
 import { t } from '../lib/i18n'
 
 interface FormPreviewProps {

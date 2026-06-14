@@ -1,7 +1,7 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-import type { PreviewSource } from '../shared/preview'
+import type { PreviewSource } from '@decky/shared'
 import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
-import type { Locale } from '../shared/locale'
+import type { Locale } from '@decky/shared'
 
 export type { PreviewSource, CliKind, DetectedCli, CliInstallHint, Locale }
 

@@ -7,7 +7,7 @@ import DiffPreview from './DiffPreview'
 import EditorPreview from './EditorPreview'
 import XlsxPreview from './XlsxPreview'
 import FormPreview from './FormPreview'
-import type { PreviewSource } from '../../../shared/preview'
+import type { PreviewSource } from '@decky/shared'
 
 interface PreviewProps {
   source: PreviewSource

@@ -1,6 +1,6 @@
 import Terminal from './Terminal'
 import type { Session } from '../types'
-import type { Mode, Theme } from '../../../shared/themes'
+import type { Mode, Theme } from '@decky/shared'
 import { CLI_SPECS } from '@decky/shared'
 import { t } from '../lib/i18n'
 

@@ -13,7 +13,7 @@ import CardSearch from './components/CardSearch'
 import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import FirstRunModal from './components/FirstRunModal'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
-import type { PreviewSource, StashEntry } from '../../shared/preview'
+import type { PreviewSource, StashEntry } from '@decky/shared'
 import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
 import { t } from './lib/i18n'
 import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '@decky/shared'
@@ -24,7 +24,7 @@ import {
   THEMES,
   type Mode,
   type Theme
-} from '../../shared/themes'
+} from '@decky/shared'
 import {
   ACTIONS,
   eventToAccel,
@@ -32,7 +32,7 @@ import {
   resolveKeymap,
   type ActionId,
   type Keymap
-} from '../../shared/keymap'
+} from '@decky/shared'
 
 // Experimento: alterna o layout do painel central entre 'grid' (gridstack) e 'tabs'.
 const DECKY_LAYOUT: 'grid' | 'tabs' = 'tabs'

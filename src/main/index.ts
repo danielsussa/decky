@@ -15,7 +15,7 @@ import { existsSync, statSync } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { buildMenu } from './menu'
-import { LOCALE_ARG_PREFIX, normalizeLocale } from '../shared/locale'
+import { LOCALE_ARG_PREFIX, normalizeLocale } from '@decky/shared'
 import { registerPtyHandlers, killAllPtys } from './pty'
 import {
   startPreviewServer,

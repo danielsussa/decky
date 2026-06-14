@@ -1,5 +1,6 @@
 export * from './card-auto-fix'
 export * from './cards-search'
+export * from './cards-store'
 export * from './cards-wikilinks'
 export * from './claude-bin'
 export * from './claude-md-installer'

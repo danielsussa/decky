@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Server, X } from 'lucide-react'
+import { Server, X, Check, AlertCircle, Loader2 } from 'lucide-react'
 import { t } from '../lib/i18n'
 
 interface AddServerModalProps {
   onDismiss: () => void
-  /** Recebe a config; UX-only por enquanto, modal mostra mensagem "ainda não implementado". */
-  onConnect: (config: { host: string; path: string; identity: string }) => void
 }
 
 // Sugestões estáticas pros datalists. Sem SSH conectado ainda — não dá pra fazer completion
@@ -19,36 +17,63 @@ const COMMON_IDENTITIES = [
   '~/.ssh/id_dsa'
 ]
 
-export default function AddServerModal({
-  onDismiss,
-  onConnect
-}: AddServerModalProps): React.JSX.Element {
+type Status =
+  | { kind: 'idle' }
+  | { kind: 'connecting'; step: string }
+  | { kind: 'ok'; output: string }
+  | { kind: 'error'; message: string; output?: string }
+
+export default function AddServerModal({ onDismiss }: AddServerModalProps): React.JSX.Element {
   const [host, setHost] = useState('')
   const [path, setPath] = useState('')
   const [identity, setIdentity] = useState('')
-  const [notice, setNotice] = useState<string | null>(null)
+  const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const hostRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     hostRef.current?.focus()
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onDismiss()
+      if (e.key === 'Escape' && status.kind !== 'connecting') onDismiss()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onDismiss])
+  }, [onDismiss, status.kind])
 
-  const submit = (e?: React.FormEvent): void => {
+  const submit = async (e?: React.FormEvent): Promise<void> => {
     if (e) e.preventDefault()
     const h = host.trim()
     const p = path.trim()
     if (!h || !p) return
-    onConnect({ host: h, path: p, identity: identity.trim() })
-    setNotice(`${t('server.notImplemented')} ${h}:${p}`)
+
+    // PR #25 — só prova que SSH funciona. Roda `echo + uname -a + pwd + ls -d <path>`.
+    // Próximas PRs trocam por: detect server, install, start, tunnel, connect.
+    setStatus({ kind: 'connecting', step: t('server.statusConnecting') })
+    const probeCmd = `echo "[decky-probe] connected" && uname -a && id -un && test -d ${JSON.stringify(p)} && echo "[decky-probe] path-ok ${p}" || echo "[decky-probe] path-missing ${p}"`
+    try {
+      const r = await window.deck.ssh.exec({
+        host: h,
+        command: probeCmd,
+        identity: identity.trim() || undefined,
+        timeoutMs: 15000
+      })
+      if (r.ok) {
+        setStatus({ kind: 'ok', output: r.stdout.trim() })
+      } else {
+        setStatus({
+          kind: 'error',
+          message: r.error ?? `exit ${r.exitCode}`,
+          output: [r.stderr.trim(), r.stdout.trim()].filter(Boolean).join('\n')
+        })
+      }
+    } catch (err) {
+      setStatus({ kind: 'error', message: (err as Error).message })
+    }
   }
 
+  const connecting = status.kind === 'connecting'
+
   return (
-    <div className="add-server-modal-backdrop" onClick={onDismiss}>
+    <div className="add-server-modal-backdrop" onClick={() => !connecting && onDismiss()}>
       <div
         className="add-server-modal"
         role="dialog"
@@ -64,6 +89,7 @@ export default function AddServerModal({
             type="button"
             className="add-server-modal-close"
             onClick={onDismiss}
+            disabled={connecting}
             aria-label="Fechar"
           >
             <X size={16} />
@@ -72,7 +98,7 @@ export default function AddServerModal({
 
         <p className="add-server-modal-subtitle">{t('server.subtitle')}</p>
 
-        <form onSubmit={submit} className="add-server-modal-form">
+        <form onSubmit={(e) => void submit(e)} className="add-server-modal-form">
           <label className="add-server-modal-field">
             <span className="add-server-modal-label">{t('server.hostLabel')}</span>
             <input
@@ -83,6 +109,7 @@ export default function AddServerModal({
               placeholder="user@minha-maquina.tail-xxxx.ts.net"
               autoComplete="off"
               spellCheck={false}
+              disabled={connecting}
             />
             <span className="add-server-modal-help">{t('server.hostHelp')}</span>
           </label>
@@ -97,6 +124,7 @@ export default function AddServerModal({
               list="add-server-path-suggestions"
               autoComplete="off"
               spellCheck={false}
+              disabled={connecting}
             />
             <datalist id="add-server-path-suggestions">
               {COMMON_PATHS.map((p) => (
@@ -116,6 +144,7 @@ export default function AddServerModal({
               list="add-server-identity-suggestions"
               autoComplete="off"
               spellCheck={false}
+              disabled={connecting}
             />
             <datalist id="add-server-identity-suggestions">
               {COMMON_IDENTITIES.map((p) => (
@@ -125,18 +154,50 @@ export default function AddServerModal({
             <span className="add-server-modal-help">{t('server.identityHelp')}</span>
           </label>
 
-          {notice && <div className="add-server-modal-notice">{notice}</div>}
+          {status.kind === 'connecting' && (
+            <div className="add-server-modal-status add-server-modal-status-working">
+              <Loader2 className="add-server-modal-spinner" size={14} />
+              <span>{status.step}</span>
+            </div>
+          )}
+
+          {status.kind === 'ok' && (
+            <div className="add-server-modal-status add-server-modal-status-ok">
+              <Check size={14} />
+              <div className="add-server-modal-status-body">
+                <span className="add-server-modal-status-title">{t('server.statusOk')}</span>
+                <pre className="add-server-modal-output">{status.output || '(no output)'}</pre>
+              </div>
+            </div>
+          )}
+
+          {status.kind === 'error' && (
+            <div className="add-server-modal-status add-server-modal-status-error">
+              <AlertCircle size={14} />
+              <div className="add-server-modal-status-body">
+                <span className="add-server-modal-status-title">{status.message}</span>
+                {status.output && (
+                  <pre className="add-server-modal-output">{status.output}</pre>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="add-server-modal-actions">
-            <button type="button" className="add-server-modal-cancel" onClick={onDismiss}>
+            <button
+              type="button"
+              className="add-server-modal-cancel"
+              onClick={onDismiss}
+              disabled={connecting}
+            >
               {t('server.cancel')}
             </button>
             <button
               type="submit"
               className="add-server-modal-connect"
-              disabled={!host.trim() || !path.trim()}
+              disabled={!host.trim() || !path.trim() || connecting}
             >
-              {t('server.connect')}
+              {connecting ? t('server.statusConnecting') : t('server.connect')}
             </button>
           </div>
         </form>

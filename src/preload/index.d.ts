@@ -239,6 +239,20 @@ export interface DeckAPI {
     onControlling: (callback: (msg: { cardId: string; controlling: boolean }) => void) => () => void
     onOpenTab: (callback: (msg: { url: string }) => void) => () => void
   }
+  ssh: {
+    exec: (args: {
+      host: string
+      command: string
+      identity?: string
+      timeoutMs?: number
+    }) => Promise<{
+      ok: boolean
+      exitCode: number | null
+      stdout: string
+      stderr: string
+      error?: string
+    }>
+  }
   widget: {
     onCall: (
       callback: (msg: {

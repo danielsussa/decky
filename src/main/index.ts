@@ -25,6 +25,7 @@ import {
   rehydratePreviews
 } from './preview-server'
 import { registerLegacyIpcBridges } from './legacy-ipc'
+import { registerSshHandlers } from './ssh-bridge'
 import { registerCardsHandlers } from './cards-store'
 import { registerTagsIndexHandlers } from './tags-index-watcher'
 import { searchCards } from '@decky/server'
@@ -303,6 +304,8 @@ app
         wsServer.handle<void, Record<string, string>>('sessions:get-titles', () =>
           getSessionTitles()
         )
+        // ssh:* — SSH client no main, expõe ssh:exec pra UX do "Add server" rodar comandos no remote.
+        registerSshHandlers(() => wsServer)
         // preview:get-all/rehydrate — funções puras no server.
         wsServer.handle<void, Record<string, import('@decky/shared').PreviewSource>>(
           'preview:get-all',

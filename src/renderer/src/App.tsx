@@ -2767,14 +2767,7 @@ function App(): React.JSX.Element {
         />
       )}
       {remoteServerModalOpen && (
-        <AddServerModal
-          onDismiss={() => setRemoteServerModalOpen(false)}
-          onConnect={(config) => {
-            // TODO PR #25: SSH connect + detectar/instalar decky-server no host + abrir tunnel
-            // + atualizar lista de workspaces remotos. Por enquanto só log + notice no modal.
-            console.log('[add-server] config (UX placeholder):', config)
-          }}
-        />
+        <AddServerModal onDismiss={() => setRemoteServerModalOpen(false)} />
       )}
       <main className="deck-main">
         <ResizableSplit

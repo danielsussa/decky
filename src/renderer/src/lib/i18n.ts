@@ -116,6 +116,8 @@ const messages = {
     pt: 'SSH ainda não está implementado (próximas PRs). Conectaria em:',
     en: 'SSH not implemented yet (next PRs). Would connect to:'
   },
+  'server.statusConnecting': { pt: 'Conectando…', en: 'Connecting…' },
+  'server.statusOk': { pt: 'SSH OK — host respondeu:', en: 'SSH OK — host replied:' },
   'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
   'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
   'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },

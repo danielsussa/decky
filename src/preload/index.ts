@@ -389,6 +389,20 @@ const deckApi = {
     setWorkspaceIsolated: (cwd: string, isolated: boolean): Promise<boolean> =>
       wsInvoke('history:set-workspace-isolated', { cwd, isolated })
   },
+  ssh: {
+    exec: (args: {
+      host: string
+      command: string
+      identity?: string
+      timeoutMs?: number
+    }): Promise<{
+      ok: boolean
+      exitCode: number | null
+      stdout: string
+      stderr: string
+      error?: string
+    }> => wsInvoke('ssh:exec', args)
+  },
   widget: {
     // Server forwards every widget:call here. The renderer dispatches into the widget registry
     // and acks via reply(reqId, ...). One-shot per reqId — there is no streaming.

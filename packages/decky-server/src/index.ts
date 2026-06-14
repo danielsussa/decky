@@ -1,3 +1,4 @@
+export * from './asset-protocol'
 export * from './card-auto-fix'
 export * from './card-mirror'
 export * from './cards-search'

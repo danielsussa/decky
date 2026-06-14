@@ -1,42 +1,17 @@
-import { protocol, net } from 'electron'
-import { resolve, extname } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { protocol } from 'electron'
+import { resolveAssetRequest } from '@decky/server'
 
-const MIME: Record<string, string> = {
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.avif': 'image/avif'
-}
-
-// Custom scheme used by markdown cards to reference local files (SVGs, images) via paths
-// relative to the .md. ReactMarkdown alone can't resolve relative <img src> because the renderer
-// page has no notion of where the .md lives on disk; this protocol bridges that.
+// Custom scheme usado por markdown cards pra referenciar arquivos locais (SVGs, imagens) via
+// paths relativos ao .md. ReactMarkdown sozinho não resolve <img src> relativo porque a
+// renderer page não sabe onde o .md mora no disco; este protocol faz a ponte.
 //
-// Allow-list (request is allowed if EITHER matches):
-//   1. Path lives under some `.decky/cards/` tree — covers materialized cards.
-//   2. Path lives under the card's own directory, passed as `?base=<abs dir>` — covers
-//      preview_show on a stray .md anywhere on disk that references neighbor files.
-// Either way a malicious card can only reach files near itself, not arbitrary disk.
-//
-// URL shape: decky-asset://card/<encoded abs path>?base=<encoded abs dir>
-// Example:   decky-asset://card/Users/u/p/img.jpg?base=%2FUsers%2Fu%2Fp
-
-const ALLOWED_RE = /\/\.decky\/cards\//
-
-function isUnder(abs: string, baseDir: string): boolean {
-  if (!baseDir) return false
-  const normalizedBase = baseDir.endsWith('/') ? baseDir.slice(0, -1) : baseDir
-  return abs === normalizedBase || abs.startsWith(normalizedBase + '/')
-}
+// Toda a resolução vive em @decky/server/asset-protocol (puro). Este shim só lida com a
+// integração Electron: registro privileged + adapter de Response.
 
 export function registerAssetScheme(): void {
-  // Privileged registration must happen BEFORE app is ready. Mark the scheme as standard +
-  // secure so the renderer treats it like https for fetch/img purposes. bypassCSP lets us
-  // serve images even when the renderer's meta-CSP doesn't list this scheme explicitly.
+  // Registro privileged DEVE acontecer ANTES do app ready. Marca como standard + secure pra
+  // que o renderer trate como https pra fetch/img. bypassCSP permite servir imagens mesmo
+  // quando o meta-CSP do renderer não lista esse scheme explicitamente.
   protocol.registerSchemesAsPrivileged([
     {
       scheme: 'decky-asset',
@@ -53,28 +28,12 @@ export function registerAssetScheme(): void {
 
 export function setupAssetProtocol(): void {
   protocol.handle('decky-asset', async (req) => {
-    try {
-      // URL shape: decky-asset://card/<encoded segments> — authority must be non-empty,
-      // Chromium silently drops <img> requests for custom schemes with an empty authority.
-      const url = new URL(req.url)
-      const segs = url.pathname.split('/').map((s) => decodeURIComponent(s))
-      const abs = resolve(segs.join('/'))
-      const base = url.searchParams.get('base')
-      const baseAbs = base ? resolve(base) : ''
-      if (!ALLOWED_RE.test(abs) && !isUnder(abs, baseAbs)) {
-        return new Response('forbidden', { status: 403 })
-      }
-      const fileUrl = pathToFileURL(abs).toString()
-      const res = await net.fetch(fileUrl)
-      if (!res.ok) return new Response('not found', { status: 404 })
-      const mime = MIME[extname(abs).toLowerCase()]
-      const buf = await res.arrayBuffer()
-      return new Response(buf, {
-        status: 200,
-        headers: mime ? { 'Content-Type': mime } : undefined
-      })
-    } catch (e) {
-      return new Response(String(e), { status: 500 })
-    }
+    const res = await resolveAssetRequest(req.url)
+    // Buffer<ArrayBufferLike> de readFile() ≠ BodyInit no TS 5.7 (mismatch de generics, OK
+    // em runtime — fetch.Response aceita Buffer normalmente).
+    return new Response((res.body ?? null) as BodyInit | null, {
+      status: res.status,
+      headers: res.headers
+    })
   })
 }

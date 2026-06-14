@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 import {
   closeHistoryDb,
+  ensureToken,
+  generateAndSaveToken,
   openHistoryDb,
+  readSavedToken,
   registerCliWsHandlers,
   registerGitWsHandlers,
   registerHistoryWsHandlers,
   registerStateWsHandlers,
   registerTagsIndexWsHandlers,
   registerWorkspaceWsHandlers,
+  serverDir,
   startWsServer,
   type DeckyWsServer
 } from '../src/index'
@@ -23,6 +27,11 @@ const DEFAULT_HOST = process.env.DECKY_SERVER_HOST || '127.0.0.1'
 async function start(): Promise<void> {
   console.log('[decky-server] starting…')
 
+  // Auth: gera token se ainda não existe. Em loopback puro (127.0.0.1) faz pouca diferença,
+  // mas o protocolo já aceita pra quando o host virar 0.0.0.0 ou tailscale.
+  const token = ensureToken()
+  console.log(`[decky-server] auth token at ${serverDir()}/admin-token.txt`)
+
   // History DB: best-effort. Sem DB o server ainda sobe; só history:* falham.
   try {
     openHistoryDb()
@@ -33,12 +42,13 @@ async function start(): Promise<void> {
 
   let ws: DeckyWsServer
   try {
-    ws = await startWsServer({ host: DEFAULT_HOST, port: DEFAULT_PORT })
+    ws = await startWsServer({ host: DEFAULT_HOST, port: DEFAULT_PORT, token })
   } catch (err) {
     console.error('[decky-server] failed to start WS server:', err)
     process.exit(1)
   }
   console.log(`[decky-server] WS listening at ${ws.url}`)
+  console.log(`[decky-server] connect with: ${ws.url}?token=${token}`)
 
   registerCliWsHandlers(ws)
   registerStateWsHandlers(ws)
@@ -70,6 +80,27 @@ async function start(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
 }
 
+function initCmd(): void {
+  const existing = readSavedToken()
+  if (existing) {
+    console.log(`token já existe em ${serverDir()}/admin-token.txt`)
+    console.log(`(use "decky-server token rotate" pra gerar novo — TODO)`)
+    return
+  }
+  const t = generateAndSaveToken()
+  console.log(`✓ token gerado: ${t}`)
+  console.log(`  salvo em ${serverDir()}/admin-token.txt (mode 600)`)
+}
+
+function tokenCmd(): void {
+  const t = readSavedToken()
+  if (!t) {
+    console.log('nenhum token gerado ainda. Rode `decky-server init` primeiro.')
+    return
+  }
+  console.log(t)
+}
+
 function printHelp(): void {
   console.log(`decky-server — engine headless do decky client.
 
@@ -78,11 +109,14 @@ USO:
 
 COMANDOS:
   start (default)    inicia o server
+  init               gera o token bearer se ainda não existe
+  token              imprime o token atual
   help               mostra esta ajuda
 
 ENV:
   DECKY_SERVER_HOST  host pra bind (default: 127.0.0.1 — loopback)
   DECKY_SERVER_PORT  porta (default: 8447)
+  DECKY_SERVER_DIR   diretório de config (default: ~/.decky-server)
 
 EXEMPLOS:
   decky-server                              # roda em loopback
@@ -96,6 +130,12 @@ async function main(): Promise<void> {
   switch (cmd) {
     case 'start':
       await start()
+      break
+    case 'init':
+      initCmd()
+      break
+    case 'token':
+      tokenCmd()
       break
     case 'help':
     case '--help':

@@ -73,6 +73,20 @@ app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAuthz,FedCmIdpSigni
 let mainWindow: BrowserWindow | null = null
 let wsServer: DeckyWsServer | null = null
 
+// Helper que retorna a URL que o preload deve usar:
+//  - Em modo remoto: monta wss://...?token=... a partir das env vars
+//  - Em modo embedded: usa wsServer.url (criado por startWsServer)
+function resolveWsUrlForRenderer(): string {
+  const remoteUrl = process.env.DECKY_REMOTE_WS_URL
+  if (remoteUrl) {
+    const token = process.env.DECKY_REMOTE_WS_TOKEN
+    if (!token) return remoteUrl
+    const sep = remoteUrl.includes('?') ? '&' : '?'
+    return `${remoteUrl}${sep}token=${encodeURIComponent(token)}`
+  }
+  return wsServer?.url ?? ''
+}
+
 // DECKY_DEV runs a fully isolated dev instance alongside the installed app: its own name +
 // userData (→ separate single-instance lock, so both run), paired with DECKY_STATE_DIR /
 // DECKY_PREVIEW_PORT / DECKY_URL from the `dev` script. Must run BEFORE the lock below,
@@ -140,10 +154,10 @@ function createWindow(): void {
       webviewTag: true,
       // Surfaced sync to the renderer via preload (window.deck.app.locale) — no IPC round-trip,
       // no boot flicker. Resolved from app.getLocale() and normalized to a supported language.
-      // WS_URL: passa a URL do server pra preload abrir conexão local (Fase 2 — loopback).
+      // WS_URL: server embarcado (loopback) OU override remoto via DECKY_REMOTE_WS_URL.
       additionalArguments: [
         `${LOCALE_ARG_PREFIX}${normalizeLocale(app.getLocale())}`,
-        ...(wsServer ? [`${WS_URL_PREFIX}${wsServer.url}`] : [])
+        ...(resolveWsUrlForRenderer() ? [`${WS_URL_PREFIX}${resolveWsUrlForRenderer()}`] : [])
       ]
     }
   })
@@ -236,66 +250,74 @@ app
 
     registerPtyHandlers(() => mainWindow, () => wsServer)
     registerLegacyIpcBridges()
-    // Fase 2 — WS server na 127.0.0.1:<porta-livre>. Roda em paralelo aos IPCs por enquanto;
-    // os handlers WS expõem o mesmo protocolo. Próximas PRs migram o preload domínio a domínio,
-    // e quando todos os domínios migrarem o ipcMain.handle vira redundante e some.
-    try {
-      wsServer = await startWsServer()
-      diag(`[ws-server] listening on ${wsServer.url}`)
-      registerCliWsHandlers(wsServer)
-      registerStateWsHandlers(wsServer)
-      registerGitWsHandlers(wsServer)
-      registerWorkspaceWsHandlers(wsServer)
-      registerTagsIndexWsHandlers(wsServer)
-      // claude:* não tem arquivo dedicado — handlers vivem inline em index.ts.
-      wsServer.handle<void, string>('claude:get-bin', () => resolveClaudeBin())
-      wsServer.handle<{ cwd: string; uuid: string }, string | null>(
-        'claude:ai-title',
-        (args) => readAiTitle(args?.cwd ?? '', args?.uuid ?? '')
-      )
-      // cards:* extras (search/resolve-wikilink/backlinks) também sem arquivo dedicado.
-      wsServer.handle<{ workspace: string; query: string; limit?: number }, unknown>(
-        'cards:search',
-        (args) =>
-          searchCards(
-            workspaceCardsDir(args?.workspace ?? ''),
-            args?.query ?? '',
-            typeof args?.limit === 'number' ? args.limit : 20,
-            'html'
-          )
-      )
-      wsServer.handle<{ workspace: string; name: string }, string | null>(
-        'cards:resolve-wikilink',
-        (args) => resolveWikilink(workspaceCardsDir(args?.workspace ?? ''), args?.name ?? '')
-      )
-      wsServer.handle<{ workspace: string; cardPath: string }, unknown>(
-        'cards:backlinks',
-        (args) => computeBacklinks(workspaceCardsDir(args?.workspace ?? ''), args?.cardPath ?? '')
-      )
-      registerHistoryWsHandlers(wsServer)
-      // theme:set-mode — Electron nativeTheme.themeSource só existe aqui.
-      wsServer.handle<{ mode: 'dark' | 'light' }, boolean>('theme:set-mode', (args) => {
-        nativeTheme.themeSource = args?.mode === 'light' ? 'light' : 'dark'
-        return true
-      })
-      // sessions:get-titles — Map vive em preview-state (@decky/server).
-      wsServer.handle<void, Record<string, string>>('sessions:get-titles', () =>
-        getSessionTitles()
-      )
-      // preview:get-all/rehydrate — funções puras no server.
-      wsServer.handle<void, Record<string, import('@decky/shared').PreviewSource>>(
-        'preview:get-all',
-        () => getPreviewSources()
-      )
-      wsServer.handle<
-        {
-          byCard: Record<string, Record<string, import('@decky/shared').PreviewSource>>
-          workspace?: string
-        },
-        Record<string, Record<string, import('@decky/shared').PreviewSource>>
-      >('preview:rehydrate', (args) => rehydratePreviews(args?.byCard ?? {}, args?.workspace))
-    } catch (err) {
-      console.error('[ws-server] failed to start:', err)
+
+    // Modo remoto: se DECKY_REMOTE_WS_URL setado, NÃO sobe server embarcado. O preload
+    // conecta direto no remoto. Útil pra dev (testar Electron client contra decky-server
+    // standalone num shell separado OU num VPS via Tailscale). Recomenda também setar
+    // DECKY_REMOTE_WS_TOKEN, que é appendado no URL como ?token=. Em prod (Fase 3.5)
+    // isso vira UI "Add remote engine" + persisted config; aqui é só env override pra dev.
+    const remoteUrl = process.env.DECKY_REMOTE_WS_URL
+    if (remoteUrl) {
+      diag(`[ws-server] remote mode — pointing at ${remoteUrl}`)
+    } else {
+      try {
+        wsServer = await startWsServer()
+        diag(`[ws-server] listening on ${wsServer.url}`)
+        registerCliWsHandlers(wsServer)
+        registerStateWsHandlers(wsServer)
+        registerGitWsHandlers(wsServer)
+        registerWorkspaceWsHandlers(wsServer)
+        registerTagsIndexWsHandlers(wsServer)
+        // claude:* não tem arquivo dedicado — handlers vivem inline em index.ts.
+        wsServer.handle<void, string>('claude:get-bin', () => resolveClaudeBin())
+        wsServer.handle<{ cwd: string; uuid: string }, string | null>(
+          'claude:ai-title',
+          (args) => readAiTitle(args?.cwd ?? '', args?.uuid ?? '')
+        )
+        // cards:* extras (search/resolve-wikilink/backlinks) também sem arquivo dedicado.
+        wsServer.handle<{ workspace: string; query: string; limit?: number }, unknown>(
+          'cards:search',
+          (args) =>
+            searchCards(
+              workspaceCardsDir(args?.workspace ?? ''),
+              args?.query ?? '',
+              typeof args?.limit === 'number' ? args.limit : 20,
+              'html'
+            )
+        )
+        wsServer.handle<{ workspace: string; name: string }, string | null>(
+          'cards:resolve-wikilink',
+          (args) => resolveWikilink(workspaceCardsDir(args?.workspace ?? ''), args?.name ?? '')
+        )
+        wsServer.handle<{ workspace: string; cardPath: string }, unknown>(
+          'cards:backlinks',
+          (args) => computeBacklinks(workspaceCardsDir(args?.workspace ?? ''), args?.cardPath ?? '')
+        )
+        registerHistoryWsHandlers(wsServer)
+        // theme:set-mode — Electron nativeTheme.themeSource só existe aqui.
+        wsServer.handle<{ mode: 'dark' | 'light' }, boolean>('theme:set-mode', (args) => {
+          nativeTheme.themeSource = args?.mode === 'light' ? 'light' : 'dark'
+          return true
+        })
+        // sessions:get-titles — Map vive em preview-state (@decky/server).
+        wsServer.handle<void, Record<string, string>>('sessions:get-titles', () =>
+          getSessionTitles()
+        )
+        // preview:get-all/rehydrate — funções puras no server.
+        wsServer.handle<void, Record<string, import('@decky/shared').PreviewSource>>(
+          'preview:get-all',
+          () => getPreviewSources()
+        )
+        wsServer.handle<
+          {
+            byCard: Record<string, Record<string, import('@decky/shared').PreviewSource>>
+            workspace?: string
+          },
+          Record<string, Record<string, import('@decky/shared').PreviewSource>>
+        >('preview:rehydrate', (args) => rehydratePreviews(args?.byCard ?? {}, args?.workspace))
+      } catch (err) {
+        console.error('[ws-server] failed to start:', err)
+      }
     }
     registerCardsHandlers(() => wsServer)
     registerTagsIndexHandlers()

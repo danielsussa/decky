@@ -44,6 +44,7 @@ import { registerCliHandlers, registerCliWsHandlers } from '@decky/server'
 import { registerGitWsHandlers } from '@decky/server'
 import { registerWorkspaceWsHandlers } from '@decky/server'
 import { registerTagsIndexWsHandlers } from '@decky/server'
+import { registerHistoryWsHandlers } from '@decky/server'
 import { startWsServer, type DeckyWsServer } from '@decky/server'
 import { registerDevRebuildHandlers } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
@@ -270,6 +271,12 @@ app
         'cards:backlinks',
         (args) => computeBacklinks(workspaceCardsDir(args?.workspace ?? ''), args?.cardPath ?? '')
       )
+      registerHistoryWsHandlers(wsServer)
+      // theme:set-mode — Electron nativeTheme.themeSource só existe aqui.
+      wsServer.handle<{ mode: 'dark' | 'light' }, boolean>('theme:set-mode', (args) => {
+        nativeTheme.themeSource = args?.mode === 'light' ? 'light' : 'dark'
+        return true
+      })
     } catch (err) {
       console.error('[ws-server] failed to start:', err)
     }
@@ -305,7 +312,7 @@ app
     attachWebContentsPopupRouter(() => mainWindow)
     setupHistory()
     setupWebViews(() => mainWindow)
-    setupHtmlServer()
+    setupHtmlServer(() => wsServer)
     diag('handlers registered, starting preview server')
     startPreviewServer(() => mainWindow)
     // O backend do handoff agora sobe POR SESSÃO em pty.ts (start no spawn / stop no exit),
@@ -339,7 +346,7 @@ app
     // session transitions from working → idle and the user isn't looking (different session OR
     // window unfocused). Clicking the notification brings the app forward and tells the renderer
     // which session to switch to.
-    ipcMain.handle('notify:show', (_e, payload: { id: string; title: string; body?: string }) => {
+    function showNotification(payload: { id: string; title: string; body?: string }): void {
       const supported = Notification.isSupported()
       console.log('[notify] handler called', { supported, payload })
       if (!supported) return
@@ -359,9 +366,17 @@ app
         win.focus()
         if (process.platform === 'darwin') app.focus({ steal: true })
         win.webContents.send('notify:focus-session', { id: payload.id })
+        wsServer?.broadcast('notify:focus-session', { id: payload.id })
       })
       n.show()
-    })
+    }
+    ipcMain.handle('notify:show', (_e, payload: { id: string; title: string; body?: string }) =>
+      showNotification(payload)
+    )
+    wsServer?.handle<{ id: string; title: string; body?: string }, void>(
+      'notify:show',
+      (payload) => showNotification(payload ?? { id: '', title: '' })
+    )
 
     // Full-text search the workspace's card library (recursive over <workspace>/.decky/cards/).
     // Drives the in-app Cmd+Shift+F palette; the MCP `search_cards` tool uses the same helper

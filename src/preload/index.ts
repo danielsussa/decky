@@ -292,16 +292,13 @@ const deckApi = {
     // Tells main to set Electron's nativeTheme.themeSource so every embedded webContents
     // (each web card) reports the matching prefers-color-scheme. Call on every renderer
     // mode toggle.
-    setMode: (mode: 'dark' | 'light'): Promise<true> => ipcRenderer.invoke('theme:set-mode', mode)
+    setMode: (mode: 'dark' | 'light'): Promise<boolean> => wsInvoke('theme:set-mode', { mode })
   },
   notify: {
     show: (payload: { id: string; title: string; body?: string }): Promise<void> =>
-      ipcRenderer.invoke('notify:show', payload),
-    onFocusSession: (callback: (msg: { id: string }) => void): (() => void) => {
-      const listener = (_: unknown, msg: { id: string }): void => callback(msg)
-      ipcRenderer.on('notify:focus-session', listener)
-      return () => ipcRenderer.removeListener('notify:focus-session', listener)
-    }
+      wsInvoke('notify:show', payload),
+    onFocusSession: (callback: (msg: { id: string }) => void): (() => void) =>
+      wsOn<{ id: string }>('notify:focus-session', callback)
   },
   web: {
     // Each web card maps 1:1 to a WebContentsView owned by main. The renderer creates the
@@ -369,10 +366,9 @@ const deckApi = {
     }
   },
   html: {
-    // Resolve a local HTML file path to an http://127.0.0.1:<port> URL. Main spins up an
-    // ephemeral server for the file's directory on first call and reuses it after that —
-    // serving via http lets fetch / ES modules / Service Workers actually work (file:// blocks).
-    resolve: (path: string): Promise<string> => ipcRenderer.invoke('html:resolve', path)
+    // Hoje resolve um path local pra URL card:// (o servidor HTTP loopback antigo virou code morto).
+    // O nome "resolve" sobreviveu pela compatibilidade com a chamada do renderer.
+    resolve: (path: string): Promise<string> => wsInvoke('html:resolve', { path })
   },
   history: {
     listRecent: (
@@ -390,7 +386,7 @@ const deckApi = {
         dwell_ms: number
         transition: string | null
       }[]
-    > => ipcRenderer.invoke('history:list-recent', { workspaceCwd, limit }),
+    > => wsInvoke('history:list-recent', { workspaceCwd, limit }),
     // Address-bar autocomplete: query vazia = top por frecência geral.
     suggest: (
       workspaceCwd: string | null,
@@ -404,11 +400,11 @@ const deckApi = {
         hits: number
         last_visited: number
       }[]
-    > => ipcRenderer.invoke('history:suggest', { workspaceCwd, query, limit }),
+    > => wsInvoke('history:suggest', { workspaceCwd, query, limit }),
     getWorkspaceMeta: (cwd: string): Promise<{ workspaceId: string; isolated: boolean }> =>
-      ipcRenderer.invoke('history:get-workspace-meta', cwd),
-    setWorkspaceIsolated: (cwd: string, isolated: boolean): Promise<true> =>
-      ipcRenderer.invoke('history:set-workspace-isolated', cwd, isolated)
+      wsInvoke('history:get-workspace-meta', { cwd }),
+    setWorkspaceIsolated: (cwd: string, isolated: boolean): Promise<boolean> =>
+      wsInvoke('history:set-workspace-isolated', { cwd, isolated })
   },
   widget: {
     // Main forwards every widget:call here. The renderer dispatches into the widget registry

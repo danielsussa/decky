@@ -160,7 +160,7 @@ export interface DeckAPI {
     set: (key: string, value: unknown) => Promise<boolean>
   }
   theme: {
-    setMode: (mode: 'dark' | 'light') => Promise<true>
+    setMode: (mode: 'dark' | 'light') => Promise<boolean>
   }
   notify: {
     show: (payload: { id: string; title: string; body?: string }) => Promise<void>
@@ -200,7 +200,7 @@ export interface DeckAPI {
       }[]
     >
     getWorkspaceMeta: (cwd: string) => Promise<{ workspaceId: string; isolated: boolean }>
-    setWorkspaceIsolated: (cwd: string, isolated: boolean) => Promise<true>
+    setWorkspaceIsolated: (cwd: string, isolated: boolean) => Promise<boolean>
   }
   web: {
     create: (cardId: string, url: string, workspaceCwd?: string | null) => Promise<true>

@@ -15,7 +15,7 @@ import {
   patchFavicon as historyPatchFavicon,
   setVisible as historySetVisible,
   getOpenVisitUrl as historyGetOpenVisitUrl
-} from './history/capture'
+} from '@decky/server'
 
 // Tracing the create/destroy/bounds lifecycle per card (decky-startup.log). Logs only
 // structural events (first attach, zero-size hide, missing-entry drops, create/destroy)

@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { openHistoryDb, closeHistoryDb, historyDbPath } from '@decky/server'
-import { flushAll as flushOpenVisits } from './capture'
+import { flushAll as flushOpenVisits } from '@decky/server'
 import { registerHistoryIpc } from '@decky/server'
 import { diag } from '@decky/server'
 

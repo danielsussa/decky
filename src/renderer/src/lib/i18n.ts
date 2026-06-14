@@ -89,6 +89,33 @@ const messages = {
   'ws.closeSession': { pt: 'fechar sessão', en: 'close session' },
   'ws.newSession': { pt: 'nova sessão', en: 'new session' },
   'ws.addFolder': { pt: 'Adicionar pasta…', en: 'Add folder…' },
+  'ws.addServer': { pt: 'Adicionar server…', en: 'Add server…' },
+  'server.title': { pt: 'Adicionar server remoto', en: 'Add remote server' },
+  'server.subtitle': {
+    pt: 'Conecta via SSH e instala o decky-server no host. Como o VS Code Remote-SSH.',
+    en: 'Connects via SSH and installs decky-server on the host. Like VS Code Remote-SSH.'
+  },
+  'server.hostLabel': { pt: 'Host', en: 'Host' },
+  'server.hostHelp': {
+    pt: 'user@hostname[:porta]. Usa SSH config (~/.ssh/config) se só passar o nome.',
+    en: 'user@hostname[:port]. Uses SSH config (~/.ssh/config) when only the name is given.'
+  },
+  'server.pathLabel': { pt: 'Caminho', en: 'Path' },
+  'server.pathHelp': {
+    pt: 'Pasta do projeto no host. Será o workspace inicial.',
+    en: 'Project folder on the host. Will be the initial workspace.'
+  },
+  'server.identityLabel': { pt: 'Identidade (opcional)', en: 'Identity (optional)' },
+  'server.identityHelp': {
+    pt: 'Path da chave privada. Vazio = usa as do agente / config.',
+    en: 'Path to private key. Empty = uses agent / config defaults.'
+  },
+  'server.cancel': { pt: 'Cancelar', en: 'Cancel' },
+  'server.connect': { pt: 'Conectar', en: 'Connect' },
+  'server.notImplemented': {
+    pt: 'SSH ainda não está implementado (próximas PRs). Conectaria em:',
+    en: 'SSH not implemented yet (next PRs). Would connect to:'
+  },
   'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
   'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
   'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },

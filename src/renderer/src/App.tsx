@@ -12,6 +12,7 @@ import CommandPalette, { type Command } from './components/CommandPalette'
 import CardSearch from './components/CardSearch'
 import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import FirstRunModal from './components/FirstRunModal'
+import AddServerModal from './components/AddServerModal'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
 import type { PreviewSource, StashEntry } from '@decky/shared'
 import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
@@ -2154,6 +2155,11 @@ function App(): React.JSX.Element {
     if (p) setWorkspace(p)
   }
 
+  // SSH remote — UX placeholder. Implementação real virá em PRs seguintes (connect via SSH,
+  // detectar/instalar decky-server no host, abrir tunnel local, conectar WS).
+  const [remoteServerModalOpen, setRemoteServerModalOpen] = useState(false)
+  const addServer = (): void => setRemoteServerModalOpen(true)
+
   // Open a browser card in the active session, focused. Empty url = "nova aba" (URL bar
   // auto-focuses); with url = navigates straight there (used by palette `//query` shortcut).
   // If a tab already shows the same URL in the active session, focus it instead of opening
@@ -2749,6 +2755,16 @@ function App(): React.JSX.Element {
           heading={cliSettingsOpen && !firstRunPending ? t('cli.headingSettings') : undefined}
         />
       )}
+      {remoteServerModalOpen && (
+        <AddServerModal
+          onDismiss={() => setRemoteServerModalOpen(false)}
+          onConnect={(config) => {
+            // TODO PR #25: SSH connect + detectar/instalar decky-server no host + abrir tunnel
+            // + atualizar lista de workspaces remotos. Por enquanto só log + notice no modal.
+            console.log('[add-server] config (UX placeholder):', config)
+          }}
+        />
+      )}
       <main className="deck-main">
         <ResizableSplit
           defaultSizes={[30, 70]}
@@ -2824,6 +2840,7 @@ function App(): React.JSX.Element {
                 onCloseSession={handleClose}
                 onCloseWorkspace={closeWorkspace}
                 onAddFolder={() => void addFolder()}
+                onAddServer={addServer}
                 onRestoreStash={restoreFromStash}
                 onDiscardStash={discardStash}
               />

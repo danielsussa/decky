@@ -1948,12 +1948,16 @@ textarea.form-input {
 .wstree-new:hover {
   color: var(--text-1);
 }
+.wstree-add-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
 .wstree-add {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 7px 12px;
-  margin-top: 2px;
   background: transparent;
   border: none;
   color: var(--accent);
@@ -1961,6 +1965,142 @@ textarea.form-input {
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 4px;
+}
+.wstree-add:hover {
+  background: var(--bg-2);
+}
+
+/* Add server modal */
+.add-server-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+.add-server-modal {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 480px;
+  max-width: calc(100vw - 48px);
+  padding: 20px 22px 18px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+  font-family: var(--sans);
+}
+.add-server-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.add-server-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.add-server-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+}
+.add-server-modal-close:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+.add-server-modal-subtitle {
+  margin: 0 0 16px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.add-server-modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.add-server-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.add-server-modal-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.add-server-modal-field input {
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  color: var(--text-1);
+  font: 13px var(--mono);
+  outline: none;
+}
+.add-server-modal-field input:focus {
+  border-color: var(--accent);
+}
+.add-server-modal-help {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+.add-server-modal-notice {
+  padding: 10px 12px;
+  background: rgba(138, 92, 246, 0.12);
+  border: 1px solid rgba(138, 92, 246, 0.3);
+  border-radius: 5px;
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-family: var(--mono);
+  word-break: break-all;
+}
+.add-server-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.add-server-modal-cancel,
+.add-server-modal-connect {
+  padding: 8px 16px;
+  border-radius: 5px;
+  font: 600 13px var(--sans);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+.add-server-modal-cancel:hover {
+  background: var(--bg-2);
+  border-color: var(--text-3);
+}
+.add-server-modal-connect {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.add-server-modal-connect:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.add-server-modal-connect:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .wstree-x {
   display: inline-flex;

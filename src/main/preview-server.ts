@@ -1,119 +1,42 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
-import { readFile, stat } from 'node:fs/promises'
-import { basename, isAbsolute, resolve as resolvePath } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { stat } from 'node:fs/promises'
 import { BrowserWindow, type WebContents } from 'electron'
-import type { PreviewSource, PreviewSourceWire } from '@decky/shared'
-import { isGeneratedCardPath, workspaceCardsDir } from '@decky/shared/node'
-import { getCardsForSession, getAllCards, registerPreviewResolution } from '@decky/server'
-import { searchCards } from '@decky/server'
-import { computeBacklinks } from '@decky/server'
-import { awaitWidgetCall } from '@decky/server'
+import type { PreviewSource } from '@decky/shared'
+import { workspaceCardsDir } from '@decky/shared/node'
+import {
+  awaitFormOutcome,
+  awaitWidgetCall,
+  cancelFormOutcome,
+  clearPreviewSource,
+  computeBacklinks,
+  getAllCards,
+  getCardsForSession,
+  getPreviewSource,
+  getPreviewSources,
+  getSessionTitles,
+  isFormPending,
+  normalizePreviewSource,
+  parkPreviewAndAwait,
+  searchCards,
+  setSessionTitle,
+  submitFormOutcome
+} from '@decky/server'
 import { getWebViewsManager } from './web-views'
-import { trackActivityStart, trackActivityEnd } from './handoff-activity'
+import { trackActivityEnd, trackActivityStart } from './handoff-activity'
+
+// Toda a STATE (previews/titles/forms) e helpers puros vivem em @decky/server/preview-state.
+// Este arquivo hospeda o HTTP server na porta 6790 e a "browser-control layer" (que depende de
+// WebContents nativo). Quando o transport virar WS, o HTTP server some e o state segue intacto.
 
 const PORT = Number(process.env.DECKY_PREVIEW_PORT) || 6790
 const HOST = '127.0.0.1'
-
 const GLOBAL_KEY = 'global'
-const previews = new Map<string, PreviewSource>()
-const sessionTitles = new Map<string, string>()
+
+// Re-exports usados pelo src/main/index.ts.
+export { getPreviewSources, getSessionTitles } from '@decky/server'
+export { rehydratePreviews } from '@decky/server'
+
 let server: Server | null = null
-
-// Form prompt flow: the MCP `prompt_form` tool POSTs /form/await with a formId and the
-// HTTP response is held open until the user clicks SEND or CANCEL in the renderer
-// (which POSTs /form/submit or /form/cancel here). The pending map keys are formIds.
-type FormOutcome =
-  | { status: 'submitted'; values: Record<string, string | boolean> }
-  | { status: 'cancelled' }
-  | { status: 'timeout' }
-const pendingForms = new Map<string, { resolve: (r: FormOutcome) => void; timer: NodeJS.Timeout }>()
-
-export function getPreviewSources(): Record<string, PreviewSource> {
-  return Object.fromEntries(previews)
-}
-
-export function getSessionTitles(): Record<string, string> {
-  return Object.fromEntries(sessionTitles)
-}
-
-/**
- * Re-read markdown sources that were persisted as just a path (no content).
- * Paths persisted as relative are resolved against `workspace` so cards survive
- * the workspace folder being renamed/moved.
- */
-export async function rehydratePreviews(
-  byCard: Record<string, Record<string, PreviewSource>>,
-  workspace?: string
-): Promise<Record<string, Record<string, PreviewSource>>> {
-  const out: Record<string, Record<string, PreviewSource>> = {}
-  for (const [sessionId, cards] of Object.entries(byCard ?? {})) {
-    out[sessionId] = {}
-    for (const [cardId, source] of Object.entries(cards)) {
-      if (source.type === 'markdown' && source.path && !source.content) {
-        const abs =
-          !isAbsolute(source.path) && workspace ? resolvePath(workspace, source.path) : source.path
-        try {
-          const content = await readFile(abs, 'utf-8')
-          // Generated card files (<workspace>/.decky/cards/<id>.md) have meaningless
-          // basenames. Drop a title that's just the filename so it derives from the content
-          // (heading / first line); keep a real custom title if the bot set one.
-          const generated = isGeneratedCardPath(abs)
-          const bn = basename(abs)
-          let title = source.title
-          if (generated && (!title || title === bn)) title = undefined
-          else if (!generated && !title) title = bn
-          out[sessionId][cardId] = { type: 'markdown', content, title, path: abs }
-        } catch {
-          out[sessionId][cardId] = {
-            type: 'markdown',
-            content: `*(arquivo não encontrado: ${abs})*`,
-            path: abs
-          }
-        }
-      } else if (source.type === 'editor' && source.path && !source.content) {
-        const abs =
-          !isAbsolute(source.path) && workspace ? resolvePath(workspace, source.path) : source.path
-        try {
-          const content = await readFile(abs, 'utf-8')
-          out[sessionId][cardId] = {
-            type: 'editor',
-            content,
-            title: source.title ?? basename(abs),
-            path: abs
-          }
-        } catch {
-          out[sessionId][cardId] = {
-            type: 'editor',
-            content: '',
-            title: source.title ?? basename(abs),
-            path: abs
-          }
-        }
-      } else if (source.type === 'xlsx' && source.path) {
-        const abs =
-          !isAbsolute(source.path) && workspace ? resolvePath(workspace, source.path) : source.path
-        out[sessionId][cardId] = {
-          type: 'xlsx',
-          path: abs,
-          title: source.title ?? basename(abs)
-        }
-      } else if (source.type === 'html' && source.path) {
-        const abs =
-          !isAbsolute(source.path) && workspace ? resolvePath(workspace, source.path) : source.path
-        out[sessionId][cardId] = {
-          type: 'html',
-          path: abs,
-          title: source.title ?? basename(abs),
-          favicon: source.favicon ?? null
-        }
-      } else {
-        out[sessionId][cardId] = source
-      }
-    }
-  }
-  return out
-}
 
 function broadcastPreview(
   getWindow: () => BrowserWindow | null,
@@ -127,18 +50,6 @@ function broadcastPreview(
   win.webContents.send('preview:source-changed', { sessionId, cardId, source, reqId })
 }
 
-function cardIdFrom(req: IncomingMessage): string | null {
-  const raw = req.headers['x-deck-card-id']
-  const id = Array.isArray(raw) ? raw[0] : raw
-  return id && id.length > 0 ? id : null
-}
-
-function sessionIdFrom(req: IncomingMessage): string {
-  const raw = req.headers['x-deck-session-id']
-  const id = Array.isArray(raw) ? raw[0] : raw
-  return id && id.length > 0 ? id : GLOBAL_KEY
-}
-
 function broadcastSessionTitle(
   getWindow: () => BrowserWindow | null,
   id: string,
@@ -149,54 +60,16 @@ function broadcastSessionTitle(
   win.webContents.send('session:title-changed', { id, title })
 }
 
-async function normalize(wire: PreviewSourceWire): Promise<PreviewSource> {
-  if (wire.type === 'markdown') {
-    if (wire.content != null) {
-      return { type: 'markdown', content: wire.content, title: wire.title }
-    }
-    if (wire.path) {
-      const content = await readFile(wire.path, 'utf-8')
-      return {
-        type: 'markdown',
-        content,
-        title: wire.title ?? basename(wire.path),
-        path: wire.path
-      }
-    }
-    throw new Error('markdown source requires content or path')
-  }
-  if (wire.type === 'diff') {
-    if (wire.content != null) {
-      return { type: 'diff', content: wire.content, title: wire.title }
-    }
-    if (wire.path) {
-      const content = await readFile(wire.path, 'utf-8')
-      return { type: 'diff', content, title: wire.title ?? basename(wire.path), path: wire.path }
-    }
-    throw new Error('diff source requires content or path')
-  }
-  if (wire.type === 'editor') {
-    if (!wire.path) throw new Error('editor source requires a path')
-    const content = await readFile(wire.path, 'utf-8')
-    return { type: 'editor', content, title: wire.title ?? basename(wire.path), path: wire.path }
-  }
-  if (wire.type === 'xlsx') {
-    if (!wire.path) throw new Error('xlsx source requires a path')
-    // Binary — don't read here; the renderer reads via file:read-binary on mount.
-    await stat(wire.path)
-    return { type: 'xlsx', path: wire.path, title: wire.title ?? basename(wire.path) }
-  }
-  if (wire.type === 'web' && !wire.url) {
-    throw new Error('web source requires a url')
-  }
-  if (wire.type === 'html') {
-    if (!wire.path) throw new Error('html source requires a path')
-    // Stat as a fail-fast — the renderer will spin up the http server on mount and a missing
-    // file there would just 404 silently inside the web card.
-    await stat(wire.path)
-    return { type: 'html', path: wire.path, title: wire.title ?? basename(wire.path) }
-  }
-  return wire as PreviewSource
+function cardIdFrom(req: IncomingMessage): string | null {
+  const raw = req.headers['x-deck-card-id']
+  const id = Array.isArray(raw) ? raw[0] : raw
+  return id && id.length > 0 ? id : null
+}
+
+function sessionIdFrom(req: IncomingMessage): string {
+  const raw = req.headers['x-deck-session-id']
+  const id = Array.isArray(raw) ? raw[0] : raw
+  return id && id.length > 0 ? id : GLOBAL_KEY
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -340,12 +213,12 @@ async function createWebCard(
   url: string
 ): Promise<string> {
   const source: PreviewSource = { type: 'web', url }
-  previews.set(sessionId, source)
-  const reqId = randomUUID()
-  const resolved = await new Promise<{ cardId: string }>((resolve) => {
-    registerPreviewResolution(reqId, (info) => resolve({ cardId: info.cardId }))
-    broadcastPreview(getWindow, sessionId, null, source, reqId)
-  })
+  const resolved = await parkPreviewAndAwait(
+    (sId, cId, src, rId) => broadcastPreview(getWindow, sId, cId, src, rId),
+    sessionId,
+    null,
+    source
+  )
   return resolved.cardId
 }
 
@@ -437,32 +310,26 @@ async function handleRequest(
   const cardId = cardIdFrom(req)
 
   if (req.method === 'GET' && url === '/preview') {
-    sendJson(res, 200, previews.get(sessionId) ?? { type: 'none' })
+    sendJson(res, 200, getPreviewSource(sessionId) ?? { type: 'none' })
     return
   }
 
   if (req.method === 'GET' && url === '/preview/all') {
-    sendJson(res, 200, Object.fromEntries(previews))
+    sendJson(res, 200, getPreviewSources())
     return
   }
 
   if (req.method === 'POST' && url === '/preview') {
     try {
       const raw = await readBody(req)
-      const wire = JSON.parse(raw) as PreviewSourceWire
-      const source = await normalize(wire)
-      previews.set(sessionId, source)
-      // Park a resolver keyed by reqId; the renderer acks it via the 'preview:resolved' IPC
-      // after computing the target card and (for inline markdown) materializing the file.
-      const reqId = randomUUID()
-      const resolved = await new Promise<{
-        cardId: string
-        path?: string
-        title?: string
-      }>((resolve) => {
-        registerPreviewResolution(reqId, resolve)
-        broadcastPreview(getWindow, sessionId, cardId, source, reqId)
-      })
+      const wire = JSON.parse(raw)
+      const source = await normalizePreviewSource(wire)
+      const resolved = await parkPreviewAndAwait(
+        (sId, cId, src, rId) => broadcastPreview(getWindow, sId, cId, src, rId),
+        sessionId,
+        cardId,
+        source
+      )
       sendJson(res, 200, {
         source,
         cardId: resolved.cardId || cardId || '',
@@ -476,8 +343,7 @@ async function handleRequest(
   }
 
   if (req.method === 'POST' && url === '/preview/clear') {
-    const cleared: PreviewSource = { type: 'none' }
-    previews.set(sessionId, cleared)
+    const cleared = clearPreviewSource(sessionId)
     broadcastPreview(getWindow, sessionId, cardId, cleared)
     sendJson(res, 200, cleared)
     return
@@ -498,8 +364,6 @@ async function handleRequest(
   }
 
   // POST /cards/search — full-text search the session's workspace card library.
-  // Body: { query: string, limit?: number }. Resolves the workspace path from the
-  // session mirror (cwd) and runs the shared searchCards helper.
   if (req.method === 'POST' && url === '/cards/search') {
     try {
       const raw = await readBody(req)
@@ -584,18 +448,11 @@ async function handleRequest(
       }
       const formId = body.formId
       const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : 10 * 60 * 1000
-      // Reject duplicate await for the same formId.
-      if (pendingForms.has(formId)) {
+      if (isFormPending(formId)) {
         sendJson(res, 409, { error: 'already awaiting this formId' })
         return
       }
-      const outcome = await new Promise<FormOutcome>((resolve) => {
-        const timer = setTimeout(() => {
-          pendingForms.delete(formId)
-          resolve({ status: 'timeout' })
-        }, timeoutMs)
-        pendingForms.set(formId, { resolve, timer })
-      })
+      const outcome = await awaitFormOutcome(formId, timeoutMs)
       sendJson(res, 200, outcome)
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
@@ -611,18 +468,15 @@ async function handleRequest(
         sendJson(res, 400, { error: 'formId required' })
         return
       }
-      const pending = pendingForms.get(body.formId)
-      if (!pending) {
-        sendJson(res, 404, { error: 'no form awaiting this id (timed out or already resolved)' })
-        return
-      }
-      clearTimeout(pending.timer)
-      pendingForms.delete(body.formId)
       const values =
         body.values && typeof body.values === 'object'
           ? (body.values as Record<string, string | boolean>)
           : {}
-      pending.resolve({ status: 'submitted', values })
+      const ok = submitFormOutcome(body.formId, values)
+      if (!ok) {
+        sendJson(res, 404, { error: 'no form awaiting this id (timed out or already resolved)' })
+        return
+      }
       sendJson(res, 200, { ok: true })
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
@@ -638,15 +492,8 @@ async function handleRequest(
         sendJson(res, 400, { error: 'formId required' })
         return
       }
-      const pending = pendingForms.get(body.formId)
-      if (!pending) {
-        sendJson(res, 200, { ok: true, alreadyResolved: true })
-        return
-      }
-      clearTimeout(pending.timer)
-      pendingForms.delete(body.formId)
-      pending.resolve({ status: 'cancelled' })
-      sendJson(res, 200, { ok: true })
+      const cancelled = cancelFormOutcome(body.formId)
+      sendJson(res, 200, cancelled ? { ok: true } : { ok: true, alreadyResolved: true })
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
     }
@@ -726,7 +573,7 @@ async function handleRequest(
         return
       }
       const title = body.title.slice(0, 80)
-      sessionTitles.set(id, title)
+      setSessionTitle(id, title)
       broadcastSessionTitle(getWindow, id, title)
       sendJson(res, 200, { ok: true, id, title })
     } catch (err) {
@@ -736,7 +583,7 @@ async function handleRequest(
   }
 
   if (req.method === 'GET' && url === '/sessions/titles') {
-    sendJson(res, 200, Object.fromEntries(sessionTitles))
+    sendJson(res, 200, getSessionTitles())
     return
   }
 
@@ -792,8 +639,6 @@ export function startPreviewServer(getWindow: () => BrowserWindow | null): void 
   })
   server.on('error', (err) => {
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-      // A previous decky that didn't shut down cleanly can leave the port held. Surface it
-      // loudly instead of dying mid-boot — the rest of the app still works without preview.
       console.error(
         `[preview-server] port ${PORT} already in use — a stale decky/preview-server is likely still holding it. Preview cards won't work until it's freed; the rest of decky keeps running.`
       )

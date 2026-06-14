@@ -1,8 +1,7 @@
 import { watch, type FSWatcher } from 'node:fs'
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { ipcMain, type BrowserWindow } from 'electron'
-import { applyAutoFix } from '@decky/server'
+import { applyAutoFix, readTextFile, readBinaryFile, writeTextFile } from '@decky/server'
 
 const DEBOUNCE_MS = 150
 
@@ -93,43 +92,9 @@ export function registerFileWatchHandlers(getWindow: () => BrowserWindow | null)
     return true
   })
 
-  ipcMain.handle('file:read-text', async (_e, path: string) => {
-    try {
-      return await readFile(path, 'utf-8')
-    } catch {
-      return null
-    }
-  })
-
-  ipcMain.handle('file:read-binary', async (_e, path: string) => {
-    try {
-      const buf = await readFile(path)
-      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
-    } catch {
-      return null
-    }
-  })
-
-  ipcMain.handle('file:write', async (_e, path: string, content: string) => {
-    try {
-      // Safety net for a recurring corruption bug: a stray save has, more than once, written
-      // the tail of the built index.html on top of package.json, leaving invalid JSON that
-      // bricks the next build (Electron can't read `main` → app won't launch). A renderer save
-      // should never put non-JSON into a package.json; refuse it rather than corrupt the file.
-      if (basename(path) === 'package.json') {
-        try {
-          JSON.parse(content)
-        } catch {
-          console.error('[file-watcher] refusing to write invalid JSON to package.json:', path)
-          return false
-        }
-      }
-      await mkdir(dirname(path), { recursive: true })
-      await writeFile(path, content, 'utf-8')
-      return true
-    } catch (err) {
-      console.error('[file-watcher] write failed:', path, err)
-      return false
-    }
-  })
+  // FS read/write delegam pra @decky/server/file-ops (puro). Watcher state segue aqui
+  // por enquanto — vira broadcast WS no próximo passo.
+  ipcMain.handle('file:read-text', (_e, path: string) => readTextFile(path))
+  ipcMain.handle('file:read-binary', (_e, path: string) => readBinaryFile(path))
+  ipcMain.handle('file:write', (_e, path: string, content: string) => writeTextFile(path, content))
 }

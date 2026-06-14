@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WebContents } from 'electron'
 import { getWebViewsManager } from './web-views'
-import { getCardsForSession } from './card-mirror'
+import { getCardsForSession } from '@decky/server'
 import { startHandoffServer, type HandoffServerHandle } from '@handoff/runtime-electron'
 import { trackActivityStart, trackActivityEnd } from './handoff-activity'
 

@@ -147,12 +147,16 @@ function runBuild(
 // Only `dependencies` are compared: electron-builder strips `devDependencies` when
 // copying package.json into the bundle (they're build-time only — out/ is precompiled
 // against them, so the bundle's runtime never resolves them).
-function depsSignature(pkgPath: string): string {
+function depsSignature(pkgPath: string, ignore: string[] = []): string {
   try {
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as {
       dependencies?: Record<string, string>
     }
-    return JSON.stringify(pkg.dependencies ?? {})
+    const deps = { ...(pkg.dependencies ?? {}) }
+    for (const k of ignore) delete deps[k]
+    // Sort by key pra que a stringificação seja determinística independente da ordem.
+    const sorted = Object.fromEntries(Object.entries(deps).sort(([a], [b]) => a.localeCompare(b)))
+    return JSON.stringify(sorted)
   } catch {
     return ''
   }
@@ -163,6 +167,21 @@ interface FastSwapEligibility {
   reason?: string
 }
 
+// Native deps copiadas pelo fastSwap pra dentro do swap (versão extra-sync) — qualquer dep
+// listada aqui é também excluída da comparação de depsSignature, então adicionar uma delas no
+// repo NÃO derruba a elegibilidade do fastSwap. Inclui transitivas que o pacote raiz precisa.
+const FAST_SWAP_NATIVE_DEPS = [
+  // SQLite (history)
+  'better-sqlite3',
+  'bindings',
+  'file-uri-to-path',
+  // SSH (ssh-bridge) — ssh2 tem sshcrypto.node, asn1/bcrypt-pbkdf/tweetnacl são suas deps puras.
+  'ssh2',
+  'asn1',
+  'bcrypt-pbkdf',
+  'tweetnacl'
+]
+
 // Fast-swap requires the install in the loose (asar-disabled) layout AND matching
 // package.json deps — otherwise the swapped main bundle would reference missing modules.
 function checkFastSwapEligibility(repo: string, install: string): FastSwapEligibility {
@@ -170,8 +189,10 @@ function checkFastSwapEligibility(repo: string, install: string): FastSwapEligib
   const asarFile = join(install, 'Contents', 'Resources', 'app.asar')
   if (existsSync(asarFile)) return { ok: false, reason: 'install is asar-packed' }
   if (!existsSync(looseAppDir)) return { ok: false, reason: 'install has no Resources/app/' }
-  const repoSig = depsSignature(join(repo, 'package.json'))
-  const installSig = depsSignature(join(looseAppDir, 'package.json'))
+  // Ignora as deps que o fastSwap sincroniza por baixo: pode ter sido adicionada uma agora
+  // (ex: ssh2 na PR atual) sem que isso quebre o swap, porque o sync abaixo copia ela.
+  const repoSig = depsSignature(join(repo, 'package.json'), FAST_SWAP_NATIVE_DEPS)
+  const installSig = depsSignature(join(looseAppDir, 'package.json'), FAST_SWAP_NATIVE_DEPS)
   if (!repoSig || !installSig) return { ok: false, reason: 'cannot read package.json' }
   if (repoSig !== installSig) return { ok: false, reason: 'package.json deps changed' }
   return { ok: true }
@@ -214,7 +235,7 @@ async function fastSwap(
       // its runtime closure (better-sqlite3 → bindings → file-uri-to-path) must land on disk in
       // the install's node_modules. The fast-swap clones the prior install's node_modules but a
       // NEWLY-added dep won't be there, so sync each explicitly. Add new native deps here.
-      ...['better-sqlite3', 'bindings', 'file-uri-to-path'].map(
+      ...FAST_SWAP_NATIVE_DEPS.map(
         (m): [string, string] => [
           join(repo, 'node_modules', m),
           join(swapAppDir, 'node_modules', m)

@@ -110,9 +110,9 @@ export interface DeckAPI {
     recheck: () => Promise<DetectedCli[]>
     installHints: () => Promise<CliInstallHint[]>
     getDefault: () => Promise<CliKind | null>
-    setDefault: (kind: CliKind) => Promise<true>
+    setDefault: (kind: CliKind) => Promise<boolean>
     isFirstRun: () => Promise<boolean>
-    markFirstRunDone: () => Promise<true>
+    markFirstRunDone: () => Promise<boolean>
     getPaths: () => Promise<Partial<Record<CliKind, string>>>
     setPath: (kind: CliKind, path: string | null) => Promise<DetectedCli[]>
     validatePath: (path: string) => Promise<{ ok: boolean; error?: string; version?: string }>

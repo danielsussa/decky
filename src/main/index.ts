@@ -15,7 +15,7 @@ import { existsSync, statSync } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { buildMenu } from './menu'
-import { LOCALE_ARG_PREFIX, normalizeLocale } from '@decky/shared'
+import { LOCALE_ARG_PREFIX, normalizeLocale, WS_URL_PREFIX } from '@decky/shared'
 import { registerPtyHandlers, killAllPtys } from './pty'
 import {
   startPreviewServer,
@@ -134,7 +134,11 @@ function createWindow(): void {
       webviewTag: true,
       // Surfaced sync to the renderer via preload (window.deck.app.locale) — no IPC round-trip,
       // no boot flicker. Resolved from app.getLocale() and normalized to a supported language.
-      additionalArguments: [`${LOCALE_ARG_PREFIX}${normalizeLocale(app.getLocale())}`]
+      // WS_URL: passa a URL do server pra preload abrir conexão local (Fase 2 — loopback).
+      additionalArguments: [
+        `${LOCALE_ARG_PREFIX}${normalizeLocale(app.getLocale())}`,
+        ...(wsServer ? [`${WS_URL_PREFIX}${wsServer.url}`] : [])
+      ]
     }
   })
 

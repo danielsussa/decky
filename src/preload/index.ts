@@ -4,6 +4,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 import type { PreviewSource } from '@decky/shared'
 import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
 import { DEFAULT_LOCALE, LOCALE_ARG_PREFIX, normalizeLocale, type Locale } from '@decky/shared'
+import { wsInvoke } from './ws-client'
 
 const resolvedLocale: Locale = (() => {
   const arg = process.argv.find((a) => a.startsWith(LOCALE_ARG_PREFIX))
@@ -169,19 +170,22 @@ const deckApi = {
       ipcRenderer.invoke('git:diff-stats', cwd),
     diffText: (cwd: string): Promise<string> => ipcRenderer.invoke('git:diff-text', cwd)
   },
+  // Fase 2 — 1º domínio migrado pro WS. Os 10 handlers `cli:*` vão via wsInvoke; renderer não
+  // muda (mesma forma de Promise). Os ipcMain.handle('cli:*') no main continuam registrados
+  // mas viram redundantes — saem quando todos os domínios migrarem.
   cli: {
-    list: (): Promise<DetectedCli[]> => ipcRenderer.invoke('cli:list'),
-    recheck: (): Promise<DetectedCli[]> => ipcRenderer.invoke('cli:recheck'),
-    installHints: (): Promise<CliInstallHint[]> => ipcRenderer.invoke('cli:install-hints'),
-    getDefault: (): Promise<CliKind | null> => ipcRenderer.invoke('cli:get-default'),
-    setDefault: (kind: CliKind): Promise<true> => ipcRenderer.invoke('cli:set-default', kind),
-    isFirstRun: (): Promise<boolean> => ipcRenderer.invoke('cli:is-first-run'),
-    markFirstRunDone: (): Promise<true> => ipcRenderer.invoke('cli:mark-first-run-done'),
-    getPaths: (): Promise<Partial<Record<CliKind, string>>> => ipcRenderer.invoke('cli:get-paths'),
+    list: (): Promise<DetectedCli[]> => wsInvoke('cli:list'),
+    recheck: (): Promise<DetectedCli[]> => wsInvoke('cli:recheck'),
+    installHints: (): Promise<CliInstallHint[]> => wsInvoke('cli:install-hints'),
+    getDefault: (): Promise<CliKind | null> => wsInvoke('cli:get-default'),
+    setDefault: (kind: CliKind): Promise<boolean> => wsInvoke('cli:set-default', { kind }),
+    isFirstRun: (): Promise<boolean> => wsInvoke('cli:is-first-run'),
+    markFirstRunDone: (): Promise<boolean> => wsInvoke('cli:mark-first-run-done'),
+    getPaths: (): Promise<Partial<Record<CliKind, string>>> => wsInvoke('cli:get-paths'),
     setPath: (kind: CliKind, path: string | null): Promise<DetectedCli[]> =>
-      ipcRenderer.invoke('cli:set-path', kind, path),
+      wsInvoke('cli:set-path', { kind, path }),
     validatePath: (path: string): Promise<{ ok: boolean; error?: string; version?: string }> =>
-      ipcRenderer.invoke('cli:validate-path', path)
+      wsInvoke('cli:validate-path', { path })
   },
   sessions: {
     getTitles: (): Promise<Record<string, string>> => ipcRenderer.invoke('sessions:get-titles'),

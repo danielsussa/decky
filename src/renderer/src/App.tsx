@@ -2739,7 +2739,10 @@ function App(): React.JSX.Element {
   // command palette, FirstRunModal, etc.). Keep this short and additive — anything truly
   // overlay-shaped goes in here.
   const overlayActive =
-    paletteOpen || cardSearchOpen || ((firstRunPending || cliSettingsOpen) && detectedClis !== null)
+    paletteOpen ||
+    cardSearchOpen ||
+    remoteServerModalOpen ||
+    ((firstRunPending || cliSettingsOpen) && detectedClis !== null)
 
   return (
     <OverlayActiveProvider active={overlayActive}>

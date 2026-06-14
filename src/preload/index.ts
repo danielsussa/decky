@@ -183,23 +183,13 @@ const deckApi = {
       wsInvoke('cli:validate-path', { path })
   },
   sessions: {
-    getTitles: (): Promise<Record<string, string>> => ipcRenderer.invoke('sessions:get-titles'),
-    onTitleChange: (callback: (msg: { id: string; title: string }) => void): (() => void) => {
-      const listener = (_: unknown, msg: { id: string; title: string }): void => callback(msg)
-      ipcRenderer.on('session:title-changed', listener)
-      return () => ipcRenderer.removeListener('session:title-changed', listener)
-    },
-    onAdd: (callback: (msg: { cwd: string; kind: 'claude' | 'shell' }) => void): (() => void) => {
-      const listener = (_: unknown, msg: { cwd: string; kind: 'claude' | 'shell' }): void =>
-        callback(msg)
-      ipcRenderer.on('session:add', listener)
-      return () => ipcRenderer.removeListener('session:add', listener)
-    },
-    onUuidConflict: (callback: (msg: { id: string }) => void): (() => void) => {
-      const listener = (_: unknown, msg: { id: string }): void => callback(msg)
-      ipcRenderer.on('session:uuid-conflict', listener)
-      return () => ipcRenderer.removeListener('session:uuid-conflict', listener)
-    }
+    getTitles: (): Promise<Record<string, string>> => wsInvoke('sessions:get-titles'),
+    onTitleChange: (callback: (msg: { id: string; title: string }) => void): (() => void) =>
+      wsOn<{ id: string; title: string }>('session:title-changed', callback),
+    onAdd: (callback: (msg: { cwd: string; kind: 'claude' | 'shell' }) => void): (() => void) =>
+      wsOn<{ cwd: string; kind: 'claude' | 'shell' }>('session:add', callback),
+    onUuidConflict: (callback: (msg: { id: string }) => void): (() => void) =>
+      wsOn<{ id: string }>('session:uuid-conflict', callback)
   },
   app: {
     locale: resolvedLocale,
@@ -275,14 +265,11 @@ const deckApi = {
   },
   dev: {
     getInfo: (): Promise<{ enabled: boolean; repo?: string; accel: string }> =>
-      ipcRenderer.invoke('dev:get-info'),
-    rebuild: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('dev:rebuild'),
-    relaunch: (): Promise<void> => ipcRenderer.invoke('dev:relaunch'),
-    onOutput: (callback: (line: string) => void): (() => void) => {
-      const listener = (_: unknown, line: string): void => callback(line)
-      ipcRenderer.on('dev:rebuild-output', listener)
-      return () => ipcRenderer.removeListener('dev:rebuild-output', listener)
-    }
+      wsInvoke('dev:get-info'),
+    rebuild: (): Promise<{ ok: boolean; error?: string }> => wsInvoke('dev:rebuild'),
+    relaunch: (): Promise<void> => wsInvoke('dev:relaunch'),
+    onOutput: (callback: (line: string) => void): (() => void) =>
+      wsOn<string>('dev:rebuild-output', callback)
   },
   state: {
     get: <T = unknown>(key: string): Promise<T | null> => wsInvoke<T | null>('state:get', { key }),

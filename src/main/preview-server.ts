@@ -19,7 +19,8 @@ import {
   parkPreviewAndAwait,
   searchCards,
   setSessionTitle,
-  submitFormOutcome
+  submitFormOutcome,
+  type DeckyWsServer
 } from '@decky/server'
 import { getWebViewsManager } from './web-views'
 import { trackActivityEnd, trackActivityStart } from './handoff-activity'
@@ -40,24 +41,30 @@ let server: Server | null = null
 
 function broadcastPreview(
   getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null,
   sessionId: string,
   cardId: string | null,
   source: PreviewSource,
   reqId?: string
 ): void {
   const win = getWindow()
-  if (!win || win.isDestroyed()) return
-  win.webContents.send('preview:source-changed', { sessionId, cardId, source, reqId })
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('preview:source-changed', { sessionId, cardId, source, reqId })
+  }
+  getWsServer()?.broadcast('preview:source-changed', { sessionId, cardId, source, reqId })
 }
 
 function broadcastSessionTitle(
   getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null,
   id: string,
   title: string
 ): void {
   const win = getWindow()
-  if (!win || win.isDestroyed()) return
-  win.webContents.send('session:title-changed', { id, title })
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('session:title-changed', { id, title })
+  }
+  getWsServer()?.broadcast('session:title-changed', { id, title })
 }
 
 function cardIdFrom(req: IncomingMessage): string | null {
@@ -209,12 +216,13 @@ interface WebActBody {
 // url). Returns the resolved cardId once the renderer acks.
 async function createWebCard(
   getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null,
   sessionId: string,
   url: string
 ): Promise<string> {
   const source: PreviewSource = { type: 'web', url }
   const resolved = await parkPreviewAndAwait(
-    (sId, cId, src, rId) => broadcastPreview(getWindow, sId, cId, src, rId),
+    (sId, cId, src, rId) => broadcastPreview(getWindow, getWsServer, sId, cId, src, rId),
     sessionId,
     null,
     source
@@ -224,6 +232,7 @@ async function createWebCard(
 
 async function runWebAction(
   getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null,
   sessionId: string,
   body: WebActBody
 ): Promise<unknown> {
@@ -255,7 +264,7 @@ async function runWebAction(
     }
     // Explicit cardId that doesn't exist is an error; no cardId → open a fresh web card.
     if (body.cardId) throw new Error(`no web card with id "${body.cardId}"`)
-    const cardId = await createWebCard(getWindow, sessionId, url)
+    const cardId = await createWebCard(getWindow, getWsServer, sessionId, url)
     return { ok: true, created: true, cardId, url }
   }
 
@@ -292,7 +301,8 @@ async function runWebAction(
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  getWindow: () => BrowserWindow | null
+  getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null
 ): Promise<void> {
   // CORS for local dev convenience (only loopback can reach this anyway).
   res.setHeader('access-control-allow-origin', '*')
@@ -325,7 +335,7 @@ async function handleRequest(
       const wire = JSON.parse(raw)
       const source = await normalizePreviewSource(wire)
       const resolved = await parkPreviewAndAwait(
-        (sId, cId, src, rId) => broadcastPreview(getWindow, sId, cId, src, rId),
+        (sId, cId, src, rId) => broadcastPreview(getWindow, getWsServer, sId, cId, src, rId),
         sessionId,
         cardId,
         source
@@ -344,7 +354,7 @@ async function handleRequest(
 
   if (req.method === 'POST' && url === '/preview/clear') {
     const cleared = clearPreviewSource(sessionId)
-    broadcastPreview(getWindow, sessionId, cardId, cleared)
+    broadcastPreview(getWindow, getWsServer, sessionId, cardId, cleared)
     sendJson(res, 200, cleared)
     return
   }
@@ -428,7 +438,7 @@ async function handleRequest(
     try {
       const raw = await readBody(req)
       const body = JSON.parse(raw) as WebActBody
-      const result = await runWebAction(getWindow, sessionId, body)
+      const result = await runWebAction(getWindow, getWsServer, sessionId, body)
       sendJson(res, 200, result)
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
@@ -574,7 +584,7 @@ async function handleRequest(
       }
       const title = body.title.slice(0, 80)
       setSessionTitle(id, title)
-      broadcastSessionTitle(getWindow, id, title)
+      broadcastSessionTitle(getWindow, getWsServer, id, title)
       sendJson(res, 200, { ok: true, id, title })
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
@@ -613,6 +623,7 @@ async function handleRequest(
         win.webContents.send('session:add', { cwd: body.cwd, kind })
         win.focus()
       }
+      getWsServer()?.broadcast('session:add', { cwd: body.cwd, kind })
       sendJson(res, 200, { ok: true, cwd: body.cwd, kind })
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
@@ -623,9 +634,12 @@ async function handleRequest(
   sendJson(res, 404, { error: 'not found' })
 }
 
-export function startPreviewServer(getWindow: () => BrowserWindow | null): void {
+export function startPreviewServer(
+  getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null
+): void {
   server = createServer((req, res) => {
-    handleRequest(req, res, getWindow).catch((err) => {
+    handleRequest(req, res, getWindow, getWsServer).catch((err) => {
       console.error('[preview-server] handler error:', err)
       try {
         sendJson(res, 500, { error: String(err) })

@@ -7,7 +7,8 @@ import {
   resizePty,
   setPtyManagerEvents,
   writePty,
-  type CreatePtyArgs
+  type CreatePtyArgs,
+  type DeckyWsServer
 } from '@decky/server'
 import { startSessionHandoffBackend, stopSessionHandoffBackend } from './handoff-backend'
 
@@ -21,7 +22,10 @@ export { loginShellPath, killAllPtys }
 //      de WebContents — vai pro server quando virar browser-manager).
 //   3. Registra os ipcMain.handle/on que delegam pros métodos puros do server.
 
-export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void {
+export function registerPtyHandlers(
+  getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null
+): void {
   setPtyManagerEvents({
     onData(id, data) {
       const win = getWindow()
@@ -34,6 +38,7 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null): void
     onUuidConflict(id) {
       const win = getWindow()
       if (win && !win.isDestroyed()) win.webContents.send('session:uuid-conflict', { id })
+      getWsServer()?.broadcast('session:uuid-conflict', { id })
     },
     onHandoffStart(id) {
       if (process.env.DECKY_NO_HANDOFF) return

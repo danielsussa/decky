@@ -4,7 +4,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { deckStateDir } from '@decky/shared/node'
 import { loginShellPath } from './pty'
-import { diag } from '@decky/server'
+import { diag, type DeckyWsServer } from '@decky/server'
 
 // Dev-only "rebuild & relaunch" button. It exists solely for developing decky against the
 // REAL installed .app: the packaged bundle loads its code from inside app.asar (NOT from out/),
@@ -217,110 +217,111 @@ async function fastSwap(
 
 let rebuilding = false
 
-export function registerDevRebuildHandlers(getWindow: () => BrowserWindow | null): void {
+async function doRebuild(
+  send: (line: string) => void
+): Promise<{ ok: boolean; error?: string }> {
+  const info = getDevInfo()
+  if (!info.enabled || !info.repo) return { ok: false, error: 'dev rebuild not enabled' }
+  if (rebuilding) return { ok: false, error: 'already rebuilding' }
+  rebuilding = true
+
+  const repo = info.repo
+  const explicitTarget = readDevConfig()?.target
+
+  try {
+    const install = runningBundle()
+    if (!install) {
+      send('\n✗ could not resolve the running .app bundle\n')
+      return { ok: false, error: 'install bundle not found' }
+    }
+
+    // Default path: hot-swap in place (no electron-builder). Skipped when dev.json
+    // sets target explicitly (user wants the full prod-shaped build) or when the
+    // install layout / deps don't line up for a safe swap.
+    if (!explicitTarget) {
+      const elig = checkFastSwapEligibility(repo, install)
+      if (elig.ok) return await fastSwap(repo, install, send)
+      send(`(fast-swap not eligible: ${elig.reason}) — falling back to dev-unpack\n`)
+    }
+
+    // Fallback / explicit-target path: full electron-builder build → ditto bundle.
+    const target = explicitTarget || 'dev-unpack'
+    send(`$ ./build.sh ${target}\n`)
+    const code = await runBuild(repo, target, send)
+    if (code !== 0) {
+      send(`\n✗ build failed (exit ${code})\n`)
+      return { ok: false, error: `build exit ${code}` }
+    }
+
+    const built = builtBundle(repo)
+    if (!built) {
+      send('\n✗ built .app not found under dist/mac-*/\n')
+      return { ok: false, error: 'built app not found' }
+    }
+
+    // Two cases, depending on where decky was launched from:
+    //  • built === install — running straight from dist/mac-*/decky.app. Nothing to swap.
+    //  • built !== install — running an installed copy. ditto the fresh bundle over it.
+    if (built !== install) {
+      send(`\n→ swapping build into ${install}\n`)
+      const staging = `${install}.new`
+      const backup = `${install}.bak`
+      await run('rm', ['-rf', staging])
+      await run('ditto', [built, staging])
+      await run('rm', ['-rf', backup])
+      await run('mv', [install, backup])
+      try {
+        await run('mv', [staging, install])
+      } catch (err) {
+        await run('mv', [backup, install]).catch(() => {})
+        throw err
+      }
+      // Drop o backup: mesmo CFBundleIdentifier do app vivo, macOS re-prompta TCC.
+      await run('rm', ['-rf', backup]).catch(() => {})
+    }
+
+    // Don't auto-relaunch: o usuário pode estar ocupado em outra sessão. UI vira botão Restart.
+    send('\n✓ built — click Restart when ready\n')
+    return { ok: true }
+  } catch (err) {
+    send(`\n✗ ${(err as Error).message}\n`)
+    return { ok: false, error: (err as Error).message }
+  } finally {
+    rebuilding = false
+  }
+}
+
+function doRelaunch(): void {
+  // LaunchServices (`open <bundle>`) em vez do exec default do app.relaunch — sobrevive ao
+  // bundle ter sido swap'd com cdhash novo (exec direto às vezes silently exit nesse caso).
+  const bundle = runningBundle()
+  diag(`dev:relaunch → ${bundle ? `open ${bundle}` : 'app.relaunch (default exec)'}`)
+  if (bundle && process.platform === 'darwin') {
+    app.relaunch({ execPath: '/usr/bin/open', args: [bundle] })
+  } else {
+    app.relaunch()
+  }
+  app.quit() // goes through before-quit so the workspace state flush still runs
+}
+
+export function registerDevRebuildHandlers(
+  getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null
+): void {
+  // Output streaming: cada linha vai pro renderer (IPC) E pra qualquer WS client conectado.
+  const emitOutput = (line: string): void => {
+    const w = getWindow()
+    if (w && !w.isDestroyed()) w.webContents.send('dev:rebuild-output', line)
+    getWsServer()?.broadcast('dev:rebuild-output', line)
+  }
+
   ipcMain.handle('dev:get-info', () => getDevInfo())
+  ipcMain.handle('dev:rebuild', () => doRebuild(emitOutput))
+  ipcMain.handle('dev:relaunch', () => doRelaunch())
 
-  ipcMain.handle('dev:rebuild', async (): Promise<{ ok: boolean; error?: string }> => {
-    const info = getDevInfo()
-    if (!info.enabled || !info.repo) return { ok: false, error: 'dev rebuild not enabled' }
-    if (rebuilding) return { ok: false, error: 'already rebuilding' }
-    rebuilding = true
-
-    const repo = info.repo
-    const explicitTarget = readDevConfig()?.target
-    const send = (line: string): void => {
-      const w = getWindow()
-      if (w && !w.isDestroyed()) w.webContents.send('dev:rebuild-output', line)
-    }
-
-    try {
-      const install = runningBundle()
-      if (!install) {
-        send('\n✗ could not resolve the running .app bundle\n')
-        return { ok: false, error: 'install bundle not found' }
-      }
-
-      // Default path: hot-swap in place (no electron-builder). Skipped when dev.json
-      // sets target explicitly (user wants the full prod-shaped build) or when the
-      // install layout / deps don't line up for a safe swap.
-      if (!explicitTarget) {
-        const elig = checkFastSwapEligibility(repo, install)
-        if (elig.ok) return await fastSwap(repo, install, send)
-        send(`(fast-swap not eligible: ${elig.reason}) — falling back to dev-unpack\n`)
-      }
-
-      // Fallback / explicit-target path: full electron-builder build → ditto bundle.
-      const target = explicitTarget || 'dev-unpack'
-      send(`$ ./build.sh ${target}\n`)
-      const code = await runBuild(repo, target, send)
-      if (code !== 0) {
-        send(`\n✗ build failed (exit ${code})\n`)
-        return { ok: false, error: `build exit ${code}` }
-      }
-
-      const built = builtBundle(repo)
-      if (!built) {
-        send('\n✗ built .app not found under dist/mac-*/\n')
-        return { ok: false, error: 'built app not found' }
-      }
-
-      // Two cases, depending on where decky was launched from:
-      //
-      //  • built === install — running straight from dist/mac-*/decky.app (the dev's normal
-      //    case). electron-builder already overwrote that bundle in place; the live process
-      //    survived on its unlinked inodes. Nothing to swap — just relaunch the same path.
-      //
-      //  • built !== install — running an installed copy (e.g. /Applications). Building wrote to
-      //    dist/, so we ditto the fresh bundle over the running one. Renaming the running .app
-      //    aside is safe on macOS (the live process keeps its mmap'd inode); relaunch fires only
-      //    after we exit.
-      if (built !== install) {
-        send(`\n→ swapping build into ${install}\n`)
-        const staging = `${install}.new`
-        const backup = `${install}.bak`
-        await run('rm', ['-rf', staging])
-        await run('ditto', [built, staging])
-        await run('rm', ['-rf', backup])
-        await run('mv', [install, backup])
-        try {
-          await run('mv', [staging, install])
-        } catch (err) {
-          // Restore the original so we never leave the user without an app.
-          await run('mv', [backup, install]).catch(() => {})
-          throw err
-        }
-        // Drop the backup: same CFBundleIdentifier as the live app, so macOS
-        // treats it as a second install and re-prompts TCC ("decky.app.bak
-        // would like to access data from other apps") on every launch.
-        await run('rm', ['-rf', backup]).catch(() => {})
-      }
-
-      // Don't auto-relaunch: the user may be busy in another decky session and a rebuild can
-      // take a while. The renderer flips to a "Restart" button and fires dev:relaunch when the
-      // user is ready. The bundle on disk is already the new one — only the live process is old.
-      send('\n✓ built — click Restart when ready\n')
-      return { ok: true }
-    } catch (err) {
-      send(`\n✗ ${(err as Error).message}\n`)
-      return { ok: false, error: (err as Error).message }
-    } finally {
-      rebuilding = false
-    }
-  })
-
-  ipcMain.handle('dev:relaunch', () => {
-    // Relaunch through LaunchServices (`open <bundle>`) instead of app.relaunch()'s default
-    // direct exec of process.execPath. After a rebuild we just `mv`'d a freshly self-signed
-    // bundle into place; LaunchServices re-registers its new cdhash, whereas a bare direct
-    // exec of the just-swapped bundle was seen to silently exit ("rebuild → won't open").
-    // app.relaunch still owns the wait-for-this-PID-to-die handoff; we only swap WHAT it runs.
-    const bundle = runningBundle()
-    diag(`dev:relaunch → ${bundle ? `open ${bundle}` : 'app.relaunch (default exec)'}`)
-    if (bundle && process.platform === 'darwin') {
-      app.relaunch({ execPath: '/usr/bin/open', args: [bundle] })
-    } else {
-      app.relaunch()
-    }
-    app.quit() // goes through before-quit so the workspace state flush still runs
-  })
+  const ws = getWsServer()
+  if (!ws) return
+  ws.handle<void, ReturnType<typeof getDevInfo>>('dev:get-info', () => getDevInfo())
+  ws.handle<void, { ok: boolean; error?: string }>('dev:rebuild', () => doRebuild(emitOutput))
+  ws.handle<void, void>('dev:relaunch', () => doRelaunch())
 }

@@ -102,7 +102,10 @@ function routeFolderToWindow(dir: string | null): void {
   if (!mainWindow) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.focus()
-  if (dir) mainWindow.webContents.send('session:add', { cwd: dir, kind: 'claude' })
+  if (dir) {
+    mainWindow.webContents.send('session:add', { cwd: dir, kind: 'claude' })
+    wsServer?.broadcast('session:add', { cwd: dir, kind: 'claude' })
+  }
 }
 
 diag('requesting single-instance lock')
@@ -232,7 +235,7 @@ app
 
     Menu.setApplicationMenu(buildMenu(() => mainWindow))
 
-    registerPtyHandlers(() => mainWindow)
+    registerPtyHandlers(() => mainWindow, () => wsServer)
     registerStateHandlers()
     registerCliHandlers()
     // Fase 2 — WS server na 127.0.0.1:<porta-livre>. Roda em paralelo aos IPCs por enquanto;
@@ -277,6 +280,10 @@ app
         nativeTheme.themeSource = args?.mode === 'light' ? 'light' : 'dark'
         return true
       })
+      // sessions:get-titles — Map vive em preview-state (@decky/server).
+      wsServer.handle<void, Record<string, string>>('sessions:get-titles', () =>
+        getSessionTitles()
+      )
     } catch (err) {
       console.error('[ws-server] failed to start:', err)
     }
@@ -286,7 +293,7 @@ app
     registerCardMirrorHandlers(() => mainWindow, () => wsServer)
     registerWidgetBridge(() => mainWindow)
     registerFileWatchHandlers(() => mainWindow, () => wsServer)
-    registerDevRebuildHandlers(() => mainWindow)
+    registerDevRebuildHandlers(() => mainWindow, () => wsServer)
     registerGitHandlers()
     setupAssetProtocol()
     setupCardProtocol()
@@ -314,7 +321,7 @@ app
     setupWebViews(() => mainWindow)
     setupHtmlServer(() => wsServer)
     diag('handlers registered, starting preview server')
-    startPreviewServer(() => mainWindow)
+    startPreviewServer(() => mainWindow, () => wsServer)
     // O backend do handoff agora sobe POR SESSÃO em pty.ts (start no spawn / stop no exit),
     // bound em /tmp/handoff-decky-<sessionId>.sock e escopado em cards da própria sessão.
     // O HANDOFF_SOCKET do pty aponta clientes pra esse socket isolado. Sem chamada global aqui.

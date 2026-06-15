@@ -709,3 +709,15 @@ export function registerSshHandlers(getWsServer: () => DeckyWsServer | null): vo
     })
   })
 }
+
+/**
+ * Versão silenciosa do open-remote — pra reconexão automática no boot. Não emite progress
+ * events (ninguém tá escutando). Mesmo flow que ssh:open-remote (start server idempotente +
+ * lê token + abre tunnel SSH local forward), mas sem UI feedback.
+ */
+export async function openRemoteSilent(
+  host: string,
+  identity: string | undefined
+): Promise<OpenRemoteResult> {
+  return doOpenRemote({ host, identity, emit: () => {} })
+}

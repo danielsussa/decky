@@ -46,6 +46,15 @@ function subscribeEnginePty(engineId: string): void {
 // deck.engines.add → subscribeEnginePty.
 for (const e of listEngines()) subscribeEnginePty(e.id)
 
+// Reconexão automática: o main dispara doOpenRemote em background pra cada engine remoto no
+// boot e emite 'engines:updated' (no engine local) quando o tunnel volta vivo. Aqui escutamos
+// e fazemos upsertEngine, que troca a url+token cacheados e força reconexão da WS — sem isso,
+// o renderer continuaria tentando a porta morta de um tunnel anterior.
+wsOn<Engine>(L, 'engines:updated', (engine) => {
+  upsertEngine(engine)
+  subscribeEnginePty(engine.id)
+})
+
 const deckApi = {
   pty: {
     // Sessão local → ipcRenderer (pty no main local). Sessão de server → wsInvoke/wsSend no

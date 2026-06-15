@@ -31,7 +31,7 @@ import {
   rehydratePreviews
 } from './preview-server'
 import { registerLegacyIpcBridges } from './legacy-ipc'
-import { registerSshHandlers } from './ssh-bridge'
+import { openRemoteSilent, registerSshHandlers } from './ssh-bridge'
 import { registerCardsHandlers } from './cards-store'
 import { registerTagsIndexHandlers } from './tags-index-watcher'
 import { searchCards } from '@decky/server'
@@ -182,6 +182,37 @@ async function addServerEngine(cfg: ServerEngineConfig & { url: string }): Promi
     : [...servers, engine]
   await setState('engines', next)
   return serverConfigToEngine(engine)
+}
+
+async function reconnectAllRemoteEngines(): Promise<void> {
+  const servers = await loadServerConfigs()
+  await Promise.allSettled(
+    servers.map(async (s) => {
+      if (!s.sshHost) return
+      try {
+        const r = await openRemoteSilent(s.sshHost, s.sshIdentity)
+        if (!r.ok || !r.localUrl || !r.token) {
+          diag(`[engines] reconnect ${s.id} failed: ${r.error ?? 'no result'}`)
+          return
+        }
+        // Atualiza state com nova url+token.
+        const cfgs = await loadServerConfigs()
+        const i = cfgs.findIndex((c) => c.id === s.id)
+        if (i >= 0) {
+          cfgs[i] = { ...cfgs[i], url: r.localUrl, token: r.token }
+          await setState('engines', cfgs)
+        }
+        // Atualiza rendererEngines pra que listEngines() do preload pegue dali em diante.
+        rendererEngines = await buildEngineList()
+        // Push pro preload trocar a conexão WS pra url nova.
+        const engine = rendererEngines.find((e) => e.id === s.id)
+        if (engine) wsServer?.broadcast('engines:updated', engine)
+        diag(`[engines] reconnect ${s.id} ok — ${r.localUrl}`)
+      } catch (err) {
+        diag(`[engines] reconnect ${s.id} threw: ${(err as Error).message}`)
+      }
+    })
+  )
 }
 
 async function removeServerEngine(engineId: string): Promise<boolean> {
@@ -597,6 +628,13 @@ app
     diag('creating window')
     createWindow()
     diag('createWindow returned')
+
+    // Reconexão automática de tunnels SSH em background: pra cada engine server persistido
+    // com sshHost, dispara doOpenRemote silencioso. Quando o tunnel volta vivo, broadcasta
+    // engines:updated pro preload trocar a url morta pela nova. NÃO bloqueia o boot — engine
+    // fica com url stale por alguns segundos, depois reconecta. Falhas silenciosas (host
+    // offline) deixam a engine com url velha — user vai ver erro real ao tentar usar.
+    void reconnectAllRemoteEngines()
 
     app.on('activate', function () {
       // On macOS it's common to re-create a window in the app when the

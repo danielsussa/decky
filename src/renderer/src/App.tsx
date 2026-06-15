@@ -15,6 +15,7 @@ import FirstRunModal from './components/FirstRunModal'
 import AddServerModal from './components/AddServerModal'
 import EnginePickerModal from './components/EnginePickerModal'
 import RemoteFolderModal from './components/RemoteFolderModal'
+import ConfirmEngineRemoveModal from './components/ConfirmEngineRemoveModal'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
 import type { PreviewSource, StashEntry, Engine } from '@decky/shared'
 import { LOCAL_ENGINE_ID } from '@decky/shared'
@@ -2259,6 +2260,61 @@ function App(): React.JSX.Element {
     setEngines(window.deck.engines.list())
   }
 
+  // Remover engine: pede confirmação porque arrasta os workspaces remotos junto. Os dados no
+  // host remoto FICAM intactos — só desconecta + tira da árvore. O usuário pode re-adicionar
+  // depois (mesmo host = engine reaproveitada por dedup no main).
+  const [engineToRemove, setEngineToRemove] = useState<Engine | null>(null)
+
+  const requestRemoveEngine = (engineId: string): void => {
+    const eng = engines.find((e) => e.id === engineId)
+    if (!eng || eng.kind !== 'server') return
+    setEngineToRemove(eng)
+  }
+
+  const confirmRemoveEngine = async (): Promise<void> => {
+    const eng = engineToRemove
+    if (!eng) return
+    // Workspaces que pertencem a esse engine (path → engineId no map).
+    const affected = Object.entries(workspaceEngine)
+      .filter(([, id]) => id === eng.id)
+      .map(([path]) => path)
+
+    await window.deck.engines.remove(eng.id)
+
+    // Limpa workspaces ligados ao engine + atualiza state-store.
+    setWorkspaces((prev) => {
+      const next = prev.filter((w) => !affected.includes(w))
+      void window.deck.state.set('workspaces', next)
+      return next
+    })
+    setWorkspaceEngine((prev) => {
+      const next = { ...prev }
+      for (const p of affected) delete next[p]
+      void window.deck.state.set('workspaceEngines', next)
+      return next
+    })
+    setExpandedWorkspaces((e) => e.filter((w) => !affected.includes(w)))
+    setWsSessionsCache((c) => {
+      const n = { ...c }
+      for (const p of affected) delete n[p]
+      return n
+    })
+    // Se o workspace ativo era um dos removidos, troca pra outro (ou null).
+    if (workspace && affected.includes(workspace)) {
+      const remaining = workspaces.filter((w) => !affected.includes(w))
+      if (remaining.length) setWorkspace(remaining[0])
+      else {
+        loadedWorkspaceRef.current = null
+        setWorkspace(null)
+        setSessions([])
+        setActiveId(undefined)
+      }
+    }
+
+    setEngines(window.deck.engines.list())
+    setEngineToRemove(null)
+  }
+
   // Open a browser card in the active session, focused. Empty url = "nova aba" (URL bar
   // auto-focuses); with url = navigates straight there (used by palette `//query` shortcut).
   // If a tab already shows the same URL in the active session, focus it instead of opening
@@ -2869,6 +2925,7 @@ function App(): React.JSX.Element {
     remoteServerModalOpen ||
     enginePickerOpen ||
     remoteFolderEngine !== null ||
+    engineToRemove !== null ||
     ((firstRunPending || cliSettingsOpen) && detectedClis !== null)
 
   return (
@@ -2903,6 +2960,16 @@ function App(): React.JSX.Element {
           engine={remoteFolderEngine}
           onDismiss={() => setRemoteFolderEngine(null)}
           onConfirm={onRemoteFolderConfirmed}
+        />
+      )}
+      {engineToRemove && (
+        <ConfirmEngineRemoveModal
+          engine={engineToRemove}
+          affectedWorkspaces={Object.entries(workspaceEngine)
+            .filter(([, id]) => id === engineToRemove.id)
+            .map(([path]) => path)}
+          onCancel={() => setEngineToRemove(null)}
+          onConfirm={() => void confirmRemoveEngine()}
         />
       )}
       <main className="deck-main">
@@ -2982,6 +3049,7 @@ function App(): React.JSX.Element {
                 onCloseSession={handleClose}
                 onCloseWorkspace={closeWorkspace}
                 onAddFolder={() => addFolder()}
+                onRemoveEngine={requestRemoveEngine}
                 onRestoreStash={restoreFromStash}
                 onDiscardStash={discardStash}
               />

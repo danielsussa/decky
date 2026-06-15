@@ -61,6 +61,8 @@ interface WorkspaceTreeProps {
   onCloseSession: (ws: string, sessionId: string, mode: CloseSessionMode) => void
   onCloseWorkspace: (ws: string) => void
   onAddFolder: () => void
+  /** Click no X de um engine server (visível só no hover do row). Local não chama (não tem X). */
+  onRemoveEngine: (engineId: string) => void
   onRestoreStash: (entryId: string, opts: { revive: boolean; keep: boolean }) => void
   onDiscardStash: (entryId: string) => void
 }
@@ -88,6 +90,7 @@ export default function WorkspaceTree({
   onCloseSession,
   onCloseWorkspace,
   onAddFolder,
+  onRemoveEngine,
   ownCardCount,
   stash,
   onRestoreStash,
@@ -275,6 +278,22 @@ export default function WorkspaceTree({
                   className={`wstree-engine-status wstree-engine-status-${engine.status ?? 'offline'}`}
                   title={engine.status ?? 'offline'}
                 />
+              )}
+              {isServer && (
+                <button
+                  type="button"
+                  className="wstree-engine-remove"
+                  onClick={(e) => {
+                    // Stop pra não disparar onToggleEngine do row pai (que tem caret separado,
+                    // mas qualquer click no row vira hover state e queremos prevenir mesmo).
+                    e.stopPropagation()
+                    onRemoveEngine(engine.id)
+                  }}
+                  title={t('engineRemove.btnTitle')}
+                  aria-label={t('engineRemove.btnTitle')}
+                >
+                  <X size={12} />
+                </button>
               )}
             </div>
             {engineOpen && (

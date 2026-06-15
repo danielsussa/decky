@@ -167,6 +167,21 @@ const messages = {
     en: 'No folders detected in ~. Use "Other path…" to type the path.'
   },
   'addFolder.useThisFolder': { pt: 'Usar esta pasta', en: 'Use this folder' },
+  'engineRemove.title': { pt: 'Remover server', en: 'Remove server' },
+  'engineRemove.subtitle': {
+    pt: 'Você está prestes a remover {label} da lista.',
+    en: 'You are about to remove {label} from the list.'
+  },
+  'engineRemove.disclaimer': {
+    pt: 'Os dados no host remoto NÃO são apagados. Só fechamos a conexão e tiramos da árvore.',
+    en: 'Data on the remote host is NOT deleted. We only close the connection and remove it from the tree.'
+  },
+  'engineRemove.workspacesAffected': {
+    pt: '{n} workspaces vão sumir da sidebar:',
+    en: '{n} workspaces will disappear from the sidebar:'
+  },
+  'engineRemove.confirm': { pt: 'Remover', en: 'Remove' },
+  'engineRemove.btnTitle': { pt: 'Remover server', en: 'Remove server' },
   'server.stepNodeCheck': { pt: 'Verificando Node.js no host', en: 'Checking Node.js on host' },
   'server.stepMkdir': { pt: 'Criando ~/.decky-server', en: 'Creating ~/.decky-server' },
   'server.stepUpload': { pt: 'Enviando bundle (~80 KB)', en: 'Uploading bundle (~80 KB)' },

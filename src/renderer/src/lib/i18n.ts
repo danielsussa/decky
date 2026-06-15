@@ -146,6 +146,18 @@ const messages = {
   'server.btnInstall': { pt: 'Instalar decky-server', en: 'Install decky-server' },
   'server.btnOpen': { pt: 'Abrir workspace', en: 'Open workspace' },
   'server.btnAddServer': { pt: 'Adicionar server', en: 'Add server' },
+  'addFolder.engineTitle': { pt: 'Adicionar pasta', en: 'Add folder' },
+  'addFolder.engineSubtitle': {
+    pt: 'De qual máquina é a pasta?',
+    en: 'Which machine is the folder on?'
+  },
+  'addFolder.localDetail': { pt: 'Esta máquina', en: 'This machine' },
+  'addFolder.remoteTitle': { pt: 'Escolher pasta em {host}', en: 'Choose folder on {host}' },
+  'addFolder.remoteSubtitle': {
+    pt: '{n} pastas detectadas no host. Digite o caminho ou escolha das sugestões.',
+    en: '{n} folders detected on host. Type the path or pick from suggestions.'
+  },
+  'addFolder.useThisFolder': { pt: 'Usar esta pasta', en: 'Use this folder' },
   'server.stepNodeCheck': { pt: 'Verificando Node.js no host', en: 'Checking Node.js on host' },
   'server.stepMkdir': { pt: 'Criando ~/.decky-server', en: 'Creating ~/.decky-server' },
   'server.stepUpload': { pt: 'Enviando bundle (~80 KB)', en: 'Uploading bundle (~80 KB)' },

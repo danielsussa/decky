@@ -13,6 +13,8 @@ import CardSearch from './components/CardSearch'
 import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import FirstRunModal from './components/FirstRunModal'
 import AddServerModal from './components/AddServerModal'
+import EnginePickerModal from './components/EnginePickerModal'
+import RemoteFolderModal from './components/RemoteFolderModal'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
 import type { PreviewSource, StashEntry, Engine } from '@decky/shared'
 import { LOCAL_ENGINE_ID } from '@decky/shared'
@@ -2186,9 +2188,60 @@ function App(): React.JSX.Element {
     setStash((prev) => prev.filter((e) => e.id !== entryId))
   }
 
-  const addFolder = async (): Promise<void> => {
+  // Add folder agora respeita multi-engine. Quando há mais de uma engine (local + servers),
+  // abre primeiro o EnginePicker pra o user escolher onde a pasta vive. Local segue pro dialog
+  // nativo; remoto abre o RemoteFolderModal (input path com probe SSH + criar pasta).
+  const [enginePickerOpen, setEnginePickerOpen] = useState(false)
+  const [remoteFolderEngine, setRemoteFolderEngine] = useState<Engine | null>(null)
+
+  // Adiciona o path à lista de workspaces (no state-store), mapeia pro engineId (se remoto) e
+  // foca nele. Idempotente — se o path já está registrado, só seta o workspace.
+  const addWorkspaceForEngine = (engineId: string, path: string): void => {
+    setWorkspaces((prev) => {
+      if (prev.includes(path)) return prev
+      const next = [...prev, path]
+      void window.deck.state.set('workspaces', next)
+      return next
+    })
+    if (engineId !== LOCAL_ENGINE_ID) {
+      setWorkspaceEngine((prev) => {
+        const next = { ...prev, [path]: engineId }
+        void window.deck.state.set('workspaceEngines', next)
+        return next
+      })
+    }
+    setWorkspace(path)
+  }
+
+  const addFolder = (): void => {
+    // Com só o engine local (caso default), pula o picker e vai direto pro dialog nativo.
+    if (engines.length <= 1) {
+      void pickLocalFolder()
+      return
+    }
+    setEnginePickerOpen(true)
+  }
+
+  const pickLocalFolder = async (): Promise<void> => {
     const p = await window.deck.app.pickFolder()
-    if (p) setWorkspace(p)
+    if (p) addWorkspaceForEngine(LOCAL_ENGINE_ID, p)
+  }
+
+  const onEnginePicked = (engineId: string): void => {
+    setEnginePickerOpen(false)
+    if (engineId === LOCAL_ENGINE_ID) {
+      void pickLocalFolder()
+      return
+    }
+    const eng = engines.find((e) => e.id === engineId)
+    if (!eng) return
+    setRemoteFolderEngine(eng)
+  }
+
+  const onRemoteFolderConfirmed = (path: string): void => {
+    if (!remoteFolderEngine) return
+    addWorkspaceForEngine(remoteFolderEngine.id, path)
+    setRemoteFolderEngine(null)
   }
 
   // SSH remote — UX placeholder. Implementação real virá em PRs seguintes (connect via SSH,
@@ -2811,6 +2864,8 @@ function App(): React.JSX.Element {
     paletteOpen ||
     cardSearchOpen ||
     remoteServerModalOpen ||
+    enginePickerOpen ||
+    remoteFolderEngine !== null ||
     ((firstRunPending || cliSettingsOpen) && detectedClis !== null)
 
   return (
@@ -2831,6 +2886,20 @@ function App(): React.JSX.Element {
         <AddServerModal
           onDismiss={() => setRemoteServerModalOpen(false)}
           onAdded={onServerAdded}
+        />
+      )}
+      {enginePickerOpen && (
+        <EnginePickerModal
+          engines={engines}
+          onDismiss={() => setEnginePickerOpen(false)}
+          onPick={onEnginePicked}
+        />
+      )}
+      {remoteFolderEngine && (
+        <RemoteFolderModal
+          engine={remoteFolderEngine}
+          onDismiss={() => setRemoteFolderEngine(null)}
+          onConfirm={onRemoteFolderConfirmed}
         />
       )}
       <main className="deck-main">
@@ -2909,7 +2978,7 @@ function App(): React.JSX.Element {
                 onNewSession={newSessionIn}
                 onCloseSession={handleClose}
                 onCloseWorkspace={closeWorkspace}
-                onAddFolder={() => void addFolder()}
+                onAddFolder={() => addFolder()}
                 onAddServer={addServer}
                 onRestoreStash={restoreFromStash}
                 onDiscardStash={discardStash}

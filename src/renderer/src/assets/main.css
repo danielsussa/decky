@@ -2311,6 +2311,66 @@ textarea.form-input {
   text-overflow: ellipsis;
   max-width: 60%;
 }
+
+/* Variante mais estreita pro EnginePicker/RemoteFolder modals (menos campos) */
+.add-server-modal-narrow {
+  width: 400px;
+}
+
+/* Engine picker */
+.engine-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.engine-picker-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-1);
+  font: 13px var(--sans);
+  text-align: left;
+  cursor: pointer;
+  transition: background 80ms, border-color 80ms;
+}
+.engine-picker-row:hover {
+  background: var(--bg-2);
+  border-color: var(--text-3);
+}
+.engine-picker-icon {
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.engine-picker-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.engine-picker-name {
+  font-weight: 600;
+  color: var(--text-1);
+  font-family: var(--mono);
+}
+.engine-picker-detail {
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .add-server-modal-actions {
   display: flex;
   justify-content: flex-end;

@@ -407,6 +407,14 @@ const deckApi = {
       identity?: string
     }): Promise<{ ok: boolean; error?: string }> =>
       wsInvoke('ssh:install-decky-server', args),
+    openRemote: (args: {
+      host: string
+      identity?: string
+      workspacePath: string
+    }): Promise<{ ok: boolean; localUrl?: string; token?: string; error?: string }> =>
+      wsInvoke('ssh:open-remote', args),
+    reopenWithRemote: (url: string, token: string): Promise<{ ok: boolean }> =>
+      wsInvoke('app:reopen-with-remote', { url, token }),
     onInstallProgress: (
       cb: (
         ev:

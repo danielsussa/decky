@@ -40,7 +40,7 @@ import { ensureDeckInstruction } from '@decky/server'
 import { ensureDeckyHooks } from '@decky/server'
 import { resolveClaudeBin, readAiTitle } from '@decky/server'
 import { initCliPaths } from '@decky/server'
-import { registerStateWsHandlers, getState } from '@decky/server'
+import { registerStateWsHandlers, getState, setState } from '@decky/server'
 import { registerCliWsHandlers } from '@decky/server'
 import { registerGitWsHandlers } from '@decky/server'
 import { registerWorkspaceWsHandlers } from '@decky/server'
@@ -73,17 +73,17 @@ app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAuthz,FedCmIdpSigni
 
 let mainWindow: BrowserWindow | null = null
 let wsServer: DeckyWsServer | null = null
+// Cached na startup — lido das env vars (override de dev) OU do state-store (set via
+// app:reopen-with-remote depois do user instalar + conectar via Add server). Quando setado,
+// o WS server embarcado não sobe e o preload conecta no remoto.
+let cachedRemoteUrl: string | null = null
+let cachedRemoteToken: string | null = null
 
-// Helper que retorna a URL que o preload deve usar:
-//  - Em modo remoto: monta wss://...?token=... a partir das env vars
-//  - Em modo embedded: usa wsServer.url (criado por startWsServer)
 function resolveWsUrlForRenderer(): string {
-  const remoteUrl = process.env.DECKY_REMOTE_WS_URL
-  if (remoteUrl) {
-    const token = process.env.DECKY_REMOTE_WS_TOKEN
-    if (!token) return remoteUrl
-    const sep = remoteUrl.includes('?') ? '&' : '?'
-    return `${remoteUrl}${sep}token=${encodeURIComponent(token)}`
+  if (cachedRemoteUrl) {
+    if (!cachedRemoteToken) return cachedRemoteUrl
+    const sep = cachedRemoteUrl.includes('?') ? '&' : '?'
+    return `${cachedRemoteUrl}${sep}token=${encodeURIComponent(cachedRemoteToken)}`
   }
   return wsServer?.url ?? ''
 }
@@ -252,14 +252,25 @@ app
     registerPtyHandlers(() => mainWindow, () => wsServer)
     registerLegacyIpcBridges()
 
-    // Modo remoto: se DECKY_REMOTE_WS_URL setado, NÃO sobe server embarcado. O preload
-    // conecta direto no remoto. Útil pra dev (testar Electron client contra decky-server
-    // standalone num shell separado OU num VPS via Tailscale). Recomenda também setar
-    // DECKY_REMOTE_WS_TOKEN, que é appendado no URL como ?token=. Em prod (Fase 3.5)
-    // isso vira UI "Add remote engine" + persisted config; aqui é só env override pra dev.
-    const remoteUrl = process.env.DECKY_REMOTE_WS_URL
-    if (remoteUrl) {
-      diag(`[ws-server] remote mode — pointing at ${remoteUrl}`)
+    // Modo remoto:
+    //   1. env DECKY_REMOTE_WS_URL/TOKEN (override pra dev)
+    //   2. state-store (persistido após user clicar "Open workspace" no Add server modal)
+    // Se algum setado, NÃO sobe server embarcado — preload conecta direto no remoto.
+    const envUrl = process.env.DECKY_REMOTE_WS_URL
+    const envToken = process.env.DECKY_REMOTE_WS_TOKEN
+    if (envUrl) {
+      cachedRemoteUrl = envUrl
+      cachedRemoteToken = envToken ?? null
+    } else {
+      const stateUrl = await getState<string>('remoteEngineUrl')
+      const stateToken = await getState<string>('remoteEngineToken')
+      if (stateUrl) {
+        cachedRemoteUrl = stateUrl
+        cachedRemoteToken = stateToken ?? null
+      }
+    }
+    if (cachedRemoteUrl) {
+      diag(`[ws-server] remote mode — pointing at ${cachedRemoteUrl}`)
     } else {
       try {
         wsServer = await startWsServer()
@@ -306,6 +317,22 @@ app
         )
         // ssh:* — SSH client no main, expõe ssh:exec pra UX do "Add server" rodar comandos no remote.
         registerSshHandlers(() => wsServer)
+        // app:reopen-with-remote — recebe url+token do modal "Add server" quando o user clica
+        // "Open workspace" depois do install. Persiste no state-store e faz relaunch — próximo
+        // boot lê esse state e aponta o WS pro remoto.
+        wsServer.handle<{ url: string; token: string }, { ok: boolean }>(
+          'app:reopen-with-remote',
+          async (args) => {
+            if (!args?.url) return { ok: false }
+            await setState('remoteEngineUrl', args.url)
+            await setState('remoteEngineToken', args.token ?? '')
+            setTimeout(() => {
+              app.relaunch()
+              app.quit()
+            }, 300)
+            return { ok: true }
+          }
+        )
         // preview:get-all/rehydrate — funções puras no server.
         wsServer.handle<void, Record<string, import('@decky/shared').PreviewSource>>(
           'preview:get-all',

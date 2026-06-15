@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { createServer } from 'node:net'
 import { app } from 'electron'
 import { Client, type ConnectConfig } from 'ssh2'
 import type { DeckyWsServer } from '@decky/server'
@@ -473,6 +475,206 @@ async function doInstall(ctx: InstallContext): Promise<{ ok: boolean; error?: st
   }
 }
 
+// ── Start server + SSH tunnel ──────────────────────────────────────────────
+
+const REMOTE_SERVER_PORT = 8447
+const TOKEN_WAIT_TIMEOUT_MS = 10_000
+const TOKEN_WAIT_INTERVAL_MS = 300
+
+export interface OpenRemoteResult {
+  ok: boolean
+  /** URL local que o Electron renderer vai usar como DECKY_REMOTE_WS_URL. */
+  localUrl?: string
+  token?: string
+  error?: string
+}
+
+export interface OpenRemoteArgs {
+  host: string
+  identity?: string
+  /** workspace cwd no remote — vai ser passado pro renderer recriar o workspace. */
+  workspacePath: string
+}
+
+async function pickFreeLocalPort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const srv = createServer()
+    srv.unref()
+    srv.on('error', reject)
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address()
+      if (!addr || typeof addr === 'string') {
+        srv.close()
+        reject(new Error('failed to bind ephemeral port'))
+        return
+      }
+      const port = addr.port
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+interface TunnelHandle {
+  localPort: number
+  proc: ChildProcess
+  kill: () => void
+}
+
+const tunnels = new Map<string, TunnelHandle>()
+
+/** Spawn de `ssh -N -L <local>:127.0.0.1:<remote>` pra criar o forward. */
+async function openTunnel(host: string, identity: string | undefined, remotePort: number): Promise<TunnelHandle> {
+  const parsed = parseHost(host)
+  const userAtHost = parsed.user ? `${parsed.user}@${parsed.host}` : parsed.host
+  const localPort = await pickFreeLocalPort()
+  const sshArgs = [
+    '-N',
+    '-L',
+    `${localPort}:127.0.0.1:${remotePort}`,
+    '-o',
+    'ExitOnForwardFailure=yes',
+    '-o',
+    'ServerAliveInterval=30',
+    '-o',
+    'StrictHostKeyChecking=accept-new',
+    '-p',
+    String(parsed.port)
+  ]
+  if (identity && identity.trim()) {
+    sshArgs.push('-i', expandHome(identity.trim()))
+  }
+  sshArgs.push(userAtHost)
+
+  const proc = spawn('ssh', sshArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
+  // Pequeno wait pra que o forward esteja realmente listening — ssh é silencioso quando OK.
+  await new Promise<void>((resolve, reject) => {
+    let resolved = false
+    const onExit = (code: number | null): void => {
+      if (resolved) return
+      reject(new Error(`ssh tunnel exited (code ${code}) before forward established`))
+    }
+    proc.on('exit', onExit)
+    setTimeout(() => {
+      if (!proc.killed) {
+        resolved = true
+        proc.off('exit', onExit)
+        resolve()
+      }
+    }, 1200)
+  })
+
+  return {
+    localPort,
+    proc,
+    kill: () => {
+      try {
+        proc.kill('SIGTERM')
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+async function doOpenRemote(ctx: {
+  host: string
+  identity?: string
+  emit: (e: InstallProgressEvent) => void
+}): Promise<OpenRemoteResult> {
+  const emitStep = (id: string, state: InstallStep['state'], detail?: string): void =>
+    ctx.emit({ kind: 'step', step: { id, state, detail } })
+
+  emitStep('start-server', 'pending')
+  emitStep('wait-token', 'pending')
+  emitStep('open-tunnel', 'pending')
+
+  let session: SshSession
+  try {
+    session = await sshConnect(ctx.host, ctx.identity)
+  } catch (err) {
+    return { ok: false, error: (err as Error).message }
+  }
+
+  try {
+    // STEP 1 — start server in background (idempotente — se já estiver rodando, reuso).
+    emitStep('start-server', 'running')
+    // pgrep retorna 1 se NÃO acha; pra evitar set -e quebrar o script, usamos || true
+    // e checamos a saída. Logamos no decky-server.log pra debug.
+    const startCmd = `bash -lc '
+      cd "$HOME/.decky-server"
+      if pgrep -f "decky-server.js" > /dev/null; then
+        echo "ALREADY_RUNNING"
+      else
+        nohup node dist/decky-server.js start \
+          > "$HOME/.decky-server/decky-server.log" 2>&1 &
+        disown
+        echo "STARTED $!"
+      fi
+    '`
+    const start = await execOn(session.client, startCmd, 15_000)
+    if (!start.ok) {
+      const msg = start.stderr.trim() || start.error || 'failed to start decky-server'
+      emitStep('start-server', 'error', msg)
+      return { ok: false, error: msg }
+    }
+    const started = start.stdout.trim()
+    emitStep('start-server', 'ok', started)
+
+    // STEP 2 — wait for admin-token.txt to appear (server cria na 1ª boot)
+    emitStep('wait-token', 'running')
+    const tokenWaitCmd = `bash -lc '
+      i=0
+      while [ $i -lt ${Math.floor(TOKEN_WAIT_TIMEOUT_MS / TOKEN_WAIT_INTERVAL_MS)} ]; do
+        if [ -f "$HOME/.decky-server/admin-token.txt" ]; then
+          cat "$HOME/.decky-server/admin-token.txt"
+          exit 0
+        fi
+        sleep ${(TOKEN_WAIT_INTERVAL_MS / 1000).toFixed(1)}
+        i=$((i+1))
+      done
+      echo "TOKEN_TIMEOUT" >&2
+      exit 1
+    '`
+    const tokenWait = await execOn(session.client, tokenWaitCmd, TOKEN_WAIT_TIMEOUT_MS + 3_000)
+    if (!tokenWait.ok) {
+      const msg =
+        tokenWait.stderr.trim() ||
+        tokenWait.error ||
+        'token file did not appear in time (decky-server crashed at boot?)'
+      emitStep('wait-token', 'error', msg)
+      return { ok: false, error: msg }
+    }
+    const token = tokenWait.stdout.trim()
+    emitStep('wait-token', 'ok', token.slice(0, 14) + '…')
+
+    // Encerra a sessão SSH "exec" — daqui pra frente é só a sessão de tunnel que importa.
+    session.end()
+
+    // STEP 3 — open SSH local forward
+    emitStep('open-tunnel', 'running')
+    let tunnel: TunnelHandle
+    try {
+      tunnel = await openTunnel(ctx.host, ctx.identity, REMOTE_SERVER_PORT)
+    } catch (err) {
+      emitStep('open-tunnel', 'error', (err as Error).message)
+      return { ok: false, error: (err as Error).message }
+    }
+    // Mantém o tunnel vivo. Mata o anterior se o usuário trocar de host.
+    const prev = tunnels.get(ctx.host)
+    if (prev) prev.kill()
+    tunnels.set(ctx.host, tunnel)
+    // Garantia: se o decky fechar antes do user, o tunnel cai junto.
+    app.on('before-quit', () => tunnel.kill())
+
+    const localUrl = `ws://127.0.0.1:${tunnel.localPort}`
+    emitStep('open-tunnel', 'ok', `${localUrl}`)
+    return { ok: true, localUrl, token }
+  } catch (err) {
+    session.end()
+    return { ok: false, error: (err as Error).message }
+  }
+}
+
 // ── Registry ───────────────────────────────────────────────────────────────
 
 export function registerSshHandlers(getWsServer: () => DeckyWsServer | null): void {
@@ -492,4 +694,12 @@ export function registerSshHandlers(getWsServer: () => DeckyWsServer | null): vo
       })
     }
   )
+  ws.handle<OpenRemoteArgs, OpenRemoteResult>('ssh:open-remote', async (args) => {
+    if (!args?.host) return { ok: false, error: 'host required' }
+    return doOpenRemote({
+      host: args.host,
+      identity: args.identity,
+      emit: (e) => ws.broadcast('ssh:install-progress', e)
+    })
+  })
 }

@@ -256,6 +256,12 @@ export interface DeckAPI {
       host: string
       identity?: string
     }) => Promise<{ ok: boolean; error?: string }>
+    openRemote: (args: {
+      host: string
+      identity?: string
+      workspacePath: string
+    }) => Promise<{ ok: boolean; localUrl?: string; token?: string; error?: string }>
+    reopenWithRemote: (url: string, token: string) => Promise<{ ok: boolean }>
     onInstallProgress: (
       cb: (
         ev:

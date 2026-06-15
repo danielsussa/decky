@@ -154,6 +154,11 @@ const messages = {
     en: 'npm install (can be slow on RP4)'
   },
   'server.errInstall': { pt: 'Falha ao instalar decky-server', en: 'Failed to install decky-server' },
+  'server.stepStart': { pt: 'Iniciando decky-server no host', en: 'Starting decky-server on host' },
+  'server.stepToken': { pt: 'Lendo token de auth', en: 'Reading auth token' },
+  'server.stepTunnel': { pt: 'Abrindo tunnel SSH', en: 'Opening SSH tunnel' },
+  'server.stepRelaunching': { pt: 'Reiniciando decky…', en: 'Restarting decky…' },
+  'server.errOpen': { pt: 'Falha ao abrir workspace remoto', en: 'Failed to open remote workspace' },
   'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
   'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
   'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },

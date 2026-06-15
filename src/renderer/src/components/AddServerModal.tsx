@@ -216,6 +216,11 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
     'write-package': t('server.stepWritePkg'),
     'npm-install': t('server.stepNpm')
   }
+  const openStepLabels: Record<string, string> = {
+    'start-server': t('server.stepStart'),
+    'wait-token': t('server.stepToken'),
+    'open-tunnel': t('server.stepTunnel')
+  }
 
   const handleConnect = async (): Promise<void> => {
     const h = host.trim()
@@ -344,9 +349,71 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
           ? t('server.btnOpen')
           : t('server.connect')
 
-  // O botão "Abrir workspace" (estado ready) ainda não tem handler — PR #28 implementa.
-  const primaryDisabled =
-    !host.trim() || !path.trim() || running || flow.kind === 'ready'
+  const handleOpenWorkspace = async (): Promise<void> => {
+    const h = host.trim()
+    const p = path.trim()
+    if (!h || !p) return
+    if (flow.kind !== 'ready') return
+
+    const baseSteps = flow.steps
+    const openSteps: FlowStep[] = [
+      { id: 'start-server', label: openStepLabels['start-server'], state: 'pending' },
+      { id: 'wait-token', label: openStepLabels['wait-token'], state: 'pending' },
+      { id: 'open-tunnel', label: openStepLabels['open-tunnel'], state: 'pending' }
+    ]
+    let combined = [...baseSteps, ...openSteps]
+    setFlow({ kind: 'running', steps: combined })
+
+    const unsubscribe = window.deck.ssh.onInstallProgress((ev) => {
+      if (ev.kind === 'step') {
+        combined = combined.map((s) =>
+          s.id === ev.step.id
+            ? { ...s, state: ev.step.state, detail: ev.step.detail ?? s.detail }
+            : s
+        )
+        setFlow({ kind: 'running', steps: [...combined] })
+      }
+    })
+
+    try {
+      const r = await window.deck.ssh.openRemote({
+        host: h,
+        identity: identity.trim() || undefined,
+        workspacePath: p
+      })
+      if (!r.ok || !r.localUrl || !r.token) {
+        setFlow({
+          kind: 'error',
+          steps: combined,
+          message: r.error ?? t('server.errOpen')
+        })
+        return
+      }
+      // Persiste no state + relaunch. Próximo boot do decky aponta pro remoto.
+      await window.deck.ssh.reopenWithRemote(r.localUrl, r.token)
+      // app.relaunch é assíncrono; mostra "reiniciando…" enquanto o decky fecha.
+      setFlow({
+        kind: 'running',
+        steps: combined.concat([
+          {
+            id: 'relaunching',
+            label: t('server.stepRelaunching'),
+            state: 'running'
+          }
+        ])
+      })
+    } catch (err) {
+      setFlow({
+        kind: 'error',
+        steps: combined,
+        message: (err as Error).message
+      })
+    } finally {
+      unsubscribe()
+    }
+  }
+
+  const primaryDisabled = !host.trim() || !path.trim() || running
 
   return (
     <div className="add-server-modal-backdrop" onClick={() => !running && onDismiss()}>
@@ -379,6 +446,8 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
             e.preventDefault()
             if (flow.kind === 'needs-install') {
               void handleInstall()
+            } else if (flow.kind === 'ready') {
+              void handleOpenWorkspace()
             } else if (flow.kind === 'idle' || flow.kind === 'error') {
               void handleConnect()
             }

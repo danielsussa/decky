@@ -133,6 +133,7 @@ export interface DeckAPI {
     onMenuTogglePalette: (callback: () => void) => () => void
     onMenuToggleFind: (callback: () => void) => () => void
     onMenuOpenCliSettings: (callback: () => void) => () => void
+    onMenuAddServer: (callback: () => void) => () => void
     onMenuDevRebuild: (callback: () => void) => () => void
     onFlush: (callback: () => void) => () => void
     flushDone: () => void

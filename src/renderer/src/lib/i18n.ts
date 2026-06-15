@@ -89,7 +89,6 @@ const messages = {
   'ws.closeSession': { pt: 'fechar sessão', en: 'close session' },
   'ws.newSession': { pt: 'nova sessão', en: 'new session' },
   'ws.addFolder': { pt: 'Adicionar pasta…', en: 'Add folder…' },
-  'ws.addServer': { pt: 'Adicionar server…', en: 'Add server…' },
   'server.title': { pt: 'Adicionar server remoto', en: 'Add remote server' },
   'server.subtitle': {
     pt: 'Conecta via SSH e instala o decky-server no host. Como o VS Code Remote-SSH.',

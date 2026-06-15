@@ -65,6 +65,13 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
             void openFolderAction()
           }
         },
+        {
+          // Add server (SSH remote). Mesmo padrão do VS Code Remote-SSH — vive ao lado do
+          // Open Folder. Cmd+Shift+O espelha Cmd+O (mesma família de "abrir lugar pra trabalhar").
+          label: 'Connect to Server…',
+          accelerator: 'CmdOrCtrl+Shift+O',
+          click: () => sendToRenderer('menu:add-server')
+        },
         { type: 'separator' },
         {
           label: 'Close Session',

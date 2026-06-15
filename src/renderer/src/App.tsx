@@ -1071,6 +1071,9 @@ function App(): React.JSX.Element {
       void window.deck.cli.recheck().then(setDetectedClis)
       setCliSettingsOpen(true)
     })
+    const unsubAddServer = window.deck.app.onMenuAddServer(() => {
+      setRemoteServerModalOpen(true)
+    })
     // The debounced save (400ms) loses the tail on quit — a session created moments before
     // closing never reaches disk. On quit, main blocks the actual exit until we flush the
     // CURRENT state (read from refs, not a stale closure) and ack via flushDone().
@@ -1133,6 +1136,7 @@ function App(): React.JSX.Element {
       unsubOpenUrl()
       unsubCloseTab()
       unsubCliSettings()
+      unsubAddServer()
       unsubFlush()
       unsubOpenTab()
     }
@@ -2244,10 +2248,9 @@ function App(): React.JSX.Element {
     setRemoteFolderEngine(null)
   }
 
-  // SSH remote — UX placeholder. Implementação real virá em PRs seguintes (connect via SSH,
-  // detectar/instalar decky-server no host, abrir tunnel local, conectar WS).
+  // SSH remote — modal aberto via menu File → "Connect to Server…" (Cmd+Shift+O). Listener
+  // registrado no useEffect de boot. Sem botão na sidebar, só pelo menu.
   const [remoteServerModalOpen, setRemoteServerModalOpen] = useState(false)
-  const addServer = (): void => setRemoteServerModalOpen(true)
 
   // Modal "Add server" terminou: registra o engine novo na lista (sem workspace ainda — o
   // user adiciona pastas depois via "Add folder", que pergunta qual engine + path). Additivo
@@ -2979,7 +2982,6 @@ function App(): React.JSX.Element {
                 onCloseSession={handleClose}
                 onCloseWorkspace={closeWorkspace}
                 onAddFolder={() => addFolder()}
-                onAddServer={addServer}
                 onRestoreStash={restoreFromStash}
                 onDiscardStash={discardStash}
               />

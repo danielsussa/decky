@@ -61,7 +61,6 @@ interface WorkspaceTreeProps {
   onCloseSession: (ws: string, sessionId: string, mode: CloseSessionMode) => void
   onCloseWorkspace: (ws: string) => void
   onAddFolder: () => void
-  onAddServer: () => void
   onRestoreStash: (entryId: string, opts: { revive: boolean; keep: boolean }) => void
   onDiscardStash: (entryId: string) => void
 }
@@ -89,7 +88,6 @@ export default function WorkspaceTree({
   onCloseSession,
   onCloseWorkspace,
   onAddFolder,
-  onAddServer,
   ownCardCount,
   stash,
   onRestoreStash,
@@ -287,16 +285,10 @@ export default function WorkspaceTree({
           </div>
         )
       })}
-      <div className="wstree-add-row">
-        <button type="button" className="wstree-add" onClick={onAddFolder}>
-          <FolderPlus size={13} />
-          <span>{t('ws.addFolder')}</span>
-        </button>
-        <button type="button" className="wstree-add" onClick={onAddServer}>
-          <Server size={13} />
-          <span>{t('ws.addServer')}</span>
-        </button>
-      </div>
+      <button type="button" className="wstree-add" onClick={onAddFolder}>
+        <FolderPlus size={13} />
+        <span>{t('ws.addFolder')}</span>
+      </button>
     </div>
   )
 }

@@ -284,6 +284,11 @@ const deckApi = {
       ipcRenderer.on('menu:open-cli-settings', listener)
       return () => ipcRenderer.removeListener('menu:open-cli-settings', listener)
     },
+    onMenuAddServer: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('menu:add-server', listener)
+      return () => ipcRenderer.removeListener('menu:add-server', listener)
+    },
     onMenuDevRebuild: (callback: () => void): (() => void) => {
       const listener = (): void => callback()
       ipcRenderer.on('menu:dev-rebuild', listener)

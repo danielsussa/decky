@@ -14,7 +14,8 @@ import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import FirstRunModal from './components/FirstRunModal'
 import AddServerModal from './components/AddServerModal'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
-import type { PreviewSource, StashEntry } from '@decky/shared'
+import type { PreviewSource, StashEntry, Engine } from '@decky/shared'
+import { LOCAL_ENGINE_ID } from '@decky/shared'
 import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
 import { t } from './lib/i18n'
 import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '@decky/shared'
@@ -533,6 +534,11 @@ function App(): React.JSX.Element {
   const [workspace, setWorkspace] = useState<string | null>(null)
   // Registry of folders opened as workspaces (global, ~/.decky/state.json) — drives the switcher.
   const [workspaces, setWorkspaces] = useState<string[]>([])
+  // Multi-engine: lista de engines (local + servers) e o mapa workspace→engineId. A árvore
+  // agrupa por KIND(local|server). Tudo sem engineId mapeado é 'local' — legado e default.
+  const [engines, setEngines] = useState<Engine[]>([])
+  const [workspaceEngine, setWorkspaceEngine] = useState<Record<string, string>>({})
+  const [collapsedEngines, setCollapsedEngines] = useState<string[]>([])
   // Persisted workspace→theme assignments. We compute each entry ONCE (greedy: prefer the hashed
   // theme, fall back to the nearest unused hue) when the workspace is registered, then never
   // recompute it — so removing/re-adding doesn't churn the colors of other workspaces.
@@ -547,6 +553,22 @@ function App(): React.JSX.Element {
   // switching workspace doesn't kill the one you left. LRU-capped at MAX_LIVE_SESSIONS; each
   // holds its own cwd/claudeSessionId so its terminal keeps running while hidden.
   const [liveSessions, setLiveSessions] = useState<Session[]>([])
+  // Empurra os mapas de roteamento (workspace cwd → engineId, session id → engineId) pro preload
+  // sempre que mudam. Só entradas não-local importam (o preload faz default pra 'local'); pty/
+  // cards/git/etc de uma sessão de server passam a ir pelo engine remoto dono.
+  useEffect(() => {
+    const known = new Set(engines.map((e) => e.id))
+    const wsRoutes: Record<string, string> = {}
+    for (const [ws, id] of Object.entries(workspaceEngine)) {
+      if (id !== LOCAL_ENGINE_ID && known.has(id)) wsRoutes[ws] = id
+    }
+    const sessionRoutes: Record<string, string> = {}
+    for (const s of [...sessions, ...liveSessions]) {
+      const id = workspaceEngine[s.cwd]
+      if (id && id !== LOCAL_ENGINE_ID && known.has(id)) sessionRoutes[s.id] = id
+    }
+    window.deck.engines.setRoutes({ workspaces: wsRoutes, sessions: sessionRoutes })
+  }, [engines, workspaceEngine, sessions, liveSessions])
   // Which workspaces are expanded in the tree, and a display-only cache of the session
   // lists of NON-active workspaces (read lazily from their workspace.json).
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<string[]>([])
@@ -755,6 +777,12 @@ function App(): React.JSX.Element {
     void window.deck.sessions.getTitles().then(setTitles)
     void window.deck.state.get<string[]>('workspaces').then((ws) => {
       if (Array.isArray(ws)) setWorkspaces(ws)
+    })
+    // Engines: a lista vem do argv (síncrona, já no preload). O mapa workspace→engineId persiste
+    // no state (servers gravam o seu remotePath aqui ao serem adicionados).
+    setEngines(window.deck.engines.list())
+    void window.deck.state.get<Record<string, string>>('workspaceEngines').then((m) => {
+      if (m && typeof m === 'object') setWorkspaceEngine(m)
     })
     void window.deck.state.get<Record<string, string>>('workspaceThemes').then((m) => {
       if (m && typeof m === 'object') setWorkspaceThemes(m)
@@ -2168,6 +2196,18 @@ function App(): React.JSX.Element {
   const [remoteServerModalOpen, setRemoteServerModalOpen] = useState(false)
   const addServer = (): void => setRemoteServerModalOpen(true)
 
+  // Modal "Add server" conectou: registra o engine novo + mapeia o workspace remoto pro engine
+  // (persiste em 'workspaceEngines') e abre o workspace. Additivo — o local segue intacto.
+  const onServerAdded = (engineId: string, remotePath: string): void => {
+    setEngines(window.deck.engines.list())
+    setWorkspaceEngine((prev) => {
+      const next = { ...prev, [remotePath]: engineId }
+      void window.deck.state.set('workspaceEngines', next)
+      return next
+    })
+    setWorkspace(remotePath)
+  }
+
   // Open a browser card in the active session, focused. Empty url = "nova aba" (URL bar
   // auto-focuses); with url = navigates straight there (used by palette `//query` shortcut).
   // If a tab already shows the same URL in the active session, focus it instead of opening
@@ -2663,6 +2703,32 @@ function App(): React.JSX.Element {
     projectFromCwd(a).localeCompare(projectFromCwd(b), undefined, { sensitivity: 'base' })
   )
 
+  // Agrupa os workspaces por engine pra árvore KIND ▸ WS ▸ SESSION. Engines sem workspace ainda
+  // aparecem (ex: server recém-adicionado, vazio). Workspace cujo engine sumiu cai no local.
+  const engineList: Engine[] = engines.length
+    ? engines
+    : [{ id: LOCAL_ENGINE_ID, kind: 'local', label: 'local', url: '' }]
+  const knownEngineIds = new Set(engineList.map((e) => e.id))
+  const engineOf = (ws: string): string => {
+    const id = workspaceEngine[ws]
+    return id && knownEngineIds.has(id) ? id : LOCAL_ENGINE_ID
+  }
+  const engineGroups = engineList.map((e) => ({
+    id: e.id,
+    kind: e.kind,
+    label: e.label,
+    status: (e.kind === 'server' ? (e.url ? 'online' : 'offline') : undefined) as
+      | 'online'
+      | 'connecting'
+      | 'offline'
+      | undefined,
+    workspaces: sortedWorkspaces.filter((ws) => engineOf(ws) === e.id)
+  }))
+  const toggleEngine = (engineId: string): void =>
+    setCollapsedEngines((prev) =>
+      prev.includes(engineId) ? prev.filter((x) => x !== engineId) : [...prev, engineId]
+    )
+
   // Flat session list across all workspaces, in tree order (workspace registry × sessions).
   const navSessions: { ws: string; id: string }[] = []
   for (const ws of sortedWorkspaces) {
@@ -2767,7 +2833,10 @@ function App(): React.JSX.Element {
         />
       )}
       {remoteServerModalOpen && (
-        <AddServerModal onDismiss={() => setRemoteServerModalOpen(false)} />
+        <AddServerModal
+          onDismiss={() => setRemoteServerModalOpen(false)}
+          onAdded={onServerAdded}
+        />
       )}
       <main className="deck-main">
         <ResizableSplit
@@ -2824,7 +2893,8 @@ function App(): React.JSX.Element {
               </div>
               <WorkspaceTree
                 isFocused={focusedPanel === 'tree'}
-                workspaces={sortedWorkspaces}
+                engines={engineGroups}
+                collapsedEngines={collapsedEngines}
                 activeWorkspace={workspace}
                 activeSessionId={activeId}
                 previewedSession={previewedNav}
@@ -2838,6 +2908,7 @@ function App(): React.JSX.Element {
                   (cardsBySession[sid] ?? []).filter((cid) => !pinned[cid]).length
                 }
                 stash={stash}
+                onToggleEngine={toggleEngine}
                 onToggleExpand={toggleExpand}
                 onSelectSession={selectSession}
                 onNewSession={newSessionIn}

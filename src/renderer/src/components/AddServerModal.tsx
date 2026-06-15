@@ -4,6 +4,9 @@ import { t } from '../lib/i18n'
 
 interface AddServerModalProps {
   onDismiss: () => void
+  // Chamado quando o server conecta: o App registra o engine + o workspace remoto na árvore,
+  // SEM relaunch (additivo). engineId é o id do engine recém-criado; remotePath é o workspace.
+  onAdded: (engineId: string, remotePath: string) => void
 }
 
 // Sugestões estáticas. Servem como fallback enquanto a probe SSH não roda — quando ela retorna,
@@ -55,7 +58,10 @@ function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\"'\"'")}'`
 }
 
-export default function AddServerModal({ onDismiss }: AddServerModalProps): React.JSX.Element {
+export default function AddServerModal({
+  onDismiss,
+  onAdded
+}: AddServerModalProps): React.JSX.Element {
   const [host, setHost] = useState('')
   const [path, setPath] = useState('')
   const [identity, setIdentity] = useState('')
@@ -389,19 +395,18 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
         })
         return
       }
-      // Persiste no state + relaunch. Próximo boot do decky aponta pro remoto.
-      await window.deck.ssh.reopenWithRemote(r.localUrl, r.token)
-      // app.relaunch é assíncrono; mostra "reiniciando…" enquanto o decky fecha.
-      setFlow({
-        kind: 'running',
-        steps: combined.concat([
-          {
-            id: 'relaunching',
-            label: t('server.stepRelaunching'),
-            state: 'running'
-          }
-        ])
+      // Additivo: registra o server como um engine novo (sem relaunch, sem esconder o local).
+      // O App insere o engine + o workspace remoto na árvore KIND ▸ WS ▸ SESSION.
+      const engine = await window.deck.engines.add({
+        label: h,
+        url: r.localUrl,
+        token: r.token,
+        sshHost: h,
+        sshIdentity: identity.trim() || undefined,
+        remotePath: p
       })
+      onAdded(engine.id, p)
+      onDismiss()
     } catch (err) {
       setFlow({
         kind: 'error',

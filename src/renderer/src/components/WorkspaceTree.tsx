@@ -6,10 +6,11 @@ import {
   X,
   Bookmark,
   Clock,
-  Server
+  Server,
+  Monitor
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { Mode, Theme } from '@decky/shared'
+import type { Mode, Theme, EngineKind } from '@decky/shared'
 import type { StashEntry } from '@decky/shared'
 import { t } from '../lib/i18n'
 
@@ -19,11 +20,23 @@ export interface TreeSession {
   kind: 'claude' | 'shell'
 }
 
+// Um grupo KIND na árvore: o engine (local|server) + seus workspaces. A árvore é
+// KIND ▸ WS ▸ SESSION — adicionar um server cria um grupo irmão do local, sem nunca escondê-lo.
+export interface EngineGroup {
+  id: string
+  kind: EngineKind
+  label: string
+  /** Server only: estado da conexão pra pintar o indicador (online/conectando/offline). */
+  status?: 'online' | 'connecting' | 'offline'
+  workspaces: string[]
+}
+
 export type CloseSessionMode = 'save' | 'discard'
 
 interface WorkspaceTreeProps {
   isFocused?: boolean
-  workspaces: string[]
+  engines: EngineGroup[]
+  collapsedEngines: string[]
   activeWorkspace: string | null
   activeSessionId?: string
   // Cmd+Arrow nav cursor parked in another workspace; renders as a "hover" highlight
@@ -41,6 +54,7 @@ interface WorkspaceTreeProps {
   // Workspace-scoped stash entries for the ACTIVE workspace. Non-active workspaces don't
   // surface their stash in the tree yet — would need a second IPC read.
   stash: StashEntry[]
+  onToggleEngine: (engineId: string) => void
   onToggleExpand: (ws: string) => void
   onSelectSession: (ws: string, sessionId: string) => void
   onNewSession: (ws: string) => void
@@ -52,11 +66,13 @@ interface WorkspaceTreeProps {
   onDiscardStash: (entryId: string) => void
 }
 
-// The left-panel navigation: a collapsible tree of workspaces, each expanding to its sessions.
-// Selecting a session switches workspace if needed; the terminal renders in TerminalHost below.
+// The left-panel navigation: KIND(local|server) ▸ WS ▸ SESSION. Each engine groups its
+// workspaces; each workspace expands to its sessions. Selecting a session switches workspace if
+// needed; the terminal renders in TerminalHost below.
 export default function WorkspaceTree({
   isFocused,
-  workspaces,
+  engines,
+  collapsedEngines,
   activeWorkspace,
   activeSessionId,
   previewedSession,
@@ -66,6 +82,7 @@ export default function WorkspaceTree({
   mode,
   themeFor,
   nameOf,
+  onToggleEngine,
   onToggleExpand,
   onSelectSession,
   onNewSession,
@@ -90,6 +107,146 @@ export default function WorkspaceTree({
     previewedSession && !expanded.includes(previewedSession.ws)
       ? [...expanded, previewedSession.ws]
       : expanded
+
+  // Per-workspace subtree — idêntico ao layout antigo, só extraído pra ser mapeado por engine.
+  const renderWorkspace = (ws: string): React.JSX.Element => {
+    const isOpen = visualExpanded.includes(ws)
+    const isActiveWs = ws === activeWorkspace
+    const isPreviewWs = previewedSession?.ws === ws
+    const sessions = sessionsByWorkspace[ws] ?? []
+    // Each workspace title carries its OWN hue (from the persisted assignment, same as the
+    // surface theme when that workspace is active), so the list reads as a color-coded legend.
+    const wsAccent = themeFor(ws)[mode].vars['--accent']
+    return (
+      <div className="wstree-ws" key={ws}>
+        <div
+          className={`wstree-row ${isActiveWs ? 'wstree-row-active' : ''} ${isPreviewWs ? 'wstree-row-previewed' : ''}`}
+        >
+          <button
+            type="button"
+            className="wstree-caret"
+            onClick={() => onToggleExpand(ws)}
+            aria-label={isOpen ? 'colapsar' : 'expandir'}
+          >
+            {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+          <button
+            type="button"
+            className="wstree-name"
+            title={ws}
+            style={{ color: wsAccent }}
+            onClick={() => onToggleExpand(ws)}
+          >
+            {nameOf(ws)}
+          </button>
+          {isActiveWs && stash.length > 0 && (
+            <button
+              type="button"
+              className="wstree-stash-chip"
+              title={t('ws.stashRestoreHint')}
+              onClick={(e) => {
+                e.stopPropagation()
+                setStashOpenFor((prev) => ({ ...prev, [ws]: !prev[ws] }))
+                // Force the workspace open so the user actually sees the list appear.
+                if (!isOpen) onToggleExpand(ws)
+              }}
+            >
+              {stash.length} {stash.length === 1 ? t('ws.stashChipOne') : t('ws.stashChipMany')}
+            </button>
+          )}
+          <button
+            type="button"
+            className="wstree-x"
+            title={t('ws.closeWorkspace')}
+            onClick={(e) => {
+              e.stopPropagation()
+              onCloseWorkspace(ws)
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+        {isOpen && (
+          <div
+            className="wstree-children"
+            style={{ ['--ws-tint' as string]: wsAccent }}
+          >
+            {sessions.map((s) => {
+              const isActiveSession = isActiveWs && s.id === activeSessionId
+              const isPreviewedSession =
+                !!previewedSession &&
+                previewedSession.ws === ws &&
+                previewedSession.id === s.id
+              // Show activity for ANY session (the live pool keeps cross-workspace sessions
+              // running), so a session working in another workspace still pulses.
+              const act = activity[s.id]
+              return (
+                <div
+                  className={`wstree-session ${isActiveSession ? 'wstree-session-active' : ''} ${isPreviewedSession ? 'wstree-session-previewed' : ''}`}
+                  key={s.id}
+                >
+                  <button
+                    type="button"
+                    className="wstree-session-btn"
+                    title={s.label}
+                    onClick={() => onSelectSession(ws, s.id)}
+                  >
+                    <span
+                      className={`wstree-dot ${act?.active ? 'wstree-dot-on' : ''} ${act?.done ? 'wstree-dot-done' : ''}`}
+                    />
+                    <span className="wstree-session-name">{s.label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="wstree-x"
+                    title={t('ws.closeSession')}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      // Shift-click OR sessions with no own cards bypass the popover —
+                      // nothing meaningful to save.
+                      if (e.shiftKey || ownCardCount(s.id) === 0) {
+                        setCloseMenuFor(null)
+                        onCloseSession(ws, s.id, 'discard')
+                        return
+                      }
+                      setCloseMenuFor((cur) => (cur === s.id ? null : s.id))
+                    }}
+                  >
+                    <X size={11} />
+                  </button>
+                  {closeMenuFor === s.id && (
+                    <CloseSessionMenu
+                      onSave={() => {
+                        setCloseMenuFor(null)
+                        onCloseSession(ws, s.id, 'save')
+                      }}
+                      onDiscard={() => {
+                        setCloseMenuFor(null)
+                        onCloseSession(ws, s.id, 'discard')
+                      }}
+                      onDismiss={() => setCloseMenuFor(null)}
+                    />
+                  )}
+                </div>
+              )
+            })}
+            {isActiveWs && stash.length > 0 && stashOpenFor[ws] && (
+              <StashSection
+                entries={stash}
+                onRestore={onRestoreStash}
+                onDiscard={onDiscardStash}
+              />
+            )}
+            <button type="button" className="wstree-new" onClick={() => onNewSession(ws)}>
+              <Plus size={12} />
+              <span>{t('ws.newSession')}</span>
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div
       className="wstree panel-focusable"
@@ -97,138 +254,34 @@ export default function WorkspaceTree({
       data-focused={isFocused}
     >
       <div className="wstree-title">workspaces</div>
-      {workspaces.map((ws) => {
-        const isOpen = visualExpanded.includes(ws)
-        const isActiveWs = ws === activeWorkspace
-        const isPreviewWs = previewedSession?.ws === ws
-        const sessions = sessionsByWorkspace[ws] ?? []
-        // Each workspace title carries its OWN hue (from the persisted assignment, same as the
-        // surface theme when that workspace is active), so the list reads as a color-coded legend.
-        const wsAccent = themeFor(ws)[mode].vars['--accent']
+      {engines.map((engine) => {
+        const engineOpen = !collapsedEngines.includes(engine.id)
+        const isServer = engine.kind === 'server'
         return (
-          <div className="wstree-ws" key={ws}>
-            <div
-              className={`wstree-row ${isActiveWs ? 'wstree-row-active' : ''} ${isPreviewWs ? 'wstree-row-previewed' : ''}`}
-            >
+          <div className="wstree-engine" key={engine.id} data-kind={engine.kind}>
+            <div className="wstree-engine-row">
               <button
                 type="button"
                 className="wstree-caret"
-                onClick={() => onToggleExpand(ws)}
-                aria-label={isOpen ? 'colapsar' : 'expandir'}
+                onClick={() => onToggleEngine(engine.id)}
+                aria-label={engineOpen ? 'colapsar' : 'expandir'}
               >
-                {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                {engineOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
               </button>
-              <button
-                type="button"
-                className="wstree-name"
-                title={ws}
-                style={{ color: wsAccent }}
-                onClick={() => onToggleExpand(ws)}
-              >
-                {nameOf(ws)}
-              </button>
-              {isActiveWs && stash.length > 0 && (
-                <button
-                  type="button"
-                  className="wstree-stash-chip"
-                  title={t('ws.stashRestoreHint')}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setStashOpenFor((prev) => ({ ...prev, [ws]: !prev[ws] }))
-                    // Force the workspace open so the user actually sees the list appear.
-                    if (!isOpen) onToggleExpand(ws)
-                  }}
-                >
-                  {stash.length} {stash.length === 1 ? t('ws.stashChipOne') : t('ws.stashChipMany')}
-                </button>
+              {isServer ? <Server size={12} /> : <Monitor size={12} />}
+              <span className="wstree-engine-name" title={engine.label}>
+                {engine.label}
+              </span>
+              {isServer && (
+                <span
+                  className={`wstree-engine-status wstree-engine-status-${engine.status ?? 'offline'}`}
+                  title={engine.status ?? 'offline'}
+                />
               )}
-              <button
-                type="button"
-                className="wstree-x"
-                title={t('ws.closeWorkspace')}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onCloseWorkspace(ws)
-                }}
-              >
-                <X size={12} />
-              </button>
             </div>
-            {isOpen && (
-              <div
-                className="wstree-children"
-                style={{ ['--ws-tint' as string]: wsAccent }}
-              >
-                {sessions.map((s) => {
-                  const isActiveSession = isActiveWs && s.id === activeSessionId
-                  const isPreviewedSession =
-                    !!previewedSession &&
-                    previewedSession.ws === ws &&
-                    previewedSession.id === s.id
-                  // Show activity for ANY session (the live pool keeps cross-workspace sessions
-                  // running), so a session working in another workspace still pulses.
-                  const act = activity[s.id]
-                  return (
-                    <div
-                      className={`wstree-session ${isActiveSession ? 'wstree-session-active' : ''} ${isPreviewedSession ? 'wstree-session-previewed' : ''}`}
-                      key={s.id}
-                    >
-                      <button
-                        type="button"
-                        className="wstree-session-btn"
-                        title={s.label}
-                        onClick={() => onSelectSession(ws, s.id)}
-                      >
-                        <span
-                          className={`wstree-dot ${act?.active ? 'wstree-dot-on' : ''} ${act?.done ? 'wstree-dot-done' : ''}`}
-                        />
-                        <span className="wstree-session-name">{s.label}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="wstree-x"
-                        title={t('ws.closeSession')}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          // Shift-click OR sessions with no own cards bypass the popover —
-                          // nothing meaningful to save.
-                          if (e.shiftKey || ownCardCount(s.id) === 0) {
-                            setCloseMenuFor(null)
-                            onCloseSession(ws, s.id, 'discard')
-                            return
-                          }
-                          setCloseMenuFor((cur) => (cur === s.id ? null : s.id))
-                        }}
-                      >
-                        <X size={11} />
-                      </button>
-                      {closeMenuFor === s.id && (
-                        <CloseSessionMenu
-                          onSave={() => {
-                            setCloseMenuFor(null)
-                            onCloseSession(ws, s.id, 'save')
-                          }}
-                          onDiscard={() => {
-                            setCloseMenuFor(null)
-                            onCloseSession(ws, s.id, 'discard')
-                          }}
-                          onDismiss={() => setCloseMenuFor(null)}
-                        />
-                      )}
-                    </div>
-                  )
-                })}
-                {isActiveWs && stash.length > 0 && stashOpenFor[ws] && (
-                  <StashSection
-                    entries={stash}
-                    onRestore={onRestoreStash}
-                    onDiscard={onDiscardStash}
-                  />
-                )}
-                <button type="button" className="wstree-new" onClick={() => onNewSession(ws)}>
-                  <Plus size={12} />
-                  <span>{t('ws.newSession')}</span>
-                </button>
+            {engineOpen && (
+              <div className="wstree-engine-children">
+                {engine.workspaces.map((ws) => renderWorkspace(ws))}
               </div>
             )}
           </div>

@@ -1817,6 +1817,56 @@ textarea.form-input {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+/* KIND level (local|server) — pai dos workspaces na árvore. */
+.wstree-engine-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-right: 8px;
+  color: var(--text-3);
+}
+.wstree-engine-row:hover {
+  background: var(--bg-2);
+}
+.wstree-engine-row .wstree-caret {
+  color: var(--text-3);
+}
+.wstree-engine-name {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wstree-engine-status {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-3);
+}
+.wstree-engine-status-online {
+  background: #3fb950;
+}
+.wstree-engine-status-connecting {
+  background: #d29922;
+}
+.wstree-engine-status-offline {
+  background: var(--text-3);
+  opacity: 0.5;
+}
+/* Workspaces de um server ficam levemente recuados sob o KIND header. */
+.wstree-engine[data-kind='server'] .wstree-engine-children {
+  border-left: 1px solid var(--bg-3);
+  margin-left: 13px;
+}
 .wstree-row {
   display: flex;
   align-items: center;

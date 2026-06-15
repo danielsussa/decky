@@ -1,9 +1,9 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { PreviewSource } from '@decky/shared'
 import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
-import type { Locale } from '@decky/shared'
+import type { Locale, Engine } from '@decky/shared'
 
-export type { PreviewSource, CliKind, DetectedCli, CliInstallHint, Locale }
+export type { PreviewSource, CliKind, DetectedCli, CliInstallHint, Locale, Engine }
 
 export type PtyDataMsg = { id: string; data: string }
 export type PtyExitMsg = { id: string; code: number }
@@ -90,9 +90,9 @@ export interface DeckAPI {
   file: {
     watch: (path: string) => Promise<boolean>
     unwatch: (path: string) => Promise<boolean>
-    readText: (path: string) => Promise<string | null>
+    readText: (path: string, workspace?: string) => Promise<string | null>
     readBinary: (path: string) => Promise<Uint8Array | null>
-    write: (path: string, content: string) => Promise<boolean>
+    write: (path: string, content: string, workspace?: string) => Promise<boolean>
     onChanged: (callback: (msg: { path: string }) => void) => () => void
   }
   claude: {
@@ -261,7 +261,6 @@ export interface DeckAPI {
       identity?: string
       workspacePath: string
     }) => Promise<{ ok: boolean; localUrl?: string; token?: string; error?: string }>
-    reopenWithRemote: (url: string, token: string) => Promise<{ ok: boolean }>
     onInstallProgress: (
       cb: (
         ev:
@@ -273,6 +272,22 @@ export interface DeckAPI {
           | { kind: 'done'; ok: boolean; error?: string }
       ) => void
     ) => () => void
+  }
+  engines: {
+    list: () => Engine[]
+    add: (cfg: {
+      label: string
+      url: string
+      token?: string
+      sshHost?: string
+      sshIdentity?: string
+      remotePath?: string
+    }) => Promise<Engine>
+    remove: (engineId: string) => Promise<boolean>
+    setRoutes: (routes: {
+      workspaces?: Record<string, string>
+      sessions?: Record<string, string>
+    }) => void
   }
   widget: {
     onCall: (

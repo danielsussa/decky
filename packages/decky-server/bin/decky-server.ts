@@ -8,6 +8,7 @@ import {
   registerCliWsHandlers,
   registerGitWsHandlers,
   registerHistoryWsHandlers,
+  registerPtyWsHandlers,
   registerStateWsHandlers,
   registerTagsIndexWsHandlers,
   registerWorkspaceWsHandlers,
@@ -56,7 +57,10 @@ async function start(): Promise<void> {
   registerWorkspaceWsHandlers(ws)
   registerTagsIndexWsHandlers(ws)
   registerHistoryWsHandlers(ws)
-  console.log('[decky-server] handlers registered (cli, state, git, workspace, tagsIndex, history)')
+  registerPtyWsHandlers(ws)
+  console.log(
+    '[decky-server] handlers registered (cli, state, git, workspace, tagsIndex, history, pty)'
+  )
   console.log('[decky-server] ready — Ctrl+C para encerrar')
 
   let shuttingDown = false

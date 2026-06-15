@@ -16,6 +16,12 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { buildMenu } from './menu'
 import { LOCALE_ARG_PREFIX, normalizeLocale, WS_URL_PREFIX } from '@decky/shared'
+import {
+  LOCAL_ENGINE_ID,
+  serializeEngines,
+  type Engine,
+  type ServerEngineConfig
+} from '@decky/shared'
 import { registerPtyHandlers, killAllPtys } from './pty'
 import {
   startPreviewServer,
@@ -73,19 +79,110 @@ app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAuthz,FedCmIdpSigni
 
 let mainWindow: BrowserWindow | null = null
 let wsServer: DeckyWsServer | null = null
-// Cached na startup — lido das env vars (override de dev) OU do state-store (set via
-// app:reopen-with-remote depois do user instalar + conectar via Add server). Quando setado,
-// o WS server embarcado não sobe e o preload conecta no remoto.
-let cachedRemoteUrl: string | null = null
-let cachedRemoteToken: string | null = null
+// Multi-engine: o local embarcado SEMPRE sobe; servers remotos são additivos. Esta lista
+// (local + servers) é resolvida no boot e passada pro preload via --decky-engines argv. Antes,
+// um remoto setado SUPRIMIA o local — era o que escondia as sessões locais ao "add server".
+let rendererEngines: Engine[] = []
 
-function resolveWsUrlForRenderer(): string {
-  if (cachedRemoteUrl) {
-    if (!cachedRemoteToken) return cachedRemoteUrl
-    const sep = cachedRemoteUrl.includes('?') ? '&' : '?'
-    return `${cachedRemoteUrl}${sep}token=${encodeURIComponent(cachedRemoteToken)}`
+function hostLabelFromUrl(url: string): string {
+  try {
+    return new URL(url).host || url
+  } catch {
+    return url
   }
-  return wsServer?.url ?? ''
+}
+
+// Migra o modelo single-engine antigo (remoteEngineUrl/Token no state) pro novo engines[].
+// Crucial: limpa as chaves legadas pra que o boot pare de suprimir o local — é o que faz as
+// sessões locais reaparecerem. O server migrado entra offline (o túnel do boot anterior morreu);
+// reconecta pelo modal "Add server".
+async function migrateLegacyRemote(): Promise<void> {
+  const legacyUrl = await getState<string>('remoteEngineUrl')
+  if (!legacyUrl) return
+  const legacyToken = await getState<string>('remoteEngineToken')
+  const servers = (await getState<ServerEngineConfig[]>('engines')) ?? []
+  if (!servers.some((s) => s.url === legacyUrl)) {
+    servers.push({
+      id: `srv-${crypto.randomUUID().slice(0, 8)}`,
+      kind: 'server',
+      label: hostLabelFromUrl(legacyUrl),
+      url: legacyUrl,
+      token: legacyToken || undefined
+    })
+    await setState('engines', servers)
+  }
+  await setState('remoteEngineUrl', '')
+  await setState('remoteEngineToken', '')
+}
+
+async function loadServerConfigs(): Promise<ServerEngineConfig[]> {
+  return (await getState<ServerEngineConfig[]>('engines')) ?? []
+}
+
+function serverConfigToEngine(cfg: ServerEngineConfig): Engine {
+  return {
+    id: cfg.id,
+    kind: 'server',
+    label: cfg.label,
+    url: cfg.url ?? '',
+    token: cfg.token,
+    sshHost: cfg.sshHost,
+    sshIdentity: cfg.sshIdentity,
+    remotePath: cfg.remotePath
+  }
+}
+
+// Monta a lista completa: local (sempre) + servers persistidos + override de env (DECKY_REMOTE_WS_URL,
+// ephemeral — não persiste). Chamada no boot e após engines:add/remove.
+async function buildEngineList(): Promise<Engine[]> {
+  await migrateLegacyRemote()
+  const local: Engine = {
+    id: LOCAL_ENGINE_ID,
+    kind: 'local',
+    label: 'local',
+    url: wsServer?.url ?? ''
+  }
+  const servers = (await loadServerConfigs()).map(serverConfigToEngine)
+  const envUrl = process.env.DECKY_REMOTE_WS_URL
+  if (envUrl && !servers.some((s) => s.url === envUrl)) {
+    servers.push({
+      id: 'env-remote',
+      kind: 'server',
+      label: hostLabelFromUrl(envUrl),
+      url: envUrl,
+      token: process.env.DECKY_REMOTE_WS_TOKEN || undefined
+    })
+  }
+  return [local, ...servers]
+}
+
+async function addServerEngine(cfg: ServerEngineConfig & { url: string }): Promise<Engine> {
+  const servers = await loadServerConfigs()
+  // Dedupe por url (reconectar o mesmo host atualiza a entrada em vez de duplicar).
+  const existing = servers.find((s) => s.url === cfg.url || (cfg.id && s.id === cfg.id))
+  const engine: ServerEngineConfig = {
+    id: existing?.id ?? cfg.id ?? `srv-${crypto.randomUUID().slice(0, 8)}`,
+    kind: 'server',
+    label: cfg.label || hostLabelFromUrl(cfg.url),
+    url: cfg.url,
+    token: cfg.token,
+    sshHost: cfg.sshHost,
+    sshIdentity: cfg.sshIdentity,
+    remotePath: cfg.remotePath
+  }
+  const next = existing
+    ? servers.map((s) => (s.id === engine.id ? engine : s))
+    : [...servers, engine]
+  await setState('engines', next)
+  return serverConfigToEngine(engine)
+}
+
+async function removeServerEngine(engineId: string): Promise<boolean> {
+  if (!engineId) return false
+  const servers = await loadServerConfigs()
+  const next = servers.filter((s) => s.id !== engineId)
+  await setState('engines', next)
+  return next.length !== servers.length
 }
 
 // DECKY_DEV runs a fully isolated dev instance alongside the installed app: its own name +
@@ -155,10 +252,13 @@ function createWindow(): void {
       webviewTag: true,
       // Surfaced sync to the renderer via preload (window.deck.app.locale) — no IPC round-trip,
       // no boot flicker. Resolved from app.getLocale() and normalized to a supported language.
-      // WS_URL: server embarcado (loopback) OU override remoto via DECKY_REMOTE_WS_URL.
+      // --decky-engines: lista de engines (local embarcado + servers remotos). O preload abre
+      // uma conexão WS por engine. Mantém --decky-ws-url=<local> por compat (back-compat no
+      // ws-client se a lista vier vazia).
       additionalArguments: [
         `${LOCALE_ARG_PREFIX}${normalizeLocale(app.getLocale())}`,
-        ...(resolveWsUrlForRenderer() ? [`${WS_URL_PREFIX}${resolveWsUrlForRenderer()}`] : [])
+        serializeEngines(rendererEngines),
+        ...(wsServer?.url ? [`${WS_URL_PREFIX}${wsServer.url}`] : [])
       ]
     }
   })
@@ -252,26 +352,9 @@ app
     registerPtyHandlers(() => mainWindow, () => wsServer)
     registerLegacyIpcBridges()
 
-    // Modo remoto:
-    //   1. env DECKY_REMOTE_WS_URL/TOKEN (override pra dev)
-    //   2. state-store (persistido após user clicar "Open workspace" no Add server modal)
-    // Se algum setado, NÃO sobe server embarcado — preload conecta direto no remoto.
-    const envUrl = process.env.DECKY_REMOTE_WS_URL
-    const envToken = process.env.DECKY_REMOTE_WS_TOKEN
-    if (envUrl) {
-      cachedRemoteUrl = envUrl
-      cachedRemoteToken = envToken ?? null
-    } else {
-      const stateUrl = await getState<string>('remoteEngineUrl')
-      const stateToken = await getState<string>('remoteEngineToken')
-      if (stateUrl) {
-        cachedRemoteUrl = stateUrl
-        cachedRemoteToken = stateToken ?? null
-      }
-    }
-    if (cachedRemoteUrl) {
-      diag(`[ws-server] remote mode — pointing at ${cachedRemoteUrl}`)
-    } else {
+    // Engine local — SEMPRE sobe. Servers remotos são additivos (montados em rendererEngines
+    // logo abaixo, antes de createWindow). O preload abre uma conexão WS por engine.
+    {
       try {
         wsServer = await startWsServer()
         diag(`[ws-server] listening on ${wsServer.url}`)
@@ -317,22 +400,20 @@ app
         )
         // ssh:* — SSH client no main, expõe ssh:exec pra UX do "Add server" rodar comandos no remote.
         registerSshHandlers(() => wsServer)
-        // app:reopen-with-remote — recebe url+token do modal "Add server" quando o user clica
-        // "Open workspace" depois do install. Persiste no state-store e faz relaunch — próximo
-        // boot lê esse state e aponta o WS pro remoto.
-        wsServer.handle<{ url: string; token: string }, { ok: boolean }>(
-          'app:reopen-with-remote',
-          async (args) => {
-            if (!args?.url) return { ok: false }
-            await setState('remoteEngineUrl', args.url)
-            await setState('remoteEngineToken', args.token ?? '')
-            setTimeout(() => {
-              app.relaunch()
-              app.quit()
-            }, 300)
-            return { ok: true }
-          }
-        )
+        // engines:add — recebe url+token+ssh do modal "Add server" (após install + open-remote).
+        // Additivo: persiste o server na lista `engines` do state e devolve o Engine pro renderer
+        // inserir na árvore SEM relaunch e SEM esconder o local. (Substitui o antigo
+        // app:reopen-with-remote, que relançava apontando 100% pro remoto.)
+        wsServer.handle<ServerEngineConfig & { url: string }, Engine>('engines:add', async (cfg) => {
+          const engine = await addServerEngine(cfg)
+          rendererEngines = await buildEngineList()
+          return engine
+        })
+        wsServer.handle<{ engineId: string }, boolean>('engines:remove', async (args) => {
+          const ok = await removeServerEngine(args?.engineId ?? '')
+          rendererEngines = await buildEngineList()
+          return ok
+        })
         // preview:get-all/rehydrate — funções puras no server.
         wsServer.handle<void, Record<string, import('@decky/shared').PreviewSource>>(
           'preview:get-all',
@@ -349,6 +430,10 @@ app
         console.error('[ws-server] failed to start:', err)
       }
     }
+    // Resolve a lista de engines (local + servers persistidos + env override) ANTES de
+    // createWindow — o argv --decky-engines é montado a partir dela.
+    rendererEngines = await buildEngineList()
+    diag(`[engines] ${rendererEngines.map((e) => `${e.id}(${e.kind})`).join(', ')}`)
     registerCardsHandlers(() => wsServer)
     registerTagsIndexHandlers()
     registerCardMirrorHandlers(() => mainWindow, () => wsServer)

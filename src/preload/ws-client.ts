@@ -1,34 +1,27 @@
-import { WS_URL_PREFIX } from '@decky/shared'
+import {
+  WS_URL_PREFIX,
+  ENGINES_ARG_PREFIX,
+  LOCAL_ENGINE_ID,
+  parseEnginesArg,
+  type Engine
+} from '@decky/shared'
 
-// WS client minimalista usado pelo preload pra falar com o decky-server (loopback na Fase 2,
-// remoto via Tailscale na Fase 3). Lazy connect — abre na 1ª invoke/on, compartilha a conexão
-// entre chamadas concorrentes. Reset on close → próximo invoke/on reabre.
+// WS client multi-engine: o decky fala com N engines ao mesmo tempo (o `local` embarcado +
+// cada `server` remoto). Cada conexão é lazy, compartilhada entre chamadas, e reabre no próximo
+// invoke/on após um drop. Roteamento por `engineId` — quem chama escolhe o engine (workspace →
+// engine no preload). Antes era socket único global (local OU remoto), o que escondia o local.
 //
-// Listener único global no socket roteia todo tráfego entrante:
-//  - { kind: 'reply', reqId } → resolve a Promise registrada por wsInvoke
-//  - { kind: outro }           → entrega pra todos handlers registrados via wsOn
-//
-// Sem reconnect agressivo, sem queue de pendentes durante drop. Chamadas durante drop falham
-// (10s timeout). Broadcasts perdidos enquanto desconectado — POC suficiente.
+// Por conexão, um listener único roteia o tráfego entrante:
+//  - { kind: 'reply', reqId } → resolve a Promise registrada por wsInvoke naquele engine
+//  - { kind: outro }          → entrega pros handlers de wsOn daquele engine
 
 const INVOKE_TIMEOUT_MS = 10_000
-
-let cachedUrl: string | null | undefined = undefined
-function getWsUrl(): string | null {
-  if (cachedUrl !== undefined) return cachedUrl
-  const arg = process.argv.find((a) => a.startsWith(WS_URL_PREFIX))
-  cachedUrl = arg ? arg.slice(WS_URL_PREFIX.length) || null : null
-  return cachedUrl
-}
 
 interface PendingInvoke {
   resolve: (value: unknown) => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout>
 }
-
-const pendingInvokes = new Map<string, PendingInvoke>()
-const broadcastHandlers = new Map<string, Set<(args: unknown) => void>>()
 
 interface IncomingReply {
   v: 1
@@ -45,19 +38,77 @@ interface IncomingBroadcast {
   args?: unknown
 }
 
-let wsPromise: Promise<WebSocket> | null = null
-function getWs(): Promise<WebSocket> {
-  if (wsPromise) return wsPromise
-  const url = getWsUrl()
-  if (!url) {
-    return Promise.reject(new Error('no WS URL — main did not pass --decky-ws-url'))
+// Estado por engine. broadcastHandlers sobrevive a reconnect (a próxima conexão herda os
+// handlers); wsPromise/pending são resetados no close.
+interface ConnState {
+  url: string
+  token?: string
+  wsPromise: Promise<WebSocket> | null
+  pending: Map<string, PendingInvoke>
+  broadcast: Map<string, Set<(args: unknown) => void>>
+}
+
+// ---- registry de engines (vem do argv no boot) ------------------------------------------------
+
+const engines = new Map<string, Engine>()
+const conns = new Map<string, ConnState>()
+
+function loadEnginesFromArgv(): void {
+  const enginesArg = process.argv.find((a) => a.startsWith(ENGINES_ARG_PREFIX))
+  if (enginesArg) {
+    for (const e of parseEnginesArg(enginesArg)) engines.set(e.id, e)
   }
-  wsPromise = new Promise<WebSocket>((resolve, reject) => {
+  // Back-compat / fallback: se não veio lista mas veio o --decky-ws-url antigo, ele é o local.
+  if (!engines.has(LOCAL_ENGINE_ID)) {
+    const legacy = process.argv.find((a) => a.startsWith(WS_URL_PREFIX))
+    const url = legacy ? legacy.slice(WS_URL_PREFIX.length) : ''
+    if (url) {
+      engines.set(LOCAL_ENGINE_ID, {
+        id: LOCAL_ENGINE_ID,
+        kind: 'local',
+        label: 'local',
+        url
+      })
+    }
+  }
+}
+loadEnginesFromArgv()
+
+function withTokenQuery(url: string, token?: string): string {
+  if (!token) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}token=${encodeURIComponent(token)}`
+}
+
+function getConn(engineId: string): ConnState {
+  let c = conns.get(engineId)
+  if (!c) {
+    const e = engines.get(engineId)
+    c = {
+      url: e?.url ?? '',
+      token: e?.token,
+      wsPromise: null,
+      pending: new Map(),
+      broadcast: new Map()
+    }
+    conns.set(engineId, c)
+  }
+  return c
+}
+
+function getWs(engineId: string): Promise<WebSocket> {
+  const conn = getConn(engineId)
+  if (conn.wsPromise) return conn.wsPromise
+  if (!conn.url) {
+    return Promise.reject(new Error(`engine '${engineId}': no WS URL`))
+  }
+  const fullUrl = withTokenQuery(conn.url, conn.token)
+  conn.wsPromise = new Promise<WebSocket>((resolve, reject) => {
     let ws: WebSocket
     try {
-      ws = new WebSocket(url)
+      ws = new WebSocket(fullUrl)
     } catch (err) {
-      wsPromise = null
+      conn.wsPromise = null
       reject(err)
       return
     }
@@ -69,13 +120,12 @@ function getWs(): Promise<WebSocket> {
     const onError = (): void => {
       ws.removeEventListener('open', onOpen)
       ws.removeEventListener('error', onError)
-      wsPromise = null
-      reject(new Error('WS connect failed'))
+      conn.wsPromise = null
+      reject(new Error(`engine '${engineId}': WS connect failed`))
     }
     ws.addEventListener('open', onOpen)
     ws.addEventListener('error', onError)
 
-    // Listener único — roteia replies e broadcasts pros consumers corretos.
     ws.addEventListener('message', (ev) => {
       let msg: IncomingReply | IncomingBroadcast
       try {
@@ -86,35 +136,31 @@ function getWs(): Promise<WebSocket> {
       if (!msg || typeof msg.kind !== 'string') return
       if (msg.kind === 'reply' && typeof (msg as IncomingReply).reqId === 'string') {
         const reply = msg as IncomingReply
-        const pending = pendingInvokes.get(reply.reqId)
-        if (!pending) return
-        clearTimeout(pending.timer)
-        pendingInvokes.delete(reply.reqId)
-        if (reply.ok) pending.resolve(reply.result)
-        else pending.reject(new Error(reply.error || 'ws error'))
+        const p = conn.pending.get(reply.reqId)
+        if (!p) return
+        clearTimeout(p.timer)
+        conn.pending.delete(reply.reqId)
+        if (reply.ok) p.resolve(reply.result)
+        else p.reject(new Error(reply.error || 'ws error'))
         return
       }
-      // Broadcast — entrega pra todos handlers do kind (cópia da Set pra permitir unsubscribe
-      // dentro do callback sem race).
-      const handlers = broadcastHandlers.get(msg.kind)
+      const handlers = conn.broadcast.get(msg.kind)
       if (!handlers || handlers.size === 0) return
       const args = (msg as IncomingBroadcast).args
       for (const h of Array.from(handlers)) h(args)
     })
 
-    // Se cair depois de aberto, libera o cache pra próximo invoke/on reabrir.
     ws.addEventListener('close', () => {
-      wsPromise = null
-      // Rejeita invokes pendentes — não dá pra esperar reply de conexão morta.
-      for (const p of pendingInvokes.values()) {
+      conn.wsPromise = null
+      for (const p of conn.pending.values()) {
         clearTimeout(p.timer)
-        p.reject(new Error('ws closed'))
+        p.reject(new Error(`engine '${engineId}': ws closed`))
       }
-      pendingInvokes.clear()
-      // Broadcasts ficam: próxima conexão herda os handlers.
+      conn.pending.clear()
+      // broadcast handlers ficam — próxima conexão herda.
     })
   })
-  return wsPromise
+  return conn.wsPromise
 }
 
 export interface WsInvokeOptions {
@@ -123,19 +169,21 @@ export interface WsInvokeOptions {
 }
 
 export async function wsInvoke<T = unknown>(
+  engineId: string,
   kind: string,
   args?: unknown,
   opts?: WsInvokeOptions
 ): Promise<T> {
-  const ws = await getWs()
+  const conn = getConn(engineId)
+  const ws = await getWs(engineId)
   const reqId = crypto.randomUUID()
   const timeoutMs = opts?.timeoutMs ?? INVOKE_TIMEOUT_MS
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      pendingInvokes.delete(reqId)
+      conn.pending.delete(reqId)
       reject(new Error(`ws ${kind} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
-    pendingInvokes.set(reqId, {
+    conn.pending.set(reqId, {
       resolve: resolve as (v: unknown) => void,
       reject,
       timer
@@ -145,37 +193,63 @@ export async function wsInvoke<T = unknown>(
 }
 
 /**
- * Fire-and-forget send pro server (equivalente do ipcRenderer.send). Sem reqId, sem espera
- * de reply — o server pode rodar um handler registrado ou ignorar. Falha silenciosamente
- * se o socket estiver fechado.
+ * Fire-and-forget send pro engine. Sem reqId, sem espera. Falha silenciosamente se o socket
+ * estiver fechado.
  */
-export async function wsSend(kind: string, args?: unknown): Promise<void> {
+export async function wsSend(engineId: string, kind: string, args?: unknown): Promise<void> {
   try {
-    const ws = await getWs()
+    const ws = await getWs(engineId)
     ws.send(JSON.stringify({ v: 1, kind, args }))
   } catch (err) {
-    console.warn(`[ws] send ${kind} failed:`, err)
+    console.warn(`[ws] send ${kind} (engine ${engineId}) failed:`, err)
   }
 }
 
-/** Subscribe a um broadcast push do server (kind sem 'reply'). Retorna função de unsubscribe. */
-export function wsOn<T = unknown>(kind: string, handler: (args: T) => void): () => void {
-  let set = broadcastHandlers.get(kind)
+/** Subscribe a um broadcast push de um engine. Retorna função de unsubscribe. */
+export function wsOn<T = unknown>(
+  engineId: string,
+  kind: string,
+  handler: (args: T) => void
+): () => void {
+  const conn = getConn(engineId)
+  let set = conn.broadcast.get(kind)
   if (!set) {
     set = new Set()
-    broadcastHandlers.set(kind, set)
+    conn.broadcast.set(kind, set)
   }
   set.add(handler as (args: unknown) => void)
-  // Garante que a conexão esteja sendo estabelecida (lazy) — broadcasts não funcionam sem ws aberto.
-  void getWs().catch(() => {
-    // sem WS URL ou connect falhou; handler permanece registrado pra próxima tentativa
+  // Garante que a conexão esteja sendo estabelecida (lazy).
+  void getWs(engineId).catch(() => {
+    // sem URL ou connect falhou; handler permanece registrado pra próxima tentativa.
   })
   return () => {
-    broadcastHandlers.get(kind)?.delete(handler as (args: unknown) => void)
+    conn.broadcast.get(kind)?.delete(handler as (args: unknown) => void)
   }
 }
 
-/** Útil pra UI mostrar "WS desconectado". Não bloqueia — só reflete estado atual. */
-export function hasWsUrl(): boolean {
-  return getWsUrl() !== null
+/** Lista de engines conhecidos (do argv). */
+export function listEngines(): Engine[] {
+  return Array.from(engines.values())
+}
+
+/** Útil pra UI mostrar "WS desconectado". Não bloqueia — só reflete se há URL pro engine. */
+export function hasEngine(engineId: string): boolean {
+  return !!engines.get(engineId)?.url
+}
+
+/**
+ * Registra/atualiza um engine em runtime (ex: "Add server" sem relaunch). Se a URL mudou,
+ * derruba a conexão antiga pra reabrir na nova.
+ */
+export function upsertEngine(engine: Engine): void {
+  const prev = engines.get(engine.id)
+  engines.set(engine.id, engine)
+  const conn = conns.get(engine.id)
+  if (conn && prev?.url !== engine.url) {
+    conn.url = engine.url
+    conn.token = engine.token
+    conn.wsPromise = null // próximo invoke/on reabre na URL nova
+  } else if (conn) {
+    conn.token = engine.token
+  }
 }

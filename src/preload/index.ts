@@ -5,7 +5,7 @@ import type { PreviewSource } from '@decky/shared'
 import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
 import { DEFAULT_LOCALE, LOCALE_ARG_PREFIX, normalizeLocale, type Locale } from '@decky/shared'
 import { LOCAL_ENGINE_ID, type Engine } from '@decky/shared'
-import { wsInvoke, wsOn, wsSend, listEngines, upsertEngine } from './ws-client'
+import { wsInvoke, wsOn, wsSend, listEngines, upsertEngine, removeEngine } from './ws-client'
 
 const resolvedLocale: Locale = (() => {
   const arg = process.argv.find((a) => a.startsWith(LOCALE_ARG_PREFIX))
@@ -519,7 +519,15 @@ const deckApi = {
       subscribeEnginePty(engine.id)
       return engine
     },
-    remove: (engineId: string): Promise<boolean> => wsInvoke(L, 'engines:remove', { engineId }),
+    remove: async (engineId: string): Promise<boolean> => {
+      // Avisa o backend (engines:remove no main persiste no state e desfaz a entrada).
+      const ok = await wsInvoke<boolean>(L, 'engines:remove', { engineId })
+      // Limpa a cache do preload — list() e wsInvoke(engineId,...) param de reconhecer o engine.
+      // Sem isso, App.tsx chamava engines.list() e ainda via o engine removido, então
+      // setEngines não mudava nada e a UI parecia "não remover".
+      removeEngine(engineId)
+      return ok
+    },
     setRoutes: (routes: {
       workspaces?: Record<string, string>
       sessions?: Record<string, string>

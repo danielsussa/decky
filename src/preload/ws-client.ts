@@ -253,3 +253,37 @@ export function upsertEngine(engine: Engine): void {
     conn.token = engine.token
   }
 }
+
+/**
+ * Remove um engine em runtime (ex: "Remove server" no modal de confirmação). Fecha a conexão
+ * WS aberta (se houver) e descarta listeners de broadcast. Engine local ('local') não pode
+ * ser removido — é o embarcado e some só com app.quit.
+ */
+export function removeEngine(engineId: string): void {
+  if (engineId === LOCAL_ENGINE_ID) return
+  engines.delete(engineId)
+  const conn = conns.get(engineId)
+  if (conn) {
+    // Rejeita invokes pendentes E fecha o socket (close handler do dispatcher também já limpa).
+    for (const p of conn.pending.values()) {
+      clearTimeout(p.timer)
+      p.reject(new Error('engine removed'))
+    }
+    conn.pending.clear()
+    conn.broadcast.clear()
+    if (conn.wsPromise) {
+      void conn.wsPromise
+        .then((ws) => {
+          try {
+            ws.close()
+          } catch {
+            // ignore
+          }
+        })
+        .catch(() => {
+          // não tinha conexão aberta
+        })
+    }
+    conns.delete(engineId)
+  }
+}

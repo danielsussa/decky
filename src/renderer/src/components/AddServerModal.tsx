@@ -30,8 +30,14 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const hostRef = useRef<HTMLInputElement | null>(null)
 
+  // Autofocus no Host SÓ na primeira montagem — sem deps. Misturar com o listener de Esc (que
+  // depende de onDismiss + status.kind) fazia o efeito re-executar a cada mudança de status,
+  // roubando o foco de volta pro Host enquanto o user tentava digitar no Path/Identity.
   useEffect(() => {
     hostRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape' && status.kind !== 'connecting') onDismiss()
     }

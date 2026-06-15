@@ -2105,6 +2105,21 @@ textarea.form-input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.add-server-modal-probe-action {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(251, 191, 36, 0.1);
+  cursor: pointer;
+  font-family: var(--mono);
+}
+.add-server-modal-probe-action:hover:not(:disabled) {
+  background: rgba(251, 191, 36, 0.18);
+  border-color: rgba(251, 191, 36, 0.6);
+}
+.add-server-modal-probe-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .add-server-modal-status {
   display: flex;
   gap: 9px;

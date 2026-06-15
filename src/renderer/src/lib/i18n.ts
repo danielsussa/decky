@@ -123,6 +123,9 @@ const messages = {
     pt: '{n} pastas detectadas no host — sugestões reais nas opções abaixo.',
     en: '{n} folders detected on host — real suggestions in the options below.'
   },
+  'server.pathExists': { pt: 'existe', en: 'exists' },
+  'server.pathCreateAsk': { pt: 'não existe — criar?', en: "doesn't exist — create?" },
+  'server.pathCreating': { pt: 'criando…', en: 'creating…' },
   'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
   'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
   'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },

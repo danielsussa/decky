@@ -17,6 +17,7 @@ const COMMON_IDENTITIES = [
 ]
 
 const HOST_PROBE_DEBOUNCE_MS = 600
+const PATH_PROBE_DEBOUNCE_MS = 500
 
 type Status =
   | { kind: 'idle' }
@@ -30,16 +31,26 @@ type HostProbe =
   | { kind: 'ok'; user: string; home: string; folders: string[] }
   | { kind: 'error'; message: string }
 
+type PathProbe =
+  | { kind: 'idle' }
+  | { kind: 'probing' }
+  | { kind: 'exists' }
+  | { kind: 'missing' }
+  | { kind: 'creating' }
+  | { kind: 'error'; message: string }
+
 export default function AddServerModal({ onDismiss }: AddServerModalProps): React.JSX.Element {
   const [host, setHost] = useState('')
   const [path, setPath] = useState('')
   const [identity, setIdentity] = useState('')
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const [hostProbe, setHostProbe] = useState<HostProbe>({ kind: 'idle' })
+  const [pathProbe, setPathProbe] = useState<PathProbe>({ kind: 'idle' })
   const hostRef = useRef<HTMLInputElement | null>(null)
-  // ID monotônico da probe atual — se uma nova probe começar antes da antiga terminar, a antiga
+  // IDs monotônicos das probes — se nova probe começar antes da antiga terminar, a antiga
   // descarta seu resultado (race protection sem AbortController, ssh2 não suporta cancel).
-  const probeIdRef = useRef(0)
+  const hostProbeIdRef = useRef(0)
+  const pathProbeIdRef = useRef(0)
 
   useEffect(() => {
     hostRef.current?.focus()
@@ -64,7 +75,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
     }
     // Debounce. Reinicia em qualquer mudança em host/identity.
     const timer = setTimeout(() => {
-      const id = ++probeIdRef.current
+      const id = ++hostProbeIdRef.current
       setHostProbe({ kind: 'probing' })
       const cmd = 'whoami && echo "$HOME" && ls -d ~/*/ 2>/dev/null | head -30 || true'
       void window.deck.ssh
@@ -75,7 +86,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
           timeoutMs: 8000
         })
         .then((r) => {
-          if (id !== probeIdRef.current) return // probe nova começou, descartamos esta
+          if (id !== hostProbeIdRef.current) return // probe nova começou, descartamos esta
           if (!r.ok) {
             setHostProbe({ kind: 'error', message: r.error ?? `exit ${r.exitCode}` })
             return
@@ -90,12 +101,80 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
           setHostProbe({ kind: 'ok', user, home, folders })
         })
         .catch((err) => {
-          if (id !== probeIdRef.current) return
+          if (id !== hostProbeIdRef.current) return
           setHostProbe({ kind: 'error', message: (err as Error).message })
         })
     }, HOST_PROBE_DEBOUNCE_MS)
     return () => clearTimeout(timer)
   }, [host, identity])
+
+  // Probe do path: só roda quando host já está OK. Verifica se o path existe; se não,
+  // oferece "criar". Debounce maior pra não disparar a cada caractere digitado.
+  useEffect(() => {
+    const h = host.trim()
+    const p = path.trim()
+    if (!h || !p || hostProbe.kind !== 'ok') {
+      setPathProbe({ kind: 'idle' })
+      return
+    }
+    const timer = setTimeout(() => {
+      const id = ++pathProbeIdRef.current
+      setPathProbe({ kind: 'probing' })
+      // bash -c pra ~ expandir corretamente (sem ele, ssh manda comando que /bin/sh executa).
+      // Aspas escapadas pra prevenir injection.
+      const safeP = p.replace(/'/g, "'\"'\"'")
+      const cmd = `bash -c 'test -d '"'"'${safeP}'"'"' && echo EXISTS || echo MISSING'`
+      void window.deck.ssh
+        .exec({
+          host: h,
+          command: cmd,
+          identity: identity.trim() || undefined,
+          timeoutMs: 6000
+        })
+        .then((r) => {
+          if (id !== pathProbeIdRef.current) return
+          if (!r.ok) {
+            setPathProbe({ kind: 'error', message: r.error ?? `exit ${r.exitCode}` })
+            return
+          }
+          const out = r.stdout.trim()
+          if (out.includes('EXISTS')) setPathProbe({ kind: 'exists' })
+          else setPathProbe({ kind: 'missing' })
+        })
+        .catch((err) => {
+          if (id !== pathProbeIdRef.current) return
+          setPathProbe({ kind: 'error', message: (err as Error).message })
+        })
+    }, PATH_PROBE_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [host, path, identity, hostProbe.kind])
+
+  const createRemoteFolder = async (): Promise<void> => {
+    const h = host.trim()
+    const p = path.trim()
+    if (!h || !p) return
+    setPathProbe({ kind: 'creating' })
+    const safeP = p.replace(/'/g, "'\"'\"'")
+    const cmd = `bash -c 'mkdir -p '"'"'${safeP}'"'"' && echo OK'`
+    try {
+      const r = await window.deck.ssh.exec({
+        host: h,
+        command: cmd,
+        identity: identity.trim() || undefined,
+        timeoutMs: 6000
+      })
+      if (r.ok && r.stdout.includes('OK')) {
+        setPathProbe({ kind: 'exists' })
+      } else {
+        setPathProbe({
+          kind: 'error',
+          message: r.stderr.trim() || r.error || `exit ${r.exitCode}`
+        })
+      }
+    } catch (err) {
+      setPathProbe({ kind: 'error', message: (err as Error).message })
+    }
+  }
 
   const submit = async (e?: React.FormEvent): Promise<void> => {
     if (e) e.preventDefault()
@@ -197,7 +276,43 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
           </label>
 
           <label className="add-server-modal-field">
-            <span className="add-server-modal-label">{t('server.pathLabel')}</span>
+            <span className="add-server-modal-label-row">
+              <span className="add-server-modal-label">{t('server.pathLabel')}</span>
+              {pathProbe.kind === 'probing' && (
+                <span className="add-server-modal-probe add-server-modal-probe-working">
+                  <Loader2 size={11} className="add-server-modal-spinner" />
+                  {t('server.probing')}
+                </span>
+              )}
+              {pathProbe.kind === 'exists' && (
+                <span className="add-server-modal-probe add-server-modal-probe-ok">
+                  <Check size={11} />
+                  {t('server.pathExists')}
+                </span>
+              )}
+              {pathProbe.kind === 'missing' && (
+                <button
+                  type="button"
+                  className="add-server-modal-probe add-server-modal-probe-action"
+                  onClick={() => void createRemoteFolder()}
+                  disabled={connecting}
+                >
+                  {t('server.pathCreateAsk')}
+                </button>
+              )}
+              {pathProbe.kind === 'creating' && (
+                <span className="add-server-modal-probe add-server-modal-probe-working">
+                  <Loader2 size={11} className="add-server-modal-spinner" />
+                  {t('server.pathCreating')}
+                </span>
+              )}
+              {pathProbe.kind === 'error' && (
+                <span className="add-server-modal-probe add-server-modal-probe-error">
+                  <AlertCircle size={11} />
+                  {pathProbe.message}
+                </span>
+              )}
+            </span>
             <input
               type="text"
               value={path}

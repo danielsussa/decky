@@ -598,11 +598,19 @@ async function doOpenRemote(ctx: {
   try {
     // STEP 1 — start server in background (idempotente — se já estiver rodando, reuso).
     emitStep('start-server', 'running')
-    // pgrep retorna 1 se NÃO acha; pra evitar set -e quebrar o script, usamos || true
-    // e checamos a saída. Logamos no decky-server.log pra debug.
+    // Detection pela porta (lsof) — pgrep -f "decky-server.js" sofria self-match (o próprio
+    // script bash que roda o if contém "decky-server.js" na string). Fallback pra ss caso
+    // lsof não esteja no host. Se nem um nem outro estiverem, tenta iniciar mesmo assim:
+    // se já tiver alguém na porta, o server-side falha na hora e aparece em wait-token.
     const startCmd = `bash -lc '
       cd "$HOME/.decky-server"
-      if pgrep -f "decky-server.js" > /dev/null; then
+      RUNNING=0
+      if command -v lsof > /dev/null 2>&1; then
+        if lsof -ti:8447 > /dev/null 2>&1; then RUNNING=1; fi
+      elif command -v ss > /dev/null 2>&1; then
+        if ss -ltn 2>/dev/null | grep -q ":8447 "; then RUNNING=1; fi
+      fi
+      if [ "$RUNNING" = "1" ]; then
         echo "ALREADY_RUNNING"
       else
         nohup node dist/decky-server.js start \

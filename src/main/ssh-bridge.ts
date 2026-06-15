@@ -1,25 +1,21 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { app } from 'electron'
 import { Client, type ConnectConfig } from 'ssh2'
 import type { DeckyWsServer } from '@decky/server'
 
-// SSH bridge no main process — expõe ssh:exec via WS pro renderer mandar comandos rodarem
-// num host remoto. Fica no main (não no @decky/server) porque a UX de "Add server" só faz
-// sentido a partir do Electron client; o decky-server standalone NUNCA precisa fazer SSH.
+// SSH bridge no main process — expõe ssh:exec / ssh:install-decky-server via WS pro renderer.
+// Fica no main (não no @decky/server) porque a UX de "Add server" só faz sentido a partir do
+// Electron client; o decky-server standalone NUNCA precisa fazer SSH.
 //
 // Auth precedence (igual o ssh CLI):
 //   1. Identity explícito (path do arquivo da chave privada)
-//   2. SSH config (~/.ssh/config) — TODO: ainda não parseado, próximas PRs
+//   2. SSH config (~/.ssh/config) — TODO: ainda não parseado
 //   3. Chaves comuns: ~/.ssh/id_ed25519, id_rsa, id_ecdsa
 //   4. ssh-agent — TODO: integração com SSH_AUTH_SOCK
-//
-// PR #25 cobre só (1) + (3); (2) e (4) entram quando precisar.
 
-const COMMON_KEY_PATHS = [
-  '.ssh/id_ed25519',
-  '.ssh/id_rsa',
-  '.ssh/id_ecdsa'
-]
+const COMMON_KEY_PATHS = ['.ssh/id_ed25519', '.ssh/id_rsa', '.ssh/id_ecdsa']
 
 function expandHome(p: string): string {
   if (p.startsWith('~/')) return `${homedir()}/${p.slice(2)}`
@@ -41,7 +37,6 @@ function resolvePrivateKey(identityPath?: string): Buffer | null {
     if (!key) throw new Error(`identity file not found or unreadable: ${identityPath}`)
     return key
   }
-  // Tenta as chaves comuns na ordem
   for (const p of COMMON_KEY_PATHS) {
     const key = tryReadKey(`${homedir()}/${p}`)
     if (key) return key
@@ -58,7 +53,6 @@ interface ParsedHost {
 function parseHost(raw: string): ParsedHost {
   const trimmed = raw.trim()
   if (!trimmed) throw new Error('host required')
-  // [user@]host[:port]
   let user: string | undefined
   let rest = trimmed
   const atIdx = rest.indexOf('@')
@@ -68,7 +62,6 @@ function parseHost(raw: string): ParsedHost {
   }
   let port = 22
   const colonIdx = rest.lastIndexOf(':')
-  // ipv6 has multiple ":" — ignora se for nesse formato (futuro: [::1]:port)
   if (colonIdx >= 0 && !rest.includes('::')) {
     const portStr = rest.slice(colonIdx + 1)
     const n = Number(portStr)
@@ -79,6 +72,23 @@ function parseHost(raw: string): ParsedHost {
   }
   return { user, host: rest, port }
 }
+
+function buildConfig(host: string, identity: string | undefined, timeoutMs: number): ConnectConfig {
+  const parsed = parseHost(host)
+  const privateKey = resolvePrivateKey(identity)
+  const config: ConnectConfig = {
+    host: parsed.host,
+    port: parsed.port,
+    username: parsed.user || process.env.USER || 'root',
+    readyTimeout: timeoutMs
+  }
+  if (privateKey) config.privateKey = privateKey
+  return config
+}
+
+const DEFAULT_TIMEOUT_MS = 10_000
+
+// ── ssh:exec — comando único, conexão own-and-die ──────────────────────────
 
 export interface SshExecResult {
   ok: boolean
@@ -96,25 +106,13 @@ interface SshExecArgs {
   timeoutMs?: number
 }
 
-const DEFAULT_TIMEOUT_MS = 10_000
-
 export async function sshExec(args: SshExecArgs): Promise<SshExecResult> {
-  let parsed: ParsedHost
-  let privateKey: Buffer | null
+  let config: ConnectConfig
   try {
-    parsed = parseHost(args.host)
-    privateKey = resolvePrivateKey(args.identity)
+    config = buildConfig(args.host, args.identity, args.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   } catch (err) {
     return { ok: false, exitCode: null, stdout: '', stderr: '', error: (err as Error).message }
   }
-
-  const config: ConnectConfig = {
-    host: parsed.host,
-    port: parsed.port,
-    username: parsed.user || process.env.USER || 'root',
-    readyTimeout: args.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  }
-  if (privateKey) config.privateKey = privateKey
 
   return new Promise<SshExecResult>((resolve) => {
     const client = new Client()
@@ -144,13 +142,7 @@ export async function sshExec(args: SshExecArgs): Promise<SshExecResult> {
       client.exec(args.command, (err, stream) => {
         if (err) {
           clearTimeout(timer)
-          settle({
-            ok: false,
-            exitCode: null,
-            stdout: '',
-            stderr: '',
-            error: err.message
-          })
+          settle({ ok: false, exitCode: null, stdout: '', stderr: '', error: err.message })
           return
         }
         let stdout = ''
@@ -158,12 +150,7 @@ export async function sshExec(args: SshExecArgs): Promise<SshExecResult> {
         stream
           .on('close', (code: number | null) => {
             clearTimeout(timer)
-            settle({
-              ok: code === 0,
-              exitCode: code ?? null,
-              stdout,
-              stderr
-            })
+            settle({ ok: code === 0, exitCode: code ?? null, stdout, stderr })
           })
           .on('data', (data: Buffer) => {
             stdout += data.toString('utf-8')
@@ -176,34 +163,333 @@ export async function sshExec(args: SshExecArgs): Promise<SshExecResult> {
 
     client.on('error', (err) => {
       clearTimeout(timer)
-      settle({
-        ok: false,
-        exitCode: null,
-        stdout: '',
-        stderr: '',
-        error: err.message
-      })
+      settle({ ok: false, exitCode: null, stdout: '', stderr: '', error: err.message })
     })
 
     try {
       client.connect(config)
     } catch (err) {
       clearTimeout(timer)
+      settle({ ok: false, exitCode: null, stdout: '', stderr: '', error: (err as Error).message })
+    }
+  })
+}
+
+// ── ssh-session helpers — conexão reusada entre vários comandos ────────────
+
+interface SshSession {
+  client: Client
+  end: () => void
+}
+
+function sshConnect(host: string, identity: string | undefined): Promise<SshSession> {
+  const config = buildConfig(host, identity, 15_000)
+  return new Promise<SshSession>((resolve, reject) => {
+    const client = new Client()
+    let resolved = false
+    client.on('ready', () => {
+      resolved = true
+      resolve({
+        client,
+        end() {
+          try {
+            client.end()
+          } catch {
+            // ignore
+          }
+        }
+      })
+    })
+    client.on('error', (err) => {
+      if (resolved) return
+      reject(err)
+    })
+    try {
+      client.connect(config)
+    } catch (err) {
+      reject(err)
+    }
+  })
+}
+
+function execOn(
+  client: Client,
+  cmd: string,
+  timeoutMs = 30_000
+): Promise<SshExecResult> {
+  return new Promise<SshExecResult>((resolve) => {
+    let settled = false
+    const settle = (r: SshExecResult): void => {
+      if (settled) return
+      settled = true
+      resolve(r)
+    }
+    const timer = setTimeout(() => {
       settle({
         ok: false,
         exitCode: null,
         stdout: '',
         stderr: '',
-        error: (err as Error).message
+        error: `timed out after ${timeoutMs}ms`
       })
-    }
+    }, timeoutMs)
+    client.exec(cmd, (err, stream) => {
+      if (err) {
+        clearTimeout(timer)
+        settle({ ok: false, exitCode: null, stdout: '', stderr: '', error: err.message })
+        return
+      }
+      let stdout = ''
+      let stderr = ''
+      stream
+        .on('close', (code: number | null) => {
+          clearTimeout(timer)
+          settle({ ok: code === 0, exitCode: code ?? null, stdout, stderr })
+        })
+        .on('data', (data: Buffer) => {
+          stdout += data.toString('utf-8')
+        })
+        .stderr.on('data', (data: Buffer) => {
+          stderr += data.toString('utf-8')
+        })
+    })
   })
 }
+
+function putOn(
+  client: Client,
+  localPath: string,
+  remotePath: string
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    client.sftp((err, sftp) => {
+      if (err) {
+        resolve({ ok: false, error: err.message })
+        return
+      }
+      sftp.fastPut(localPath, remotePath, (putErr) => {
+        if (putErr) {
+          resolve({ ok: false, error: putErr.message })
+          return
+        }
+        resolve({ ok: true })
+      })
+    })
+  })
+}
+
+// ── Install pipeline — orquestra steps + emite progress ────────────────────
+
+function findServerBundlePath(): string {
+  // app.getAppPath() em dev aponta pro repo root; em packaged aponta pra Resources/app.
+  // Em ambos os casos packages/decky-server/dist/decky-server.js DEVE existir (em packaged só
+  // se electron-builder inclua — TODO no .yml). Tentamos alguns paths plausíveis e damos
+  // erro guiado se não acharmos.
+  const appPath = app.getAppPath()
+  const candidates = [
+    join(appPath, 'packages/decky-server/dist/decky-server.js'),
+    join(appPath, '..', 'packages/decky-server/dist/decky-server.js'),
+    join(appPath, '..', '..', 'packages/decky-server/dist/decky-server.js')
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  throw new Error(
+    'decky-server bundle not found locally. Run `npm run build --workspace @decky/server` first.'
+  )
+}
+
+function rootPackageJsonVersions(): Record<string, string> {
+  // package.json do projeto — versões das deps a serem espelhadas no remote.
+  const appPath = app.getAppPath()
+  const candidates = [
+    join(appPath, 'package.json'),
+    join(appPath, '..', 'package.json'),
+    join(appPath, '..', '..', 'package.json')
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) {
+      try {
+        const pkg = JSON.parse(readFileSync(c, 'utf-8')) as { dependencies?: Record<string, string> }
+        return pkg.dependencies ?? {}
+      } catch {
+        // try next
+      }
+    }
+  }
+  return {}
+}
+
+function buildRemotePackageJson(): string {
+  // Top-level deps que o bundle do decky-server precisa em runtime. As transitivas (bindings,
+  // file-uri-to-path, asn1, bcrypt-pbkdf, tweetnacl) virão automaticamente.
+  const wanted = ['better-sqlite3', 'node-pty', 'marked', 'ws']
+  const versions = rootPackageJsonVersions()
+  const deps: Record<string, string> = {}
+  for (const name of wanted) {
+    deps[name] = versions[name] ?? 'latest'
+  }
+  const pkg = {
+    name: 'decky-server-install',
+    version: '0.0.1',
+    private: true,
+    dependencies: deps
+  }
+  return JSON.stringify(pkg, null, 2) + '\n'
+}
+
+export interface InstallStep {
+  id: string
+  state: 'pending' | 'running' | 'ok' | 'error'
+  detail?: string
+}
+
+export type InstallProgressEvent =
+  | { kind: 'step'; step: InstallStep }
+  | { kind: 'log'; line: string }
+  | { kind: 'done'; ok: boolean; error?: string }
+
+const INSTALL_STEPS = [
+  'node-check',
+  'mkdir',
+  'upload-bundle',
+  'write-package',
+  'npm-install'
+] as const
+
+export interface InstallDeckyServerArgs {
+  host: string
+  identity?: string
+}
+
+interface InstallContext {
+  host: string
+  identity?: string
+  emit: (e: InstallProgressEvent) => void
+}
+
+async function doInstall(ctx: InstallContext): Promise<{ ok: boolean; error?: string }> {
+  const emitStep = (id: string, state: InstallStep['state'], detail?: string): void =>
+    ctx.emit({ kind: 'step', step: { id, state, detail } })
+  const emitLog = (line: string): void => ctx.emit({ kind: 'log', line })
+
+  // Sinaliza todos os steps como pending no começo pra UI mostrar a lista completa.
+  for (const id of INSTALL_STEPS) emitStep(id, 'pending')
+
+  let bundlePath: string
+  let packageJsonContents: string
+  try {
+    bundlePath = findServerBundlePath()
+    packageJsonContents = buildRemotePackageJson()
+  } catch (err) {
+    const msg = (err as Error).message
+    emitLog(msg)
+    return { ok: false, error: msg }
+  }
+
+  let session: SshSession
+  try {
+    session = await sshConnect(ctx.host, ctx.identity)
+  } catch (err) {
+    return { ok: false, error: (err as Error).message }
+  }
+
+  try {
+    // STEP 1 — check Node
+    emitStep('node-check', 'running')
+    const node = await execOn(session.client, 'which node && node --version', 6_000)
+    if (!node.ok) {
+      const msg =
+        node.stderr.trim() ||
+        node.error ||
+        'Node.js não encontrado no host. Instale antes (apt install nodejs ou nodesource.com).'
+      emitStep('node-check', 'error', msg)
+      return { ok: false, error: msg }
+    }
+    const nodeLine = node.stdout.trim().split('\n').pop() ?? ''
+    emitStep('node-check', 'ok', nodeLine)
+    emitLog(node.stdout.trim())
+
+    // STEP 2 — mkdir
+    emitStep('mkdir', 'running')
+    const mk = await execOn(
+      session.client,
+      'bash -c "mkdir -p $HOME/.decky-server/dist && echo OK"',
+      6_000
+    )
+    if (!mk.ok || !mk.stdout.includes('OK')) {
+      const msg = mk.stderr.trim() || mk.error || 'mkdir failed'
+      emitStep('mkdir', 'error', msg)
+      return { ok: false, error: msg }
+    }
+    emitStep('mkdir', 'ok')
+
+    // STEP 3 — upload bundle via SFTP
+    emitStep('upload-bundle', 'running', `${bundlePath.split('/').pop()}`)
+    // Descobre o $HOME absoluto pra usar no SFTP (não expande ~).
+    const home = await execOn(session.client, 'echo $HOME', 3_000)
+    const homeDir = home.stdout.trim()
+    if (!home.ok || !homeDir) {
+      emitStep('upload-bundle', 'error', '$HOME resolution failed')
+      return { ok: false, error: 'could not resolve $HOME on remote' }
+    }
+    const remoteBundlePath = `${homeDir}/.decky-server/dist/decky-server.js`
+    const up = await putOn(session.client, bundlePath, remoteBundlePath)
+    if (!up.ok) {
+      emitStep('upload-bundle', 'error', up.error)
+      return { ok: false, error: up.error ?? 'upload failed' }
+    }
+    emitStep('upload-bundle', 'ok')
+
+    // STEP 4 — write package.json via cat heredoc
+    emitStep('write-package', 'running')
+    const escaped = packageJsonContents.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$')
+    const writeCmd = `bash -c 'cat > "$HOME/.decky-server/package.json" <<"EOF"\n${escaped}EOF\n'`
+    const w = await execOn(session.client, writeCmd, 6_000)
+    if (!w.ok) {
+      const msg = w.stderr.trim() || w.error || 'write package.json failed'
+      emitStep('write-package', 'error', msg)
+      return { ok: false, error: msg }
+    }
+    emitStep('write-package', 'ok')
+
+    // STEP 5 — npm install (LENTO no RP4; pode demorar minutos)
+    emitStep('npm-install', 'running', 'npm install --omit=dev')
+    const npmCmd =
+      'cd "$HOME/.decky-server" && npm install --omit=dev --no-audit --no-fund --loglevel=error 2>&1'
+    const ni = await execOn(session.client, npmCmd, 5 * 60_000)
+    if (!ni.ok) {
+      const msg = ni.stdout.trim().split('\n').slice(-3).join('\n') || ni.error || 'npm install failed'
+      emitLog(ni.stdout)
+      emitStep('npm-install', 'error', msg)
+      return { ok: false, error: msg }
+    }
+    emitLog(ni.stdout)
+    emitStep('npm-install', 'ok')
+
+    return { ok: true }
+  } finally {
+    session.end()
+  }
+}
+
+// ── Registry ───────────────────────────────────────────────────────────────
 
 export function registerSshHandlers(getWsServer: () => DeckyWsServer | null): void {
   const ws = getWsServer()
   if (!ws) return
   ws.handle<SshExecArgs, SshExecResult>('ssh:exec', (args) =>
     sshExec(args ?? { host: '', command: '' })
+  )
+  ws.handle<InstallDeckyServerArgs, { ok: boolean; error?: string }>(
+    'ssh:install-decky-server',
+    async (args) => {
+      if (!args?.host) return { ok: false, error: 'host required' }
+      return doInstall({
+        host: args.host,
+        identity: args.identity,
+        emit: (e) => ws.broadcast('ssh:install-progress', e)
+      })
+    }
   )
 }

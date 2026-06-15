@@ -209,12 +209,19 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
     }
   }
 
+  const installStepLabels: Record<string, string> = {
+    'node-check': t('server.stepNodeCheck'),
+    mkdir: t('server.stepMkdir'),
+    'upload-bundle': t('server.stepUpload'),
+    'write-package': t('server.stepWritePkg'),
+    'npm-install': t('server.stepNpm')
+  }
+
   const handleConnect = async (): Promise<void> => {
     const h = host.trim()
     const p = path.trim()
     if (!h || !p) return
 
-    // Steps iniciais. Adicionar mais nas PRs #27 (install) e #28 (start + tunnel).
     const initialSteps: FlowStep[] = [
       { id: 'ssh', label: t('server.stepSsh'), state: 'pending' },
       { id: 'detect', label: t('server.stepDetect'), state: 'pending' }
@@ -237,9 +244,6 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
 
     // STEP 2 — Detect decky-server install
     {
-      // Path test: arquivo principal do bundle existe? Eventualmente lê um arquivo `version`
-      // pra mostrar a versão e detectar mismatch (PR seguinte). Por enquanto presence-check
-      // simples é suficiente.
       const cmd = `test -f ${shellEscape(REMOTE_SERVER_PATH.replace('~', '$HOME'))} && echo INSTALLED || echo MISSING`
       const r = await runStep(initialSteps, 'detect', `bash -c ${shellEscape(cmd)}`, 6000)
       if (!r.ok) {
@@ -250,17 +254,70 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
         return
       }
       const installed = r.stdout.includes('INSTALLED')
-      const detail = installed
-        ? t('server.detectInstalled')
-        : t('server.detectMissing')
+      const detail = installed ? t('server.detectInstalled') : t('server.detectMissing')
       initialSteps[1] = { ...initialSteps[1], state: 'ok', detail }
       if (installed) {
-        // PR #28 adiciona: start server + tunnel + ws connect. Por ora, fica "ready".
         setFlow({ kind: 'ready', steps: [...initialSteps] })
       } else {
-        // PR #27 vai implementar o install real. Por ora, sinaliza que precisa.
         setFlow({ kind: 'needs-install', steps: [...initialSteps] })
       }
+    }
+  }
+
+  const handleInstall = async (): Promise<void> => {
+    const h = host.trim()
+    if (!h) return
+    if (flow.kind !== 'needs-install') return
+
+    // Adiciona steps de install (todos pending) à lista existente. Quando os progress events
+    // chegarem, atualizamos cada um.
+    const baseSteps = flow.steps
+    const installSteps: FlowStep[] = [
+      { id: 'node-check', label: installStepLabels['node-check'], state: 'pending' },
+      { id: 'mkdir', label: installStepLabels['mkdir'], state: 'pending' },
+      { id: 'upload-bundle', label: installStepLabels['upload-bundle'], state: 'pending' },
+      { id: 'write-package', label: installStepLabels['write-package'], state: 'pending' },
+      { id: 'npm-install', label: installStepLabels['npm-install'], state: 'pending' }
+    ]
+    let combined = [...baseSteps, ...installSteps]
+    setFlow({ kind: 'running', steps: combined })
+
+    // Escuta progress até o install retornar.
+    const unsubscribe = window.deck.ssh.onInstallProgress((ev) => {
+      if (ev.kind === 'step') {
+        combined = combined.map((s) =>
+          s.id === ev.step.id
+            ? { ...s, state: ev.step.state, detail: ev.step.detail ?? s.detail }
+            : s
+        )
+        setFlow({ kind: 'running', steps: [...combined] })
+      } else if (ev.kind === 'log') {
+        // log eventos passam; podemos exibir num expander futuramente.
+      }
+    })
+
+    try {
+      const r = await window.deck.ssh.installDeckyServer({
+        host: h,
+        identity: identity.trim() || undefined
+      })
+      if (r.ok) {
+        setFlow({ kind: 'ready', steps: combined })
+      } else {
+        setFlow({
+          kind: 'error',
+          steps: combined,
+          message: r.error ?? t('server.errInstall')
+        })
+      }
+    } catch (err) {
+      setFlow({
+        kind: 'error',
+        steps: combined,
+        message: (err as Error).message
+      })
+    } finally {
+      unsubscribe()
     }
   }
 
@@ -287,10 +344,9 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
           ? t('server.btnOpen')
           : t('server.connect')
 
+  // O botão "Abrir workspace" (estado ready) ainda não tem handler — PR #28 implementa.
   const primaryDisabled =
-    !host.trim() || !path.trim() || running || flow.kind === 'needs-install' || flow.kind === 'ready'
-  // ⬆ needs-install/ready ficam desabilitados porque o handler real é das PRs #27/#28 — o user
-  // já vê o resultado da #26, mas não tem ainda o passo seguinte plugado.
+    !host.trim() || !path.trim() || running || flow.kind === 'ready'
 
   return (
     <div className="add-server-modal-backdrop" onClick={() => !running && onDismiss()}>
@@ -321,7 +377,11 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            void handleConnect()
+            if (flow.kind === 'needs-install') {
+              void handleInstall()
+            } else if (flow.kind === 'idle' || flow.kind === 'error') {
+              void handleConnect()
+            }
           }}
           className="add-server-modal-form"
         >

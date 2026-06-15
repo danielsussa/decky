@@ -401,7 +401,23 @@ const deckApi = {
       stdout: string
       stderr: string
       error?: string
-    }> => wsInvoke('ssh:exec', args)
+    }> => wsInvoke('ssh:exec', args),
+    installDeckyServer: (args: {
+      host: string
+      identity?: string
+    }): Promise<{ ok: boolean; error?: string }> =>
+      wsInvoke('ssh:install-decky-server', args),
+    onInstallProgress: (
+      cb: (
+        ev:
+          | {
+              kind: 'step'
+              step: { id: string; state: 'pending' | 'running' | 'ok' | 'error'; detail?: string }
+            }
+          | { kind: 'log'; line: string }
+          | { kind: 'done'; ok: boolean; error?: string }
+      ) => void
+    ): (() => void) => wsOn('ssh:install-progress', cb)
   },
   widget: {
     // Server forwards every widget:call here. The renderer dispatches into the widget registry

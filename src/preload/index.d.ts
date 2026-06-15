@@ -252,6 +252,21 @@ export interface DeckAPI {
       stderr: string
       error?: string
     }>
+    installDeckyServer: (args: {
+      host: string
+      identity?: string
+    }) => Promise<{ ok: boolean; error?: string }>
+    onInstallProgress: (
+      cb: (
+        ev:
+          | {
+              kind: 'step'
+              step: { id: string; state: 'pending' | 'running' | 'ok' | 'error'; detail?: string }
+            }
+          | { kind: 'log'; line: string }
+          | { kind: 'done'; ok: boolean; error?: string }
+      ) => void
+    ) => () => void
   }
   widget: {
     onCall: (

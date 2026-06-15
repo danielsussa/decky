@@ -145,6 +145,15 @@ const messages = {
   },
   'server.btnInstall': { pt: 'Instalar decky-server', en: 'Install decky-server' },
   'server.btnOpen': { pt: 'Abrir workspace', en: 'Open workspace' },
+  'server.stepNodeCheck': { pt: 'Verificando Node.js no host', en: 'Checking Node.js on host' },
+  'server.stepMkdir': { pt: 'Criando ~/.decky-server', en: 'Creating ~/.decky-server' },
+  'server.stepUpload': { pt: 'Enviando bundle (~80 KB)', en: 'Uploading bundle (~80 KB)' },
+  'server.stepWritePkg': { pt: 'Escrevendo package.json', en: 'Writing package.json' },
+  'server.stepNpm': {
+    pt: 'npm install (pode demorar no RP4)',
+    en: 'npm install (can be slow on RP4)'
+  },
+  'server.errInstall': { pt: 'Falha ao instalar decky-server', en: 'Failed to install decky-server' },
   'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
   'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
   'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },

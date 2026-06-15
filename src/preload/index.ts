@@ -406,13 +406,15 @@ const deckApi = {
       host: string
       identity?: string
     }): Promise<{ ok: boolean; error?: string }> =>
-      wsInvoke('ssh:install-decky-server', args),
+      // npm install no RP4 pode demorar minutos — sobe pra 10min.
+      wsInvoke('ssh:install-decky-server', args, { timeoutMs: 10 * 60 * 1000 }),
     openRemote: (args: {
       host: string
       identity?: string
       workspacePath: string
     }): Promise<{ ok: boolean; localUrl?: string; token?: string; error?: string }> =>
-      wsInvoke('ssh:open-remote', args),
+      // start + wait token + tunnel ~5-15s, mas dá margem.
+      wsInvoke('ssh:open-remote', args, { timeoutMs: 60_000 }),
     reopenWithRemote: (url: string, token: string): Promise<{ ok: boolean }> =>
       wsInvoke('app:reopen-with-remote', { url, token }),
     onInstallProgress: (

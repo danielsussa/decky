@@ -6,9 +6,8 @@ interface AddServerModalProps {
   onDismiss: () => void
 }
 
-// Sugestões estáticas pros datalists. Sem SSH conectado ainda — não dá pra fazer completion
-// dinâmica do remote (`ssh user@host "ls ~"`). Quando o SSH connect estiver pronto (PR #25+),
-// estas viram apenas o fallback e a maior parte das opções vem do remote.
+// Sugestões estáticas. Servem como fallback enquanto a probe SSH não roda — quando ela retorna,
+// o datalist do Path passa a usar as pastas reais detectadas no remote (`ls -d ~/*/`).
 const COMMON_PATHS = ['~/dev', '~/code', '~/projects', '~/repos', '~/src', '/opt', '/var/www']
 const COMMON_IDENTITIES = [
   '~/.ssh/id_ed25519',
@@ -17,22 +16,31 @@ const COMMON_IDENTITIES = [
   '~/.ssh/id_dsa'
 ]
 
+const HOST_PROBE_DEBOUNCE_MS = 600
+
 type Status =
   | { kind: 'idle' }
   | { kind: 'connecting'; step: string }
   | { kind: 'ok'; output: string }
   | { kind: 'error'; message: string; output?: string }
 
+type HostProbe =
+  | { kind: 'idle' }
+  | { kind: 'probing' }
+  | { kind: 'ok'; user: string; home: string; folders: string[] }
+  | { kind: 'error'; message: string }
+
 export default function AddServerModal({ onDismiss }: AddServerModalProps): React.JSX.Element {
   const [host, setHost] = useState('')
   const [path, setPath] = useState('')
   const [identity, setIdentity] = useState('')
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
+  const [hostProbe, setHostProbe] = useState<HostProbe>({ kind: 'idle' })
   const hostRef = useRef<HTMLInputElement | null>(null)
+  // ID monotônico da probe atual — se uma nova probe começar antes da antiga terminar, a antiga
+  // descarta seu resultado (race protection sem AbortController, ssh2 não suporta cancel).
+  const probeIdRef = useRef(0)
 
-  // Autofocus no Host SÓ na primeira montagem — sem deps. Misturar com o listener de Esc (que
-  // depende de onDismiss + status.kind) fazia o efeito re-executar a cada mudança de status,
-  // roubando o foco de volta pro Host enquanto o user tentava digitar no Path/Identity.
   useEffect(() => {
     hostRef.current?.focus()
   }, [])
@@ -45,14 +53,56 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
     return () => window.removeEventListener('keydown', onKey)
   }, [onDismiss, status.kind])
 
+  // Auto-probe: depois que o user para de digitar o host (e/ou identity), tenta SSH connect
+  // e usa o resultado pra popular as sugestões do Path. Cancela se algum dos dois mudar antes
+  // do debounce expirar.
+  useEffect(() => {
+    const h = host.trim()
+    if (!h) {
+      setHostProbe({ kind: 'idle' })
+      return
+    }
+    // Debounce. Reinicia em qualquer mudança em host/identity.
+    const timer = setTimeout(() => {
+      const id = ++probeIdRef.current
+      setHostProbe({ kind: 'probing' })
+      const cmd = 'whoami && echo "$HOME" && ls -d ~/*/ 2>/dev/null | head -30 || true'
+      void window.deck.ssh
+        .exec({
+          host: h,
+          command: cmd,
+          identity: identity.trim() || undefined,
+          timeoutMs: 8000
+        })
+        .then((r) => {
+          if (id !== probeIdRef.current) return // probe nova começou, descartamos esta
+          if (!r.ok) {
+            setHostProbe({ kind: 'error', message: r.error ?? `exit ${r.exitCode}` })
+            return
+          }
+          const lines = r.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+          const user = lines[0] ?? ''
+          const home = lines[1] ?? ''
+          const folders = lines
+            .slice(2)
+            .map((l) => l.replace(/\/$/, ''))
+            .filter((p) => p.startsWith('/'))
+          setHostProbe({ kind: 'ok', user, home, folders })
+        })
+        .catch((err) => {
+          if (id !== probeIdRef.current) return
+          setHostProbe({ kind: 'error', message: (err as Error).message })
+        })
+    }, HOST_PROBE_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [host, identity])
+
   const submit = async (e?: React.FormEvent): Promise<void> => {
     if (e) e.preventDefault()
     const h = host.trim()
     const p = path.trim()
     if (!h || !p) return
 
-    // PR #25 — só prova que SSH funciona. Roda `echo + uname -a + pwd + ls -d <path>`.
-    // Próximas PRs trocam por: detect server, install, start, tunnel, connect.
     setStatus({ kind: 'connecting', step: t('server.statusConnecting') })
     const probeCmd = `echo "[decky-probe] connected" && uname -a && id -un && test -d ${JSON.stringify(p)} && echo "[decky-probe] path-ok ${p}" || echo "[decky-probe] path-missing ${p}"`
     try {
@@ -77,6 +127,12 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
   }
 
   const connecting = status.kind === 'connecting'
+
+  // Path suggestions = COMMON_PATHS + folders reais do remote (deduplicadas, remote first).
+  const pathSuggestions =
+    hostProbe.kind === 'ok'
+      ? Array.from(new Set([...hostProbe.folders, ...COMMON_PATHS]))
+      : COMMON_PATHS
 
   return (
     <div className="add-server-modal-backdrop" onClick={() => !connecting && onDismiss()}>
@@ -106,7 +162,27 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
 
         <form onSubmit={(e) => void submit(e)} className="add-server-modal-form">
           <label className="add-server-modal-field">
-            <span className="add-server-modal-label">{t('server.hostLabel')}</span>
+            <span className="add-server-modal-label-row">
+              <span className="add-server-modal-label">{t('server.hostLabel')}</span>
+              {hostProbe.kind === 'probing' && (
+                <span className="add-server-modal-probe add-server-modal-probe-working">
+                  <Loader2 size={11} className="add-server-modal-spinner" />
+                  {t('server.probing')}
+                </span>
+              )}
+              {hostProbe.kind === 'ok' && (
+                <span className="add-server-modal-probe add-server-modal-probe-ok">
+                  <Check size={11} />
+                  {hostProbe.user}@ — {hostProbe.home}
+                </span>
+              )}
+              {hostProbe.kind === 'error' && (
+                <span className="add-server-modal-probe add-server-modal-probe-error">
+                  <AlertCircle size={11} />
+                  {hostProbe.message}
+                </span>
+              )}
+            </span>
             <input
               ref={hostRef}
               type="text"
@@ -126,18 +202,22 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
               type="text"
               value={path}
               onChange={(e) => setPath(e.target.value)}
-              placeholder="/home/user/projeto"
+              placeholder={hostProbe.kind === 'ok' ? hostProbe.home : '/home/user/projeto'}
               list="add-server-path-suggestions"
               autoComplete="off"
               spellCheck={false}
               disabled={connecting}
             />
             <datalist id="add-server-path-suggestions">
-              {COMMON_PATHS.map((p) => (
+              {pathSuggestions.map((p) => (
                 <option key={p} value={p} />
               ))}
             </datalist>
-            <span className="add-server-modal-help">{t('server.pathHelp')}</span>
+            <span className="add-server-modal-help">
+              {hostProbe.kind === 'ok' && hostProbe.folders.length > 0
+                ? t('server.pathHelpRemote').replace('{n}', String(hostProbe.folders.length))
+                : t('server.pathHelp')}
+            </span>
           </label>
 
           <label className="add-server-modal-field">

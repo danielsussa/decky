@@ -118,6 +118,11 @@ const messages = {
   },
   'server.statusConnecting': { pt: 'Conectando…', en: 'Connecting…' },
   'server.statusOk': { pt: 'SSH OK — host respondeu:', en: 'SSH OK — host replied:' },
+  'server.probing': { pt: 'probando…', en: 'probing…' },
+  'server.pathHelpRemote': {
+    pt: '{n} pastas detectadas no host — sugestões reais nas opções abaixo.',
+    en: '{n} folders detected on host — real suggestions in the options below.'
+  },
   'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
   'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
   'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },

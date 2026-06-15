@@ -492,8 +492,6 @@ export interface OpenRemoteResult {
 export interface OpenRemoteArgs {
   host: string
   identity?: string
-  /** workspace cwd no remote — vai ser passado pro renderer recriar o workspace. */
-  workspacePath: string
 }
 
 async function pickFreeLocalPort(): Promise<number> {

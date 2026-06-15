@@ -779,7 +779,7 @@ function App(): React.JSX.Element {
       if (Array.isArray(ws)) setWorkspaces(ws)
     })
     // Engines: a lista vem do argv (síncrona, já no preload). O mapa workspace→engineId persiste
-    // no state (servers gravam o seu remotePath aqui ao serem adicionados).
+    // no state — popula quando o user faz "Add folder" escolhendo um engine remoto.
     setEngines(window.deck.engines.list())
     void window.deck.state.get<Record<string, string>>('workspaceEngines').then((m) => {
       if (m && typeof m === 'object') setWorkspaceEngine(m)
@@ -2196,16 +2196,11 @@ function App(): React.JSX.Element {
   const [remoteServerModalOpen, setRemoteServerModalOpen] = useState(false)
   const addServer = (): void => setRemoteServerModalOpen(true)
 
-  // Modal "Add server" conectou: registra o engine novo + mapeia o workspace remoto pro engine
-  // (persiste em 'workspaceEngines') e abre o workspace. Additivo — o local segue intacto.
-  const onServerAdded = (engineId: string, remotePath: string): void => {
+  // Modal "Add server" terminou: registra o engine novo na lista (sem workspace ainda — o
+  // user adiciona pastas depois via "Add folder", que pergunta qual engine + path). Additivo
+  // — local segue intacto, e o server fica visível mesmo sem pastas.
+  const onServerAdded = (_engineId: string): void => {
     setEngines(window.deck.engines.list())
-    setWorkspaceEngine((prev) => {
-      const next = { ...prev, [remotePath]: engineId }
-      void window.deck.state.set('workspaceEngines', next)
-      return next
-    })
-    setWorkspace(remotePath)
   }
 
   // Open a browser card in the active session, focused. Empty url = "nova aba" (URL bar

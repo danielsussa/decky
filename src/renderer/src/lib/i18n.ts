@@ -145,6 +145,7 @@ const messages = {
   },
   'server.btnInstall': { pt: 'Instalar decky-server', en: 'Install decky-server' },
   'server.btnOpen': { pt: 'Abrir workspace', en: 'Open workspace' },
+  'server.btnAddServer': { pt: 'Adicionar server', en: 'Add server' },
   'server.stepNodeCheck': { pt: 'Verificando Node.js no host', en: 'Checking Node.js on host' },
   'server.stepMkdir': { pt: 'Criando ~/.decky-server', en: 'Creating ~/.decky-server' },
   'server.stepUpload': { pt: 'Enviando bundle (~80 KB)', en: 'Uploading bundle (~80 KB)' },

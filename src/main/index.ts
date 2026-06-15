@@ -127,8 +127,7 @@ function serverConfigToEngine(cfg: ServerEngineConfig): Engine {
     url: cfg.url ?? '',
     token: cfg.token,
     sshHost: cfg.sshHost,
-    sshIdentity: cfg.sshIdentity,
-    remotePath: cfg.remotePath
+    sshIdentity: cfg.sshIdentity
   }
 }
 
@@ -167,8 +166,7 @@ async function addServerEngine(cfg: ServerEngineConfig & { url: string }): Promi
     url: cfg.url,
     token: cfg.token,
     sshHost: cfg.sshHost,
-    sshIdentity: cfg.sshIdentity,
-    remotePath: cfg.remotePath
+    sshIdentity: cfg.sshIdentity
   }
   const next = existing
     ? servers.map((s) => (s.id === engine.id ? engine : s))

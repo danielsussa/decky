@@ -259,7 +259,6 @@ export interface DeckAPI {
     openRemote: (args: {
       host: string
       identity?: string
-      workspacePath: string
     }) => Promise<{ ok: boolean; localUrl?: string; token?: string; error?: string }>
     onInstallProgress: (
       cb: (
@@ -281,7 +280,6 @@ export interface DeckAPI {
       token?: string
       sshHost?: string
       sshIdentity?: string
-      remotePath?: string
     }) => Promise<Engine>
     remove: (engineId: string) => Promise<boolean>
     setRoutes: (routes: {

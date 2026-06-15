@@ -4,14 +4,12 @@ import { t } from '../lib/i18n'
 
 interface AddServerModalProps {
   onDismiss: () => void
-  // Chamado quando o server conecta: o App registra o engine + o workspace remoto na árvore,
-  // SEM relaunch (additivo). engineId é o id do engine recém-criado; remotePath é o workspace.
-  onAdded: (engineId: string, remotePath: string) => void
+  // Chamado quando o server entra na árvore como engine. Sem workspace path — o user adiciona
+  // pastas (locais ou remotas) depois via "Add folder". engineId é o id do engine recém-criado
+  // pelo main.
+  onAdded: (engineId: string) => void
 }
 
-// Sugestões estáticas. Servem como fallback enquanto a probe SSH não roda — quando ela retorna,
-// o datalist do Path passa a usar as pastas reais detectadas no remote (`ls -d ~/*/`).
-const COMMON_PATHS = ['~/dev', '~/code', '~/projects', '~/repos', '~/src', '/opt', '/var/www']
 const COMMON_IDENTITIES = [
   '~/.ssh/id_ed25519',
   '~/.ssh/id_rsa',
@@ -20,7 +18,6 @@ const COMMON_IDENTITIES = [
 ]
 
 const HOST_PROBE_DEBOUNCE_MS = 600
-const PATH_PROBE_DEBOUNCE_MS = 500
 const REMOTE_SERVER_PATH = '~/.decky-server/dist/decky-server.js'
 
 type StepState = 'pending' | 'running' | 'ok' | 'error'
@@ -42,19 +39,10 @@ type Flow =
 type HostProbe =
   | { kind: 'idle' }
   | { kind: 'probing' }
-  | { kind: 'ok'; user: string; home: string; folders: string[] }
-  | { kind: 'error'; message: string }
-
-type PathProbe =
-  | { kind: 'idle' }
-  | { kind: 'probing' }
-  | { kind: 'exists' }
-  | { kind: 'missing' }
-  | { kind: 'creating' }
+  | { kind: 'ok'; user: string; home: string }
   | { kind: 'error'; message: string }
 
 function shellEscape(s: string): string {
-  // Quote single-quoted string. Ex: `a'b` vira `'a'"'"'b'`.
   return `'${s.replace(/'/g, "'\"'\"'")}'`
 }
 
@@ -63,14 +51,11 @@ export default function AddServerModal({
   onAdded
 }: AddServerModalProps): React.JSX.Element {
   const [host, setHost] = useState('')
-  const [path, setPath] = useState('')
   const [identity, setIdentity] = useState('')
   const [flow, setFlow] = useState<Flow>({ kind: 'idle' })
   const [hostProbe, setHostProbe] = useState<HostProbe>({ kind: 'idle' })
-  const [pathProbe, setPathProbe] = useState<PathProbe>({ kind: 'idle' })
   const hostRef = useRef<HTMLInputElement | null>(null)
   const hostProbeIdRef = useRef(0)
-  const pathProbeIdRef = useRef(0)
 
   useEffect(() => {
     hostRef.current?.focus()
@@ -84,7 +69,9 @@ export default function AddServerModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onDismiss, flow.kind])
 
-  // Auto-probe do host: roda em background quando user digita o Host (debounce).
+  // Probe do host: roda em background depois que o user para de digitar. Só pra mostrar feedback
+  // visual ("✓ pi@ — /home/pi") confirmando que a conexão SSH + auth tão OK antes de o user
+  // clicar Connect. O Connect refaz o handshake — o probe não substitui, só dá confirmação cedo.
   useEffect(() => {
     const h = host.trim()
     if (!h) {
@@ -94,11 +81,10 @@ export default function AddServerModal({
     const timer = setTimeout(() => {
       const id = ++hostProbeIdRef.current
       setHostProbe({ kind: 'probing' })
-      const cmd = 'whoami && echo "$HOME" && ls -d ~/*/ 2>/dev/null | head -30 || true'
       void window.deck.ssh
         .exec({
           host: h,
-          command: cmd,
+          command: 'whoami && echo "$HOME"',
           identity: identity.trim() || undefined,
           timeoutMs: 8000
         })
@@ -109,13 +95,11 @@ export default function AddServerModal({
             return
           }
           const lines = r.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
-          const user = lines[0] ?? ''
-          const home = lines[1] ?? ''
-          const folders = lines
-            .slice(2)
-            .map((l) => l.replace(/\/$/, ''))
-            .filter((p) => p.startsWith('/'))
-          setHostProbe({ kind: 'ok', user, home, folders })
+          setHostProbe({
+            kind: 'ok',
+            user: lines[0] ?? '',
+            home: lines[1] ?? ''
+          })
         })
         .catch((err) => {
           if (id !== hostProbeIdRef.current) return
@@ -125,71 +109,6 @@ export default function AddServerModal({
     return () => clearTimeout(timer)
   }, [host, identity])
 
-  // Probe do path: só roda quando host já está OK. Oferece "criar" se não existe.
-  useEffect(() => {
-    const h = host.trim()
-    const p = path.trim()
-    if (!h || !p || hostProbe.kind !== 'ok') {
-      setPathProbe({ kind: 'idle' })
-      return
-    }
-    const timer = setTimeout(() => {
-      const id = ++pathProbeIdRef.current
-      setPathProbe({ kind: 'probing' })
-      const cmd = `bash -c 'test -d ${shellEscape(p)} && echo EXISTS || echo MISSING'`
-      void window.deck.ssh
-        .exec({
-          host: h,
-          command: cmd,
-          identity: identity.trim() || undefined,
-          timeoutMs: 6000
-        })
-        .then((r) => {
-          if (id !== pathProbeIdRef.current) return
-          if (!r.ok) {
-            setPathProbe({ kind: 'error', message: r.error ?? `exit ${r.exitCode}` })
-            return
-          }
-          const out = r.stdout.trim()
-          if (out.includes('EXISTS')) setPathProbe({ kind: 'exists' })
-          else setPathProbe({ kind: 'missing' })
-        })
-        .catch((err) => {
-          if (id !== pathProbeIdRef.current) return
-          setPathProbe({ kind: 'error', message: (err as Error).message })
-        })
-    }, PATH_PROBE_DEBOUNCE_MS)
-    return () => clearTimeout(timer)
-  }, [host, path, identity, hostProbe.kind])
-
-  const createRemoteFolder = async (): Promise<void> => {
-    const h = host.trim()
-    const p = path.trim()
-    if (!h || !p) return
-    setPathProbe({ kind: 'creating' })
-    const cmd = `bash -c 'mkdir -p ${shellEscape(p)} && echo OK'`
-    try {
-      const r = await window.deck.ssh.exec({
-        host: h,
-        command: cmd,
-        identity: identity.trim() || undefined,
-        timeoutMs: 6000
-      })
-      if (r.ok && r.stdout.includes('OK')) {
-        setPathProbe({ kind: 'exists' })
-      } else {
-        setPathProbe({
-          kind: 'error',
-          message: r.stderr.trim() || r.error || `exit ${r.exitCode}`
-        })
-      }
-    } catch (err) {
-      setPathProbe({ kind: 'error', message: (err as Error).message })
-    }
-  }
-
-  // Reusa o ssh.exec mas atualiza imutavelmente um step da lista. Retorna o stdout do step
-  // (ou erro) pra próxima etapa decidir.
   async function runStep(
     steps: FlowStep[],
     stepId: string,
@@ -207,12 +126,7 @@ export default function AddServerModal({
       identity: identity.trim() || undefined,
       timeoutMs
     })
-    return {
-      ok: r.ok,
-      stdout: r.stdout,
-      stderr: r.stderr,
-      error: r.error
-    }
+    return { ok: r.ok, stdout: r.stdout, stderr: r.stderr, error: r.error }
   }
 
   const installStepLabels: Record<string, string> = {
@@ -230,8 +144,7 @@ export default function AddServerModal({
 
   const handleConnect = async (): Promise<void> => {
     const h = host.trim()
-    const p = path.trim()
-    if (!h || !p) return
+    if (!h) return
 
     const initialSteps: FlowStep[] = [
       { id: 'ssh', label: t('server.stepSsh'), state: 'pending' },
@@ -280,8 +193,6 @@ export default function AddServerModal({
     if (!h) return
     if (flow.kind !== 'needs-install') return
 
-    // Adiciona steps de install (todos pending) à lista existente. Quando os progress events
-    // chegarem, atualizamos cada um.
     const baseSteps = flow.steps
     const installSteps: FlowStep[] = [
       { id: 'node-check', label: installStepLabels['node-check'], state: 'pending' },
@@ -293,7 +204,6 @@ export default function AddServerModal({
     let combined = [...baseSteps, ...installSteps]
     setFlow({ kind: 'running', steps: combined })
 
-    // Escuta progress até o install retornar.
     const unsubscribe = window.deck.ssh.onInstallProgress((ev) => {
       if (ev.kind === 'step') {
         combined = combined.map((s) =>
@@ -302,8 +212,6 @@ export default function AddServerModal({
             : s
         )
         setFlow({ kind: 'running', steps: [...combined] })
-      } else if (ev.kind === 'log') {
-        // log eventos passam; podemos exibir num expander futuramente.
       }
     })
 
@@ -332,33 +240,9 @@ export default function AddServerModal({
     }
   }
 
-  const running = flow.kind === 'running'
-  const interactive = !running && flow.kind !== 'needs-install' && flow.kind !== 'ready'
-
-  // Path suggestions = COMMON_PATHS + folders reais do remote (deduplicadas, remote first).
-  const pathSuggestions =
-    hostProbe.kind === 'ok'
-      ? Array.from(new Set([...hostProbe.folders, ...COMMON_PATHS]))
-      : COMMON_PATHS
-
-  // Botão principal muda de label conforme o estado:
-  //   idle/error            → "Connect"
-  //   running               → "Connecting…" (disabled)
-  //   needs-install         → "Install decky-server" (próxima PR liga o handler)
-  //   ready                 → "Open workspace" (próxima PR liga o handler)
-  const primaryLabel =
-    flow.kind === 'running'
-      ? t('server.statusConnecting')
-      : flow.kind === 'needs-install'
-        ? t('server.btnInstall')
-        : flow.kind === 'ready'
-          ? t('server.btnOpen')
-          : t('server.connect')
-
-  const handleOpenWorkspace = async (): Promise<void> => {
+  const handleAddServer = async (): Promise<void> => {
     const h = host.trim()
-    const p = path.trim()
-    if (!h || !p) return
+    if (!h) return
     if (flow.kind !== 'ready') return
 
     const baseSteps = flow.steps
@@ -384,8 +268,7 @@ export default function AddServerModal({
     try {
       const r = await window.deck.ssh.openRemote({
         host: h,
-        identity: identity.trim() || undefined,
-        workspacePath: p
+        identity: identity.trim() || undefined
       })
       if (!r.ok || !r.localUrl || !r.token) {
         setFlow({
@@ -395,17 +278,16 @@ export default function AddServerModal({
         })
         return
       }
-      // Additivo: registra o server como um engine novo (sem relaunch, sem esconder o local).
-      // O App insere o engine + o workspace remoto na árvore KIND ▸ WS ▸ SESSION.
+      // Engine sem workspace: aparece na sidebar como container vazio. User adiciona pastas
+      // depois via "Add folder" (próxima PR — vai perguntar a engine + path).
       const engine = await window.deck.engines.add({
         label: h,
         url: r.localUrl,
         token: r.token,
         sshHost: h,
-        sshIdentity: identity.trim() || undefined,
-        remotePath: p
+        sshIdentity: identity.trim() || undefined
       })
-      onAdded(engine.id, p)
+      onAdded(engine.id)
       onDismiss()
     } catch (err) {
       setFlow({
@@ -418,7 +300,19 @@ export default function AddServerModal({
     }
   }
 
-  const primaryDisabled = !host.trim() || !path.trim() || running
+  const running = flow.kind === 'running'
+  const interactive = !running && flow.kind !== 'needs-install' && flow.kind !== 'ready'
+
+  const primaryLabel =
+    flow.kind === 'running'
+      ? t('server.statusConnecting')
+      : flow.kind === 'needs-install'
+        ? t('server.btnInstall')
+        : flow.kind === 'ready'
+          ? t('server.btnAddServer')
+          : t('server.connect')
+
+  const primaryDisabled = !host.trim() || running
 
   return (
     <div className="add-server-modal-backdrop" onClick={() => !running && onDismiss()}>
@@ -452,7 +346,7 @@ export default function AddServerModal({
             if (flow.kind === 'needs-install') {
               void handleInstall()
             } else if (flow.kind === 'ready') {
-              void handleOpenWorkspace()
+              void handleAddServer()
             } else if (flow.kind === 'idle' || flow.kind === 'error') {
               void handleConnect()
             }
@@ -492,66 +386,6 @@ export default function AddServerModal({
               disabled={!interactive}
             />
             <span className="add-server-modal-help">{t('server.hostHelp')}</span>
-          </label>
-
-          <label className="add-server-modal-field">
-            <span className="add-server-modal-label-row">
-              <span className="add-server-modal-label">{t('server.pathLabel')}</span>
-              {pathProbe.kind === 'probing' && (
-                <span className="add-server-modal-probe add-server-modal-probe-working">
-                  <Loader2 size={11} className="add-server-modal-spinner" />
-                  {t('server.probing')}
-                </span>
-              )}
-              {pathProbe.kind === 'exists' && (
-                <span className="add-server-modal-probe add-server-modal-probe-ok">
-                  <Check size={11} />
-                  {t('server.pathExists')}
-                </span>
-              )}
-              {pathProbe.kind === 'missing' && (
-                <button
-                  type="button"
-                  className="add-server-modal-probe add-server-modal-probe-action"
-                  onClick={() => void createRemoteFolder()}
-                  disabled={!interactive}
-                >
-                  {t('server.pathCreateAsk')}
-                </button>
-              )}
-              {pathProbe.kind === 'creating' && (
-                <span className="add-server-modal-probe add-server-modal-probe-working">
-                  <Loader2 size={11} className="add-server-modal-spinner" />
-                  {t('server.pathCreating')}
-                </span>
-              )}
-              {pathProbe.kind === 'error' && (
-                <span className="add-server-modal-probe add-server-modal-probe-error">
-                  <AlertCircle size={11} />
-                  {pathProbe.message}
-                </span>
-              )}
-            </span>
-            <input
-              type="text"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              placeholder={hostProbe.kind === 'ok' ? hostProbe.home : '/home/user/projeto'}
-              list="add-server-path-suggestions"
-              autoComplete="off"
-              spellCheck={false}
-              disabled={!interactive}
-            />
-            <datalist id="add-server-path-suggestions">
-              {pathSuggestions.map((p) => (
-                <option key={p} value={p} />
-              ))}
-            </datalist>
-            <span className="add-server-modal-help">
-              {hostProbe.kind === 'ok' && hostProbe.folders.length > 0
-                ? t('server.pathHelpRemote').replace('{n}', String(hostProbe.folders.length))
-                : t('server.pathHelp')}
-            </span>
           </label>
 
           <label className="add-server-modal-field">

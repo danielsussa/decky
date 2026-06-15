@@ -481,7 +481,6 @@ const deckApi = {
     openRemote: (args: {
       host: string
       identity?: string
-      workspacePath: string
     }): Promise<{ ok: boolean; localUrl?: string; token?: string; error?: string }> =>
       // start + wait token + tunnel ~5-15s, mas dá margem.
       wsInvoke(L, 'ssh:open-remote', args, { timeoutMs: 60_000 }),
@@ -509,7 +508,6 @@ const deckApi = {
       token?: string
       sshHost?: string
       sshIdentity?: string
-      remotePath?: string
     }): Promise<Engine> => {
       const engine = await wsInvoke<Engine>(L, 'engines:add', cfg)
       upsertEngine(engine)

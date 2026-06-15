@@ -15,10 +15,9 @@ export interface Engine {
   url: string
   /** Bearer token do server remoto. Ausente no local (loopback sem auth). */
   token?: string
-  /** Server only: host SSH + caminho do workspace no host remoto, pra re-abrir o túnel no boot. */
+  /** Server only: host SSH usado pra re-abrir o túnel no boot (URL muda a cada porta livre). */
   sshHost?: string
   sshIdentity?: string
-  remotePath?: string
 }
 
 /** Apenas os campos persistidos no state.json (`engines`). O `local` é runtime, não persiste. */

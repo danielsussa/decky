@@ -126,6 +126,25 @@ const messages = {
   'server.pathExists': { pt: 'existe', en: 'exists' },
   'server.pathCreateAsk': { pt: 'não existe — criar?', en: "doesn't exist — create?" },
   'server.pathCreating': { pt: 'criando…', en: 'creating…' },
+  'server.stepSsh': { pt: 'Conectando via SSH', en: 'Connecting via SSH' },
+  'server.stepDetect': { pt: 'Verificando decky-server no host', en: 'Checking decky-server on host' },
+  'server.errSsh': { pt: 'Falha no SSH', en: 'SSH failed' },
+  'server.errDetect': { pt: 'Falha ao verificar decky-server', en: 'Failed to check decky-server' },
+  'server.detectInstalled': { pt: 'decky-server instalado', en: 'decky-server installed' },
+  'server.detectMissing': {
+    pt: 'decky-server não instalado',
+    en: 'decky-server not installed'
+  },
+  'server.installNeeded': {
+    pt: 'Precisa instalar o decky-server no host. Clique pra iniciar.',
+    en: 'decky-server needs to be installed on the host. Click to start.'
+  },
+  'server.ready': {
+    pt: 'decky-server pronto. Vamos abrir o workspace.',
+    en: 'decky-server ready. Opening workspace.'
+  },
+  'server.btnInstall': { pt: 'Instalar decky-server', en: 'Install decky-server' },
+  'server.btnOpen': { pt: 'Abrir workspace', en: 'Open workspace' },
   'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
   'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
   'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },

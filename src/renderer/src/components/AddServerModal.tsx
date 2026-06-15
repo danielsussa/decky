@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Server, X, Check, AlertCircle, Loader2 } from 'lucide-react'
+import { Server, X, Check, AlertCircle, Loader2, Circle } from 'lucide-react'
 import { t } from '../lib/i18n'
 
 interface AddServerModalProps {
@@ -18,12 +18,23 @@ const COMMON_IDENTITIES = [
 
 const HOST_PROBE_DEBOUNCE_MS = 600
 const PATH_PROBE_DEBOUNCE_MS = 500
+const REMOTE_SERVER_PATH = '~/.decky-server/dist/decky-server.js'
 
-type Status =
+type StepState = 'pending' | 'running' | 'ok' | 'error'
+
+interface FlowStep {
+  id: string
+  label: string
+  state: StepState
+  detail?: string
+}
+
+type Flow =
   | { kind: 'idle' }
-  | { kind: 'connecting'; step: string }
-  | { kind: 'ok'; output: string }
-  | { kind: 'error'; message: string; output?: string }
+  | { kind: 'running'; steps: FlowStep[] }
+  | { kind: 'needs-install'; steps: FlowStep[] }
+  | { kind: 'ready'; steps: FlowStep[] }
+  | { kind: 'error'; steps: FlowStep[]; message: string }
 
 type HostProbe =
   | { kind: 'idle' }
@@ -39,16 +50,19 @@ type PathProbe =
   | { kind: 'creating' }
   | { kind: 'error'; message: string }
 
+function shellEscape(s: string): string {
+  // Quote single-quoted string. Ex: `a'b` vira `'a'"'"'b'`.
+  return `'${s.replace(/'/g, "'\"'\"'")}'`
+}
+
 export default function AddServerModal({ onDismiss }: AddServerModalProps): React.JSX.Element {
   const [host, setHost] = useState('')
   const [path, setPath] = useState('')
   const [identity, setIdentity] = useState('')
-  const [status, setStatus] = useState<Status>({ kind: 'idle' })
+  const [flow, setFlow] = useState<Flow>({ kind: 'idle' })
   const [hostProbe, setHostProbe] = useState<HostProbe>({ kind: 'idle' })
   const [pathProbe, setPathProbe] = useState<PathProbe>({ kind: 'idle' })
   const hostRef = useRef<HTMLInputElement | null>(null)
-  // IDs monotônicos das probes — se nova probe começar antes da antiga terminar, a antiga
-  // descarta seu resultado (race protection sem AbortController, ssh2 não suporta cancel).
   const hostProbeIdRef = useRef(0)
   const pathProbeIdRef = useRef(0)
 
@@ -58,22 +72,19 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && status.kind !== 'connecting') onDismiss()
+      if (e.key === 'Escape' && flow.kind !== 'running') onDismiss()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onDismiss, status.kind])
+  }, [onDismiss, flow.kind])
 
-  // Auto-probe: depois que o user para de digitar o host (e/ou identity), tenta SSH connect
-  // e usa o resultado pra popular as sugestões do Path. Cancela se algum dos dois mudar antes
-  // do debounce expirar.
+  // Auto-probe do host: roda em background quando user digita o Host (debounce).
   useEffect(() => {
     const h = host.trim()
     if (!h) {
       setHostProbe({ kind: 'idle' })
       return
     }
-    // Debounce. Reinicia em qualquer mudança em host/identity.
     const timer = setTimeout(() => {
       const id = ++hostProbeIdRef.current
       setHostProbe({ kind: 'probing' })
@@ -86,7 +97,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
           timeoutMs: 8000
         })
         .then((r) => {
-          if (id !== hostProbeIdRef.current) return // probe nova começou, descartamos esta
+          if (id !== hostProbeIdRef.current) return
           if (!r.ok) {
             setHostProbe({ kind: 'error', message: r.error ?? `exit ${r.exitCode}` })
             return
@@ -108,8 +119,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
     return () => clearTimeout(timer)
   }, [host, identity])
 
-  // Probe do path: só roda quando host já está OK. Verifica se o path existe; se não,
-  // oferece "criar". Debounce maior pra não disparar a cada caractere digitado.
+  // Probe do path: só roda quando host já está OK. Oferece "criar" se não existe.
   useEffect(() => {
     const h = host.trim()
     const p = path.trim()
@@ -120,10 +130,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
     const timer = setTimeout(() => {
       const id = ++pathProbeIdRef.current
       setPathProbe({ kind: 'probing' })
-      // bash -c pra ~ expandir corretamente (sem ele, ssh manda comando que /bin/sh executa).
-      // Aspas escapadas pra prevenir injection.
-      const safeP = p.replace(/'/g, "'\"'\"'")
-      const cmd = `bash -c 'test -d '"'"'${safeP}'"'"' && echo EXISTS || echo MISSING'`
+      const cmd = `bash -c 'test -d ${shellEscape(p)} && echo EXISTS || echo MISSING'`
       void window.deck.ssh
         .exec({
           host: h,
@@ -154,8 +161,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
     const p = path.trim()
     if (!h || !p) return
     setPathProbe({ kind: 'creating' })
-    const safeP = p.replace(/'/g, "'\"'\"'")
-    const cmd = `bash -c 'mkdir -p '"'"'${safeP}'"'"' && echo OK'`
+    const cmd = `bash -c 'mkdir -p ${shellEscape(p)} && echo OK'`
     try {
       const r = await window.deck.ssh.exec({
         host: h,
@@ -176,36 +182,90 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
     }
   }
 
-  const submit = async (e?: React.FormEvent): Promise<void> => {
-    if (e) e.preventDefault()
+  // Reusa o ssh.exec mas atualiza imutavelmente um step da lista. Retorna o stdout do step
+  // (ou erro) pra próxima etapa decidir.
+  async function runStep(
+    steps: FlowStep[],
+    stepId: string,
+    cmd: string,
+    timeoutMs = 10000
+  ): Promise<{ ok: boolean; stdout: string; stderr: string; error?: string }> {
+    const h = host.trim()
+    setFlow({
+      kind: 'running',
+      steps: steps.map((s) => (s.id === stepId ? { ...s, state: 'running' } : s))
+    })
+    const r = await window.deck.ssh.exec({
+      host: h,
+      command: cmd,
+      identity: identity.trim() || undefined,
+      timeoutMs
+    })
+    return {
+      ok: r.ok,
+      stdout: r.stdout,
+      stderr: r.stderr,
+      error: r.error
+    }
+  }
+
+  const handleConnect = async (): Promise<void> => {
     const h = host.trim()
     const p = path.trim()
     if (!h || !p) return
 
-    setStatus({ kind: 'connecting', step: t('server.statusConnecting') })
-    const probeCmd = `echo "[decky-probe] connected" && uname -a && id -un && test -d ${JSON.stringify(p)} && echo "[decky-probe] path-ok ${p}" || echo "[decky-probe] path-missing ${p}"`
-    try {
-      const r = await window.deck.ssh.exec({
-        host: h,
-        command: probeCmd,
-        identity: identity.trim() || undefined,
-        timeoutMs: 15000
-      })
-      if (r.ok) {
-        setStatus({ kind: 'ok', output: r.stdout.trim() })
-      } else {
-        setStatus({
-          kind: 'error',
-          message: r.error ?? `exit ${r.exitCode}`,
-          output: [r.stderr.trim(), r.stdout.trim()].filter(Boolean).join('\n')
-        })
+    // Steps iniciais. Adicionar mais nas PRs #27 (install) e #28 (start + tunnel).
+    const initialSteps: FlowStep[] = [
+      { id: 'ssh', label: t('server.stepSsh'), state: 'pending' },
+      { id: 'detect', label: t('server.stepDetect'), state: 'pending' }
+    ]
+    setFlow({ kind: 'running', steps: initialSteps })
+
+    // STEP 1 — SSH connectivity
+    {
+      const r = await runStep(initialSteps, 'ssh', 'echo SSH_OK', 8000)
+      if (!r.ok || !r.stdout.includes('SSH_OK')) {
+        const stepsAfter: FlowStep[] = initialSteps.map((s) =>
+          s.id === 'ssh' ? { ...s, state: 'error', detail: r.error ?? r.stderr } : s
+        )
+        setFlow({ kind: 'error', steps: stepsAfter, message: r.error ?? t('server.errSsh') })
+        return
       }
-    } catch (err) {
-      setStatus({ kind: 'error', message: (err as Error).message })
+      initialSteps[0] = { ...initialSteps[0], state: 'ok' }
+      setFlow({ kind: 'running', steps: [...initialSteps] })
+    }
+
+    // STEP 2 — Detect decky-server install
+    {
+      // Path test: arquivo principal do bundle existe? Eventualmente lê um arquivo `version`
+      // pra mostrar a versão e detectar mismatch (PR seguinte). Por enquanto presence-check
+      // simples é suficiente.
+      const cmd = `test -f ${shellEscape(REMOTE_SERVER_PATH.replace('~', '$HOME'))} && echo INSTALLED || echo MISSING`
+      const r = await runStep(initialSteps, 'detect', `bash -c ${shellEscape(cmd)}`, 6000)
+      if (!r.ok) {
+        const stepsAfter: FlowStep[] = initialSteps.map((s) =>
+          s.id === 'detect' ? { ...s, state: 'error', detail: r.error ?? r.stderr } : s
+        )
+        setFlow({ kind: 'error', steps: stepsAfter, message: r.error ?? t('server.errDetect') })
+        return
+      }
+      const installed = r.stdout.includes('INSTALLED')
+      const detail = installed
+        ? t('server.detectInstalled')
+        : t('server.detectMissing')
+      initialSteps[1] = { ...initialSteps[1], state: 'ok', detail }
+      if (installed) {
+        // PR #28 adiciona: start server + tunnel + ws connect. Por ora, fica "ready".
+        setFlow({ kind: 'ready', steps: [...initialSteps] })
+      } else {
+        // PR #27 vai implementar o install real. Por ora, sinaliza que precisa.
+        setFlow({ kind: 'needs-install', steps: [...initialSteps] })
+      }
     }
   }
 
-  const connecting = status.kind === 'connecting'
+  const running = flow.kind === 'running'
+  const interactive = !running && flow.kind !== 'needs-install' && flow.kind !== 'ready'
 
   // Path suggestions = COMMON_PATHS + folders reais do remote (deduplicadas, remote first).
   const pathSuggestions =
@@ -213,8 +273,27 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
       ? Array.from(new Set([...hostProbe.folders, ...COMMON_PATHS]))
       : COMMON_PATHS
 
+  // Botão principal muda de label conforme o estado:
+  //   idle/error            → "Connect"
+  //   running               → "Connecting…" (disabled)
+  //   needs-install         → "Install decky-server" (próxima PR liga o handler)
+  //   ready                 → "Open workspace" (próxima PR liga o handler)
+  const primaryLabel =
+    flow.kind === 'running'
+      ? t('server.statusConnecting')
+      : flow.kind === 'needs-install'
+        ? t('server.btnInstall')
+        : flow.kind === 'ready'
+          ? t('server.btnOpen')
+          : t('server.connect')
+
+  const primaryDisabled =
+    !host.trim() || !path.trim() || running || flow.kind === 'needs-install' || flow.kind === 'ready'
+  // ⬆ needs-install/ready ficam desabilitados porque o handler real é das PRs #27/#28 — o user
+  // já vê o resultado da #26, mas não tem ainda o passo seguinte plugado.
+
   return (
-    <div className="add-server-modal-backdrop" onClick={() => !connecting && onDismiss()}>
+    <div className="add-server-modal-backdrop" onClick={() => !running && onDismiss()}>
       <div
         className="add-server-modal"
         role="dialog"
@@ -230,7 +309,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
             type="button"
             className="add-server-modal-close"
             onClick={onDismiss}
-            disabled={connecting}
+            disabled={running}
             aria-label="Fechar"
           >
             <X size={16} />
@@ -239,7 +318,13 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
 
         <p className="add-server-modal-subtitle">{t('server.subtitle')}</p>
 
-        <form onSubmit={(e) => void submit(e)} className="add-server-modal-form">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            void handleConnect()
+          }}
+          className="add-server-modal-form"
+        >
           <label className="add-server-modal-field">
             <span className="add-server-modal-label-row">
               <span className="add-server-modal-label">{t('server.hostLabel')}</span>
@@ -270,7 +355,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
               placeholder="user@minha-maquina.tail-xxxx.ts.net"
               autoComplete="off"
               spellCheck={false}
-              disabled={connecting}
+              disabled={!interactive}
             />
             <span className="add-server-modal-help">{t('server.hostHelp')}</span>
           </label>
@@ -295,7 +380,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
                   type="button"
                   className="add-server-modal-probe add-server-modal-probe-action"
                   onClick={() => void createRemoteFolder()}
-                  disabled={connecting}
+                  disabled={!interactive}
                 >
                   {t('server.pathCreateAsk')}
                 </button>
@@ -321,7 +406,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
               list="add-server-path-suggestions"
               autoComplete="off"
               spellCheck={false}
-              disabled={connecting}
+              disabled={!interactive}
             />
             <datalist id="add-server-path-suggestions">
               {pathSuggestions.map((p) => (
@@ -345,7 +430,7 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
               list="add-server-identity-suggestions"
               autoComplete="off"
               spellCheck={false}
-              disabled={connecting}
+              disabled={!interactive}
             />
             <datalist id="add-server-identity-suggestions">
               {COMMON_IDENTITIES.map((p) => (
@@ -355,32 +440,47 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
             <span className="add-server-modal-help">{t('server.identityHelp')}</span>
           </label>
 
-          {status.kind === 'connecting' && (
-            <div className="add-server-modal-status add-server-modal-status-working">
-              <Loader2 className="add-server-modal-spinner" size={14} />
-              <span>{status.step}</span>
-            </div>
-          )}
-
-          {status.kind === 'ok' && (
-            <div className="add-server-modal-status add-server-modal-status-ok">
-              <Check size={14} />
-              <div className="add-server-modal-status-body">
-                <span className="add-server-modal-status-title">{t('server.statusOk')}</span>
-                <pre className="add-server-modal-output">{status.output || '(no output)'}</pre>
-              </div>
-            </div>
-          )}
-
-          {status.kind === 'error' && (
-            <div className="add-server-modal-status add-server-modal-status-error">
-              <AlertCircle size={14} />
-              <div className="add-server-modal-status-body">
-                <span className="add-server-modal-status-title">{status.message}</span>
-                {status.output && (
-                  <pre className="add-server-modal-output">{status.output}</pre>
-                )}
-              </div>
+          {flow.kind !== 'idle' && (
+            <div className="add-server-modal-steps">
+              {flow.kind === 'error' && (
+                <div className="add-server-modal-steps-banner add-server-modal-steps-banner-error">
+                  <AlertCircle size={13} />
+                  <span>{flow.message}</span>
+                </div>
+              )}
+              {flow.kind === 'needs-install' && (
+                <div className="add-server-modal-steps-banner add-server-modal-steps-banner-warn">
+                  <AlertCircle size={13} />
+                  <span>{t('server.installNeeded')}</span>
+                </div>
+              )}
+              {flow.kind === 'ready' && (
+                <div className="add-server-modal-steps-banner add-server-modal-steps-banner-ok">
+                  <Check size={13} />
+                  <span>{t('server.ready')}</span>
+                </div>
+              )}
+              <ul className="add-server-modal-steps-list">
+                {flow.steps.map((s) => (
+                  <li
+                    key={s.id}
+                    className={`add-server-modal-step add-server-modal-step-${s.state}`}
+                  >
+                    <span className="add-server-modal-step-icon">
+                      {s.state === 'pending' && <Circle size={12} />}
+                      {s.state === 'running' && (
+                        <Loader2 size={12} className="add-server-modal-spinner" />
+                      )}
+                      {s.state === 'ok' && <Check size={12} />}
+                      {s.state === 'error' && <AlertCircle size={12} />}
+                    </span>
+                    <span className="add-server-modal-step-label">{s.label}</span>
+                    {s.detail && (
+                      <span className="add-server-modal-step-detail">{s.detail}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 
@@ -389,16 +489,16 @@ export default function AddServerModal({ onDismiss }: AddServerModalProps): Reac
               type="button"
               className="add-server-modal-cancel"
               onClick={onDismiss}
-              disabled={connecting}
+              disabled={running}
             >
               {t('server.cancel')}
             </button>
             <button
               type="submit"
               className="add-server-modal-connect"
-              disabled={!host.trim() || !path.trim() || connecting}
+              disabled={primaryDisabled}
             >
-              {connecting ? t('server.statusConnecting') : t('server.connect')}
+              {primaryLabel}
             </button>
           </div>
         </form>

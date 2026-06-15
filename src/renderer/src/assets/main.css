@@ -2317,6 +2317,86 @@ textarea.form-input {
   width: 400px;
 }
 
+/* Remote folder list (RemoteFolderModal modo 'list') */
+.remote-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.remote-folder-loading,
+.remote-folder-empty {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-family: var(--mono);
+}
+.remote-folder-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-1);
+  font: 13px var(--mono);
+  text-align: left;
+  cursor: pointer;
+  transition: background 80ms, border-color 80ms;
+}
+.remote-folder-row:hover {
+  background: var(--bg-2);
+}
+.remote-folder-row-selected {
+  border-color: var(--accent);
+  background: rgba(138, 92, 246, 0.12);
+}
+.remote-folder-row-other {
+  color: var(--text-2);
+  border-style: dashed;
+}
+.remote-folder-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.remote-folder-row-other .remote-folder-icon {
+  color: var(--text-3);
+}
+.remote-folder-path {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.remote-folder-check {
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.remote-folder-back {
+  display: inline-flex;
+  align-self: flex-start;
+  margin-top: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font: 12px var(--sans);
+  cursor: pointer;
+  padding: 2px 0;
+}
+.remote-folder-back:hover {
+  color: var(--text-1);
+}
+
 /* Engine picker */
 .engine-picker-list {
   list-style: none;

@@ -153,9 +153,19 @@ const messages = {
   },
   'addFolder.localDetail': { pt: 'Esta máquina', en: 'This machine' },
   'addFolder.remoteTitle': { pt: 'Escolher pasta em {host}', en: 'Choose folder on {host}' },
-  'addFolder.remoteSubtitle': {
-    pt: '{n} pastas detectadas no host. Digite o caminho ou escolha das sugestões.',
-    en: '{n} folders detected on host. Type the path or pick from suggestions.'
+  'addFolder.remoteSubtitleList': {
+    pt: '{n} pastas detectadas em ~. Escolha uma, ou clique em "Outra pasta…".',
+    en: '{n} folders detected in ~. Pick one, or click "Other path…".'
+  },
+  'addFolder.remoteSubtitleCustom': {
+    pt: 'Digite o caminho. Pasta será verificada; se não existir, dá pra criar.',
+    en: 'Type the path. It will be checked; if missing, you can create it.'
+  },
+  'addFolder.otherPath': { pt: 'Outra pasta…', en: 'Other path…' },
+  'addFolder.backToList': { pt: 'voltar pra lista', en: 'back to list' },
+  'addFolder.noFoldersDetected': {
+    pt: 'Nenhuma pasta detectada em ~. Use "Outra pasta…" pra digitar o caminho.',
+    en: 'No folders detected in ~. Use "Other path…" to type the path.'
   },
   'addFolder.useThisFolder': { pt: 'Usar esta pasta', en: 'Use this folder' },
   'server.stepNodeCheck': { pt: 'Verificando Node.js no host', en: 'Checking Node.js on host' },

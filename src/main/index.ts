@@ -157,16 +157,25 @@ async function buildEngineList(): Promise<Engine[]> {
 
 async function addServerEngine(cfg: ServerEngineConfig & { url: string }): Promise<Engine> {
   const servers = await loadServerConfigs()
-  // Dedupe por url (reconectar o mesmo host atualiza a entrada em vez de duplicar).
-  const existing = servers.find((s) => s.url === cfg.url || (cfg.id && s.id === cfg.id))
+  // Dedup por sshHost — é o que identifica unicamente a engine (a url muda toda vez porque
+  // a porta do tunnel SSH é livre/ephemeral, então deduplicar por url criava entry nova a
+  // cada conexão). Fallback pra id explícito (relink após perda de state) e por último pra
+  // url (caso o config tenha vindo sem sshHost — env override DECKY_REMOTE_WS_URL, etc).
+  const existing = servers.find((s) =>
+    cfg.sshHost && s.sshHost
+      ? s.sshHost === cfg.sshHost
+      : cfg.id && s.id === cfg.id
+        ? true
+        : s.url === cfg.url
+  )
   const engine: ServerEngineConfig = {
     id: existing?.id ?? cfg.id ?? `srv-${crypto.randomUUID().slice(0, 8)}`,
     kind: 'server',
     label: cfg.label || hostLabelFromUrl(cfg.url),
     url: cfg.url,
     token: cfg.token,
-    sshHost: cfg.sshHost,
-    sshIdentity: cfg.sshIdentity
+    sshHost: cfg.sshHost ?? existing?.sshHost,
+    sshIdentity: cfg.sshIdentity ?? existing?.sshIdentity
   }
   const next = existing
     ? servers.map((s) => (s.id === engine.id ? engine : s))

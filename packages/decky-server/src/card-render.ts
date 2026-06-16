@@ -216,6 +216,35 @@ const HEAD_CLOSE_RE = /<\/head\s*>/i
 const HEAD_OPEN_RE = /<head\b[^>]*>/i
 const HTML_OPEN_RE = /<html\b[^>]*>/i
 
+// WS server URL (set by decky-server startup) so card-protocol can inject `window.__deckyWsUrl`
+// into served HTML — lets the bridge connect even on `card://` origins where deriving from
+// window.location is impossible.
+let _wsUrl: string | null = null
+export function setCardBridgeWsUrl(url: string | null): void {
+  _wsUrl = url
+}
+
+// Inject bootstrap globals (cardId from the request pathname, wsUrl if known) into <head> so
+// the bridge connects to the right server and identifies its card. Idempotent — checks for the
+// marker comment before re-injecting.
+const BOOTSTRAP_MARKER = '<!-- decky-bridge-bootstrap -->'
+export function injectBridgeBootstrap(html: string, cardId: string): string {
+  if (html.includes(BOOTSTRAP_MARKER)) return html
+  const safeId = cardId.replace(/[<>&"'\\]/g, '')
+  const wsLine = _wsUrl ? `window.__deckyWsUrl=${JSON.stringify(_wsUrl)};` : ''
+  const bootstrap = `${BOOTSTRAP_MARKER}\n<script>window.__deckyCardId=${JSON.stringify(safeId)};${wsLine}</script>\n`
+  if (HEAD_CLOSE_RE.test(html)) {
+    return html.replace(HEAD_CLOSE_RE, `${bootstrap}$&`)
+  }
+  if (HEAD_OPEN_RE.test(html)) {
+    return html.replace(HEAD_OPEN_RE, `$&${bootstrap}`)
+  }
+  if (HTML_OPEN_RE.test(html)) {
+    return html.replace(HTML_OPEN_RE, `$&<head>${bootstrap}</head>`)
+  }
+  return `<head>${bootstrap}</head>` + html
+}
+
 export function injectDefaultCss(html: string): string {
   if (HAS_THEME_RE.test(html)) return html
   const linkTag = `<link rel="stylesheet" href="${DEFAULT_CSS_PATH}">`
@@ -459,6 +488,49 @@ const FLOW_JS =
     // Also: any resize/scroll of the page repositions edges relative to container.
     const ro = new ResizeObserver(updateEdges);
     ro.observe(container);
+
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      function setNodeActive(id, active) {
+        const el = nodeEls.get(id);
+        if (!el) return false;
+        if (active) el.classList.add('active');
+        else el.classList.remove('active');
+        return true;
+      }
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'flow',
+        ops: {
+          setActive: (args) => {
+            const a = args || {};
+            if (!a.id) throw new Error('setActive: id required');
+            const active = a.active !== false;
+            if (!setNodeActive(a.id, active)) throw new Error('setActive: node not found: ' + a.id);
+            return { ok: true };
+          },
+          pulseFor: (args) => {
+            const a = args || {};
+            if (!a.id) throw new Error('pulseFor: id required');
+            const ms = typeof a.ms === 'number' && a.ms > 0 ? a.ms : 2000;
+            if (!setNodeActive(a.id, true)) throw new Error('pulseFor: node not found: ' + a.id);
+            return new Promise((resolve) => {
+              setTimeout(() => { setNodeActive(a.id, false); resolve({ ok: true, ms }); }, ms);
+            });
+          }
+        },
+        getters: {
+          nodes: () => nodes.map((n) => {
+            const pos = nodeState.get(n.id);
+            return { ...n, position: pos ? { x: pos.x, y: pos.y } : n.position };
+          }),
+          edges: () => edges.slice(),
+          positions: () => {
+            const out = {};
+            for (const [id, p] of nodeState.entries()) out[id] = { x: p.x, y: p.y };
+            return out;
+          }
+        }
+      });
+    }
   }
 
   function initAll() {
@@ -496,9 +568,8 @@ const CHECKLIST_JS =
   h.injectOnce('checklist', CSS);
 
   function render(container, spec) {
-    const items = Array.isArray(spec.items) ? spec.items : [];
+    const items = Array.isArray(spec.items) ? spec.items.slice() : [];
     const key = spec.id ? 'dk-checklist:' + spec.id : null;
-    // Load persisted overrides (id -> bool). If no widget id, no persistence.
     let saved = {};
     if (key) {
       try { saved = JSON.parse(localStorage.getItem(key) || '{}'); } catch { saved = {}; }
@@ -511,37 +582,731 @@ const CHECKLIST_JS =
       if (!key) return;
       localStorage.setItem(key, JSON.stringify(saved));
     }
-    for (const it of items) {
+
+    // Per-item handles so external ops (AI driving) can mutate items by id.
+    const handles = new Map();
+
+    function buildItem(it) {
       const li = document.createElement('li');
       const id = it.id;
-      const checked = id && id in saved ? !!saved[id] : !!it.checked;
-      if (checked) li.classList.add('done');
+      const startChecked = id && id in saved ? !!saved[id] : !!it.checked;
+      if (startChecked) li.classList.add('done');
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = checked;
+      cb.checked = startChecked;
       const lbl = document.createElement('span');
       lbl.className = 'dk-cl-label';
-      // Permite markdown leve (backticks → <code>). Bem básico, suficiente pros itens reais.
       const html = (it.label || '').replace(/\`([^\`]+)\`/g, '<code>$1</code>');
       lbl.innerHTML = html;
       li.appendChild(cb);
       li.appendChild(lbl);
       ul.appendChild(li);
-      const toggle = (next) => {
+      const setChecked = (next) => {
         cb.checked = next;
         if (next) li.classList.add('done'); else li.classList.remove('done');
         if (id) { saved[id] = next; persist(); }
       };
       li.addEventListener('click', (e) => {
         if (e.target === cb) return;
-        toggle(!cb.checked);
+        setChecked(!cb.checked);
       });
-      cb.addEventListener('change', () => toggle(cb.checked));
+      cb.addEventListener('change', () => setChecked(cb.checked));
+      if (id) handles.set(id, { setChecked, getChecked: () => cb.checked });
+    }
+
+    for (const it of items) buildItem(it);
+
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'checklist',
+        ops: {
+          toggle: (args) => {
+            const a = args || {};
+            if (!a.id) throw new Error('toggle: id required');
+            const h = handles.get(a.id);
+            if (!h) throw new Error('toggle: item not found: ' + a.id);
+            const next = !h.getChecked();
+            h.setChecked(next);
+            return { ok: true, checked: next };
+          },
+          check: (args) => {
+            const a = args || {};
+            if (!a.id) throw new Error('check: id required');
+            const h = handles.get(a.id);
+            if (!h) throw new Error('check: item not found: ' + a.id);
+            const next = a.checked !== false;
+            h.setChecked(next);
+            return { ok: true, checked: next };
+          },
+          setItems: (args) => {
+            const a = args || {};
+            if (!Array.isArray(a.items)) throw new Error('setItems: items[] required');
+            // Wipe + rebuild — preserves persistence per id since saved[] is keyed by id.
+            ul.innerHTML = '';
+            handles.clear();
+            for (const it of a.items) buildItem(it);
+            return { ok: true, count: a.items.length };
+          }
+        },
+        getters: {
+          items: () => Array.from(handles.entries()).map(([id, h]) => ({ id, checked: h.getChecked() })),
+          checked: () => Array.from(handles.entries()).filter(([, h]) => h.getChecked()).map(([id]) => id)
+        }
+      });
     }
   }
 
   function initAll() {
     document.querySelectorAll('[data-decky-checklist]').forEach((el) => {
+      if (el.dataset.deckyInit) return;
+      el.dataset.deckyInit = '1';
+      const spec = h.parseSpec(el);
+      render(el, spec);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAll);
+  } else {
+    initAll();
+  }
+})();
+`
+
+const MATRIX_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  const CSS = \`
+    .dk-matrix { position: relative; margin: 1em 0; overflow-x: auto; }
+    .dk-matrix .dk-matrix-empty { padding: 12px; border: 1px dashed var(--border);
+      border-radius: 6px; color: var(--text-3); font: 12px var(--mono); text-align: center; }
+    .dk-matrix table { border-collapse: separate; border-spacing: 0; width: 100%;
+      font-size: 13px; background: var(--bg-1); border: 1px solid var(--border);
+      border-radius: 8px; overflow: hidden; }
+    .dk-matrix th, .dk-matrix td { padding: 8px 10px; text-align: center;
+      border-bottom: 1px solid var(--border); }
+    .dk-matrix tr:last-child th, .dk-matrix tr:last-child td { border-bottom: none; }
+    .dk-matrix .dk-corner { background: var(--bg-0); text-align: left !important;
+      font-weight: 500; color: var(--text-3); font-size: 11.5px;
+      text-transform: uppercase; letter-spacing: 0.04em; min-width: 160px; }
+    .dk-matrix .dk-th-opt { font-weight: 600; color: var(--text-1);
+      background: var(--bg-0); border-left: 1px solid var(--border); }
+    .dk-matrix .dk-th-opt.dk-winner { color: var(--accent); }
+    .dk-matrix .dk-th-crit { text-align: left !important; font-weight: 500; color: var(--text-1); }
+    .dk-matrix .dk-crit-label { display: inline-block; margin-right: 8px; }
+    .dk-matrix .dk-weight { display: inline-flex; align-items: center; gap: 2px;
+      padding: 1px 4px; border-radius: 4px; background: var(--bg-0);
+      transition: background 200ms; }
+    .dk-matrix .dk-weight.dk-flash { animation: dk-mtx-flash 600ms ease-out; }
+    .dk-matrix .dk-weight::before { content: 'peso'; font-size: 10px;
+      color: var(--text-3); font-family: var(--mono); margin-right: 3px; }
+    .dk-matrix .dk-weight input { width: 32px; background: transparent; border: none;
+      color: var(--accent); font: 600 12px var(--mono); text-align: center;
+      -moz-appearance: textfield; appearance: textfield; }
+    .dk-matrix .dk-weight input::-webkit-outer-spin-button,
+    .dk-matrix .dk-weight input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .dk-matrix .dk-weight input:focus { outline: none; }
+    .dk-matrix .dk-cell { border-left: 1px solid var(--border); transition: background 200ms; }
+    .dk-matrix .dk-cell.dk-flash { animation: dk-mtx-flash 600ms ease-out; }
+    .dk-matrix .dk-cell input { width: 50px; background: transparent;
+      border: 1px solid transparent; border-radius: 3px; color: var(--text-1);
+      font: 13px var(--mono); text-align: center; padding: 2px 4px;
+      -moz-appearance: textfield; appearance: textfield; }
+    .dk-matrix .dk-cell input::-webkit-outer-spin-button,
+    .dk-matrix .dk-cell input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .dk-matrix .dk-cell input:hover { border-color: var(--border); }
+    .dk-matrix .dk-cell input:focus { outline: none; border-color: var(--accent); background: var(--bg-0); }
+    .dk-matrix .dk-cell input::placeholder { color: var(--text-3); }
+    .dk-matrix tfoot th, .dk-matrix tfoot td { background: var(--bg-0);
+      border-top: 2px solid var(--border); font-weight: 600; }
+    .dk-matrix .dk-th-totals { text-align: left !important; color: var(--text-3);
+      font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .dk-matrix .dk-total { border-left: 1px solid var(--border); color: var(--text-1);
+      font: 14px var(--mono); transition: color 250ms; }
+    .dk-matrix .dk-total.dk-winner { color: var(--accent); }
+    .dk-matrix .dk-trophy { display: inline-block; margin-left: 4px;
+      animation: dk-mtx-trophy 1.8s ease-in-out infinite; }
+    .dk-matrix.dk-readonly .dk-cell input, .dk-matrix.dk-readonly .dk-weight input {
+      cursor: not-allowed; color: var(--text-2); }
+    .dk-matrix .dk-ai-badge { position: absolute; top: 8px; right: 10px;
+      font: 600 9.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--accent); background: rgba(138,92,246,0.12);
+      border: 1px solid rgba(138,92,246,0.35); border-radius: 3px;
+      padding: 2px 6px; z-index: 2; cursor: help; }
+    @keyframes dk-mtx-flash {
+      0% { background: rgba(138,92,246,0.4); }
+      100% { background: rgba(138,92,246,0); } }
+    @keyframes dk-mtx-trophy {
+      0%,100% { transform: translateY(0); }
+      50% { transform: translateY(-2px); } }
+  \`;
+  h.injectOnce('matrix', CSS);
+
+  function clampScore(n) {
+    if (!Number.isFinite(n)) return 0;
+    if (n < 0) return 0;
+    if (n > 10) return 10;
+    return Math.round(n * 10) / 10;
+  }
+  function clampWeight(n) {
+    if (!Number.isFinite(n)) return 1;
+    if (n < 1) return 1;
+    if (n > 10) return 10;
+    return Math.round(n);
+  }
+  function cellKey(o, c) { return o + '.' + c; }
+
+  function render(container, spec) {
+    const readonly = spec.readonly === true;
+    container.className = 'dk-matrix' + (readonly ? ' dk-readonly' : '');
+    container.innerHTML = '';
+    if (readonly) {
+      const badge = document.createElement('div');
+      badge.className = 'dk-ai-badge';
+      badge.title = 'Read-only: só a AI pode mutar';
+      badge.textContent = 'AI-only';
+      container.appendChild(badge);
+    }
+
+    const options = Array.isArray(spec.options) ? spec.options.filter((o) => o && typeof o.id === 'string' && typeof o.label === 'string') : [];
+    const criteria = (Array.isArray(spec.criteria) ? spec.criteria : [])
+      .filter((c) => c && typeof c.id === 'string' && typeof c.label === 'string')
+      .map((c) => ({ ...c, weight: clampWeight(typeof c.weight === 'number' ? c.weight : 3) }));
+
+    // Inputs indexed for external op lookups (AI driving via card_invoke).
+    const cellInputs = new Map(); // cellKey → <input>
+    const weightInputs = new Map(); // criterionId → <input>
+    const wrappers = new Map(); // for flash: 'w:<critId>' → wrap, cellKey → td
+
+    if (options.length === 0 || criteria.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'dk-matrix-empty';
+      empty.textContent = 'add options + criteria';
+      container.appendChild(empty);
+      return;
+    }
+
+    // Persistence (per spec.id): merges over baseline scores.
+    const key = spec.id ? 'dk-matrix:' + spec.id : null;
+    let savedScores = {};
+    let savedWeights = {};
+    if (key && !readonly) {
+      try {
+        const raw = JSON.parse(localStorage.getItem(key) || '{}');
+        savedScores = raw.scores || {};
+        savedWeights = raw.weights || {};
+      } catch (e) { /* ignore */ }
+    }
+    const scores = Object.assign({}, spec.scores || {}, savedScores);
+    for (const c of criteria) {
+      if (savedWeights[c.id] !== undefined) c.weight = clampWeight(savedWeights[c.id]);
+    }
+    function persist() {
+      if (!key) return;
+      const ws = {};
+      for (const c of criteria) ws[c.id] = c.weight;
+      localStorage.setItem(key, JSON.stringify({ scores, weights: ws }));
+    }
+
+    const table = document.createElement('table');
+    container.appendChild(table);
+
+    // Header.
+    const thead = document.createElement('thead');
+    const trh = document.createElement('tr');
+    const corner = document.createElement('th');
+    corner.className = 'dk-corner';
+    corner.textContent = 'Critério (peso)';
+    trh.appendChild(corner);
+    const optHeaders = new Map();
+    for (const o of options) {
+      const th = document.createElement('th');
+      th.className = 'dk-th-opt';
+      th.textContent = o.label;
+      trh.appendChild(th);
+      optHeaders.set(o.id, th);
+    }
+    thead.appendChild(trh);
+    table.appendChild(thead);
+
+    // Body.
+    const tbody = document.createElement('tbody');
+    table.appendChild(tbody);
+    for (const c of criteria) {
+      const tr = document.createElement('tr');
+      const thc = document.createElement('th');
+      thc.className = 'dk-th-crit';
+      const lbl = document.createElement('span');
+      lbl.className = 'dk-crit-label';
+      lbl.textContent = c.label;
+      thc.appendChild(lbl);
+      const wrap = document.createElement('span');
+      wrap.className = 'dk-weight';
+      const wInput = document.createElement('input');
+      wInput.type = 'number';
+      wInput.min = '1'; wInput.max = '10'; wInput.step = '1';
+      wInput.value = String(c.weight);
+      wInput.readOnly = readonly;
+      wInput.setAttribute('aria-label', 'peso de ' + c.label);
+      wInput.addEventListener('input', () => {
+        if (readonly) return;
+        const n = Number(wInput.value);
+        if (!Number.isFinite(n)) return;
+        c.weight = clampWeight(n);
+        wInput.value = String(c.weight);
+        flash(wrap);
+        recompute();
+        persist();
+      });
+      wrap.appendChild(wInput);
+      thc.appendChild(wrap);
+      tr.appendChild(thc);
+      weightInputs.set(c.id, wInput);
+      wrappers.set('w:' + c.id, wrap);
+      for (const o of options) {
+        const td = document.createElement('td');
+        td.className = 'dk-cell';
+        const cInput = document.createElement('input');
+        cInput.type = 'number';
+        cInput.min = '0'; cInput.max = '10'; cInput.step = '0.5';
+        const k = cellKey(o.id, c.id);
+        const v = scores[k];
+        cInput.value = v === undefined ? '' : String(v);
+        cInput.placeholder = '—';
+        cInput.readOnly = readonly;
+        cInput.setAttribute('aria-label', 'nota de ' + o.label + ' em ' + c.label);
+        cInput.addEventListener('input', () => {
+          if (readonly) return;
+          const raw = cInput.value;
+          if (raw === '') { delete scores[k]; }
+          else {
+            const n = Number(raw);
+            if (!Number.isFinite(n)) return;
+            scores[k] = clampScore(n);
+          }
+          flash(td);
+          recompute();
+          persist();
+        });
+        td.appendChild(cInput);
+        tr.appendChild(td);
+        cellInputs.set(k, cInput);
+        wrappers.set(k, td);
+      }
+      tbody.appendChild(tr);
+    }
+
+    // Footer (totals).
+    const tfoot = document.createElement('tfoot');
+    const trf = document.createElement('tr');
+    const thTot = document.createElement('th');
+    thTot.className = 'dk-th-totals';
+    thTot.textContent = 'Score ponderado';
+    trf.appendChild(thTot);
+    const totalCells = new Map();
+    const trophyEls = new Map();
+    for (const o of options) {
+      const th = document.createElement('th');
+      th.className = 'dk-total';
+      const val = document.createElement('span');
+      val.className = 'dk-total-value';
+      val.textContent = '0.0';
+      th.appendChild(val);
+      const trophy = document.createElement('span');
+      trophy.className = 'dk-trophy';
+      trophy.textContent = '🏆';
+      trophy.style.display = 'none';
+      th.appendChild(trophy);
+      trf.appendChild(th);
+      totalCells.set(o.id, val);
+      trophyEls.set(o.id, { th, trophy });
+    }
+    tfoot.appendChild(trf);
+    table.appendChild(tfoot);
+
+    function recompute() {
+      const totals = {};
+      for (const o of options) {
+        let sum = 0;
+        for (const c of criteria) {
+          const s = scores[cellKey(o.id, c.id)];
+          if (typeof s === 'number') sum += s * c.weight;
+        }
+        totals[o.id] = Math.round(sum * 10) / 10;
+      }
+      let winnerId = null;
+      let max = -Infinity;
+      for (const o of options) {
+        if (totals[o.id] > max) { max = totals[o.id]; winnerId = o.id; }
+      }
+      for (const o of options) {
+        const cell = totalCells.get(o.id);
+        cell.textContent = totals[o.id].toFixed(1);
+        const isWin = o.id === winnerId && options.length > 1;
+        const oh = optHeaders.get(o.id);
+        const { th, trophy } = trophyEls.get(o.id);
+        if (isWin) { oh.classList.add('dk-winner'); th.classList.add('dk-winner'); trophy.style.display = ''; }
+        else { oh.classList.remove('dk-winner'); th.classList.remove('dk-winner'); trophy.style.display = 'none'; }
+      }
+    }
+    recompute();
+
+    function flash(el) {
+      el.classList.remove('dk-flash');
+      void el.offsetWidth;
+      el.classList.add('dk-flash');
+      setTimeout(() => el.classList.remove('dk-flash'), 600);
+    }
+
+    // Register imperative ops with the bridge — only when the spec has an id.
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      const totals = () => {
+        const t = {};
+        for (const o of options) {
+          let sum = 0;
+          for (const c of criteria) {
+            const s = scores[cellKey(o.id, c.id)];
+            if (typeof s === 'number') sum += s * c.weight;
+          }
+          t[o.id] = Math.round(sum * 10) / 10;
+        }
+        return t;
+      };
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'matrix',
+        ops: {
+          setScore: (args) => {
+            const a = args || {};
+            const oId = a.optionId, cId = a.criterionId;
+            if (!oId || !cId) throw new Error('setScore: optionId + criterionId required');
+            if (typeof a.value !== 'number') throw new Error('setScore: value (number) required');
+            const k = cellKey(oId, cId);
+            const v = clampScore(a.value);
+            scores[k] = v;
+            const inp = cellInputs.get(k);
+            if (inp) inp.value = String(v);
+            const td = wrappers.get(k);
+            if (td) flash(td);
+            recompute(); persist();
+            return { ok: true, value: v };
+          },
+          setWeight: (args) => {
+            const a = args || {};
+            if (!a.criterionId) throw new Error('setWeight: criterionId required');
+            if (typeof a.weight !== 'number') throw new Error('setWeight: weight required');
+            const w = clampWeight(a.weight);
+            const c = criteria.find((x) => x.id === a.criterionId);
+            if (!c) throw new Error('setWeight: criterion not found: ' + a.criterionId);
+            c.weight = w;
+            const inp = weightInputs.get(c.id);
+            if (inp) inp.value = String(w);
+            const wrap = wrappers.get('w:' + c.id);
+            if (wrap) flash(wrap);
+            recompute(); persist();
+            return { ok: true, weight: w };
+          }
+        },
+        getters: {
+          totals,
+          ranking: () => {
+            const t = totals();
+            return options.map((o) => o.id).sort((a, b) => (t[b] || 0) - (t[a] || 0));
+          },
+          winner: () => {
+            const t = totals();
+            const sorted = options.map((o) => o.id).sort((a, b) => (t[b] || 0) - (t[a] || 0));
+            return sorted[0] || null;
+          }
+        }
+      });
+    }
+  }
+
+  function initAll() {
+    document.querySelectorAll('[data-decky-matrix]').forEach((el) => {
+      if (el.dataset.deckyInit) return;
+      el.dataset.deckyInit = '1';
+      const spec = h.parseSpec(el);
+      render(el, spec);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAll);
+  } else {
+    initAll();
+  }
+})();
+`
+
+const ROADMAP_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  const CSS = \`
+    .dk-roadmap { position: relative; margin: 1em 0; padding: 14px;
+      background: var(--bg-1); border: 1px solid var(--border); border-radius: 8px; }
+    .dk-roadmap .dk-rm-empty { color: var(--text-3); font: 12px var(--mono); text-align: center; }
+    .dk-roadmap .dk-rm-progress { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .dk-roadmap .dk-rm-track { flex: 1; height: 6px; background: var(--bg-0);
+      border-radius: 3px; overflow: hidden; }
+    .dk-roadmap .dk-rm-fill { height: 100%;
+      background: linear-gradient(90deg, var(--accent), rgba(138,92,246,0.6));
+      border-radius: 3px; transition: width 400ms ease; }
+    .dk-roadmap .dk-rm-pct { font: 11.5px var(--mono); color: var(--text-3); white-space: nowrap; }
+    .dk-roadmap .dk-rm-timeline { display: flex; align-items: stretch; gap: 0;
+      overflow-x: auto; padding: 8px 4px 4px 4px; }
+    .dk-roadmap .dk-rm-ms { position: relative; display: flex; flex-direction: column;
+      align-items: center; text-align: center; min-width: 120px; padding: 6px 10px 10px 10px;
+      border-radius: 6px; transition: background 200ms; }
+    .dk-roadmap .dk-rm-ms.dk-flash { animation: dk-rm-flash 600ms ease-out; }
+    .dk-roadmap .dk-rm-conn { position: absolute; left: -2px; top: 22px; width: 40px;
+      height: 2px; background: var(--border); transform: translateX(-100%); }
+    .dk-roadmap .dk-rm-ms.dk-status-done .dk-rm-conn { background: var(--accent); }
+    .dk-roadmap .dk-rm-btn { background: transparent; border: none; cursor: pointer;
+      padding: 0; margin-bottom: 6px; }
+    .dk-roadmap .dk-rm-icon { font-size: 22px; line-height: 1;
+      display: inline-block; transition: transform 200ms; }
+    .dk-roadmap .dk-rm-ms.dk-status-in_progress .dk-rm-icon {
+      animation: dk-rm-pulse 1.6s ease-in-out infinite; }
+    .dk-roadmap .dk-rm-btn:hover .dk-rm-icon { transform: scale(1.15); }
+    .dk-roadmap.dk-readonly .dk-rm-btn { cursor: not-allowed; }
+    .dk-roadmap.dk-readonly .dk-rm-btn:hover .dk-rm-icon { transform: none; }
+    .dk-roadmap .dk-rm-label { font: 600 13px var(--sans); color: var(--text-1);
+      margin-bottom: 4px; line-height: 1.3; }
+    .dk-roadmap .dk-rm-ms.dk-status-done .dk-rm-label { opacity: 0.7;
+      text-decoration: line-through; text-decoration-color: var(--text-3); }
+    .dk-roadmap .dk-rm-ms.dk-blocked .dk-rm-label { color: var(--text-3); }
+    .dk-roadmap .dk-rm-date { font: 10.5px var(--mono); color: var(--text-3);
+      text-transform: uppercase; letter-spacing: 0.04em; }
+    .dk-roadmap .dk-rm-deps { margin-top: 6px; font-size: 10.5px; color: var(--text-3);
+      font-style: italic; max-width: 140px; line-height: 1.3; }
+    .dk-roadmap .dk-ai-badge { position: absolute; top: 8px; right: 10px;
+      font: 600 9.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--accent); background: rgba(138,92,246,0.12);
+      border: 1px solid rgba(138,92,246,0.35); border-radius: 3px;
+      padding: 2px 6px; z-index: 2; cursor: help; }
+    @keyframes dk-rm-flash {
+      0% { background: rgba(138,92,246,0.32); }
+      100% { background: rgba(138,92,246,0); } }
+    @keyframes dk-rm-pulse {
+      0%,100% { transform: scale(1); filter: drop-shadow(0 0 0 rgba(138,92,246,0)); }
+      50% { transform: scale(1.12); filter: drop-shadow(0 0 6px rgba(138,92,246,0.65)); } }
+  \`;
+  h.injectOnce('roadmap', CSS);
+
+  const STATUSES = ['todo', 'in_progress', 'done'];
+  function isStatus(s) { return s === 'todo' || s === 'in_progress' || s === 'done'; }
+  function cycle(s) { return STATUSES[(STATUSES.indexOf(s) + 1) % STATUSES.length]; }
+  function statusIcon(s, blocked) {
+    if (blocked) return '⛔';
+    if (s === 'done') return '✅';
+    if (s === 'in_progress') return '🟡';
+    return '⏳';
+  }
+  function shortDate(d) {
+    if (!d) return '';
+    const parts = String(d).split('-');
+    if (parts.length !== 3) return d;
+    const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    const m = parseInt(parts[1], 10) - 1;
+    return parts[2] + ' ' + (months[m] || parts[1]) + '/' + parts[0].slice(2);
+  }
+
+  function render(container, spec) {
+    const readonly = spec.readonly === true;
+    container.className = 'dk-roadmap' + (readonly ? ' dk-readonly' : '');
+    container.innerHTML = '';
+    if (readonly) {
+      const badge = document.createElement('div');
+      badge.className = 'dk-ai-badge';
+      badge.title = 'Read-only: só a AI pode mutar';
+      badge.textContent = 'AI-only';
+      container.appendChild(badge);
+    }
+
+    const milestones = (Array.isArray(spec.milestones) ? spec.milestones : [])
+      .filter((m) => m && typeof m.id === 'string' && typeof m.label === 'string')
+      .map((m) => ({
+        id: m.id, label: m.label,
+        date: typeof m.date === 'string' ? m.date : undefined,
+        status: isStatus(m.status) ? m.status : 'todo',
+        deps: Array.isArray(m.deps) ? m.deps.filter((d) => typeof d === 'string') : []
+      }));
+    if (milestones.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'dk-rm-empty';
+      empty.textContent = 'no milestones';
+      container.appendChild(empty);
+      return;
+    }
+
+    // Persistence (status overrides by milestone id).
+    const key = spec.id ? 'dk-roadmap:' + spec.id : null;
+    let saved = {};
+    if (key && !readonly) {
+      try { saved = JSON.parse(localStorage.getItem(key) || '{}'); } catch { saved = {}; }
+    }
+    for (const m of milestones) {
+      if (saved[m.id] && isStatus(saved[m.id])) m.status = saved[m.id];
+    }
+    function persist() {
+      if (!key) return;
+      const s = {};
+      for (const m of milestones) s[m.id] = m.status;
+      localStorage.setItem(key, JSON.stringify(s));
+    }
+
+    // Sort by date.
+    const sorted = milestones.slice().sort((a, b) => {
+      if (a.date && b.date) return a.date.localeCompare(b.date);
+      if (a.date) return -1;
+      if (b.date) return 1;
+      return 0;
+    });
+    const labelById = {};
+    for (const m of milestones) labelById[m.id] = m.label;
+
+    // Progress header.
+    const prog = document.createElement('div');
+    prog.className = 'dk-rm-progress';
+    const track = document.createElement('div');
+    track.className = 'dk-rm-track';
+    const fill = document.createElement('div');
+    fill.className = 'dk-rm-fill';
+    track.appendChild(fill);
+    prog.appendChild(track);
+    const pct = document.createElement('div');
+    pct.className = 'dk-rm-pct';
+    prog.appendChild(pct);
+    container.appendChild(prog);
+
+    // Timeline.
+    const tl = document.createElement('div');
+    tl.className = 'dk-rm-timeline';
+    container.appendChild(tl);
+
+    const msEls = new Map();
+    const iconEls = new Map();
+    sorted.forEach((m, idx) => {
+      const div = document.createElement('div');
+      div.className = 'dk-rm-ms dk-status-' + m.status;
+      if (idx > 0) {
+        const conn = document.createElement('div');
+        conn.className = 'dk-rm-conn';
+        div.appendChild(conn);
+      }
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'dk-rm-btn';
+      btn.disabled = readonly;
+      const icon = document.createElement('span');
+      icon.className = 'dk-rm-icon';
+      btn.appendChild(icon);
+      div.appendChild(btn);
+      const lbl = document.createElement('div');
+      lbl.className = 'dk-rm-label';
+      lbl.textContent = m.label;
+      div.appendChild(lbl);
+      if (m.date) {
+        const dt = document.createElement('div');
+        dt.className = 'dk-rm-date';
+        dt.textContent = shortDate(m.date);
+        div.appendChild(dt);
+      }
+      if (m.deps.length > 0) {
+        const deps = document.createElement('div');
+        deps.className = 'dk-rm-deps';
+        deps.textContent = '← ' + m.deps.map((d) => labelById[d] || d).join(', ');
+        div.appendChild(deps);
+      }
+      btn.addEventListener('click', () => {
+        if (readonly) return;
+        m.status = cycle(m.status);
+        flash(div);
+        update();
+        persist();
+      });
+      tl.appendChild(div);
+      msEls.set(m.id, div);
+      iconEls.set(m.id, icon);
+    });
+
+    function update() {
+      const doneIds = new Set();
+      let done = 0;
+      for (const m of milestones) { if (m.status === 'done') { doneIds.add(m.id); done++; } }
+      const total = milestones.length;
+      const percent = total === 0 ? 0 : Math.round((done / total) * 100);
+      fill.style.width = percent + '%';
+      pct.textContent = done + '/' + total + ' (' + percent + '%)';
+      for (const m of milestones) {
+        const el = msEls.get(m.id);
+        const icon = iconEls.get(m.id);
+        const blocked = m.status === 'todo' && m.deps.some((d) => !doneIds.has(d));
+        el.className = 'dk-rm-ms dk-status-' + m.status + (blocked ? ' dk-blocked' : '');
+        icon.textContent = statusIcon(m.status, blocked);
+        const tip = readonly
+          ? 'Status: ' + m.status + (blocked ? ' (deps pendentes)' : '') + ' — read-only'
+          : 'Status: ' + m.status + (blocked ? ' (deps pendentes)' : '') + ' — clique pra alternar';
+        el.querySelector('.dk-rm-btn').title = tip;
+      }
+    }
+    update();
+
+    function flash(el) {
+      el.classList.remove('dk-flash');
+      void el.offsetWidth;
+      el.classList.add('dk-flash');
+      setTimeout(() => el.classList.remove('dk-flash'), 600);
+    }
+
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'roadmap',
+        ops: {
+          setStatus: (args) => {
+            const a = args || {};
+            if (!a.id) throw new Error('setStatus: id required');
+            if (!isStatus(a.status)) throw new Error('setStatus: status must be todo|in_progress|done');
+            const m = milestones.find((x) => x.id === a.id);
+            if (!m) throw new Error('setStatus: milestone not found: ' + a.id);
+            m.status = a.status;
+            const el = msEls.get(a.id);
+            if (el) flash(el);
+            update(); persist();
+            return { ok: true, status: a.status };
+          },
+          setDate: (args) => {
+            const a = args || {};
+            if (!a.id || !a.date) throw new Error('setDate: id + date required');
+            const m = milestones.find((x) => x.id === a.id);
+            if (!m) throw new Error('setDate: milestone not found: ' + a.id);
+            m.date = a.date;
+            // Date updates affect sort order; for MVP just re-render to keep timeline consistent.
+            render(container, { ...spec, milestones: milestones.map((mm) => ({ ...mm })) });
+            return { ok: true };
+          }
+        },
+        getters: {
+          milestones: () => milestones.slice(),
+          progress: () => {
+            const done = milestones.filter((m) => m.status === 'done').length;
+            const total = milestones.length;
+            return { done, total, percent: total === 0 ? 0 : Math.round((done / total) * 100) };
+          },
+          nextMilestone: () => {
+            const doneIds = new Set(milestones.filter((m) => m.status === 'done').map((m) => m.id));
+            return sorted.find((m) => m.status === 'todo' && m.deps.every((d) => doneIds.has(d))) || null;
+          }
+        }
+      });
+    }
+  }
+
+  function initAll() {
+    document.querySelectorAll('[data-decky-roadmap]').forEach((el) => {
       if (el.dataset.deckyInit) return;
       el.dataset.deckyInit = '1';
       const spec = h.parseSpec(el);
@@ -618,13 +1383,136 @@ const MERMAID_JS =
 })();
 `
 
+// MCP widget bridge — opens a WS to the decky-server, listens for `widget:call` broadcasts,
+// dispatches to widgets registered via `window.__deckyRegisterWidget(widgetId, {type, ops, getters})`,
+// and sends back `widget:call-reply`. Only handles calls whose cardId matches THIS page's cardId
+// (derived from window.location.pathname). The React renderer is on the same WS channel and
+// races for the reply — first reply wins, both honor reqId. Vanilla widgets and React widgets
+// have distinct (cardId, widgetId) keys in practice, so no real conflict.
+//
+// `window.__deckyCardId` may be set by the server when known (preferred). Falls back to deriving
+// from the URL: /path/to/foo.html → "path/to/foo".
+const BRIDGE_JS = `
+(() => {
+  if (window.__deckyBridge) return;
+  const registry = new Map(); // widgetId → { type, ops, getters }
+
+  function deriveCardId() {
+    if (typeof window.__deckyCardId === 'string') return window.__deckyCardId;
+    try {
+      const p = window.location.pathname.replace(/^\\/+/, '').replace(/\\.html?$/i, '');
+      return decodeURIComponent(p);
+    } catch (e) { return ''; }
+  }
+  const cardId = deriveCardId();
+
+  function resolveWsUrl() {
+    if (typeof window.__deckyWsUrl === 'string') return window.__deckyWsUrl;
+    const proto = window.location.protocol;
+    if (proto === 'http:' || proto === 'https:') {
+      return (proto === 'https:' ? 'wss://' : 'ws://') + window.location.host;
+    }
+    // Fallback for card:// origins — assume default preview port. Server overrides via injection.
+    return 'ws://127.0.0.1:6790';
+  }
+
+  let ws = null;
+  let reconnectTimer = null;
+  function connect() {
+    const url = resolveWsUrl();
+    if (!url) return;
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      scheduleReconnect();
+      return;
+    }
+    ws.addEventListener('message', (ev) => {
+      let msg = null;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (!msg || msg.v !== 1 || msg.kind !== 'widget:call') return;
+      const p = msg.args || {};
+      // Filter: only respond to calls targeting THIS card. Empty cardId in payload = "any".
+      if (p.cardId && p.cardId !== cardId) return;
+      handle(p);
+    });
+    ws.addEventListener('close', () => { ws = null; scheduleReconnect(); });
+    ws.addEventListener('error', () => { try { ws && ws.close(); } catch {} });
+  }
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
+  }
+
+  function sendReply(reqId, result, error) {
+    if (!ws || ws.readyState !== 1) return;
+    const payload = { v: 1, kind: 'widget:call-reply', args: { reqId, result, error } };
+    try { ws.send(JSON.stringify(payload)); } catch {}
+  }
+
+  async function handle(p) {
+    const reqId = p.reqId;
+    try {
+      if (p.kind === 'list') {
+        const out = [];
+        for (const [widgetId, w] of registry.entries()) {
+          out.push({ cardId, widgetId, type: w.type });
+        }
+        return sendReply(reqId, out);
+      }
+      if (!p.widgetId) return sendReply(reqId, undefined, 'widgetId required');
+      const w = registry.get(p.widgetId);
+      if (!w) {
+        // Not ours — stay silent so the renderer side (if registered) can respond.
+        return;
+      }
+      if (p.kind === 'invoke') {
+        if (!p.op) return sendReply(reqId, undefined, 'op required');
+        const fn = w.ops && w.ops[p.op];
+        if (!fn) return sendReply(reqId, undefined, 'op not found: ' + p.op);
+        const r = await fn(p.args);
+        return sendReply(reqId, r);
+      }
+      if (p.kind === 'get') {
+        if (!p.key) return sendReply(reqId, undefined, 'key required');
+        const fn = w.getters && w.getters[p.key];
+        if (!fn) return sendReply(reqId, undefined, 'getter not found: ' + p.key);
+        const r = await fn();
+        return sendReply(reqId, r);
+      }
+      sendReply(reqId, undefined, 'unknown kind: ' + p.kind);
+    } catch (e) {
+      sendReply(reqId, undefined, (e && e.message) || String(e));
+    }
+  }
+
+  window.__deckyRegisterWidget = function (widgetId, info) {
+    if (!widgetId || !info) return () => {};
+    const entry = {
+      type: info.type || '',
+      ops: info.ops || {},
+      getters: info.getters || {}
+    };
+    registry.set(widgetId, entry);
+    return () => {
+      if (registry.get(widgetId) === entry) registry.delete(widgetId);
+    };
+  };
+  window.__deckyBridge = { cardId, registry };
+  connect();
+})();
+`
+
 // Virtual routes — paths served from inline strings, not from disk.
 const VIRTUAL_ROUTES: Record<string, { body: string; mime: string }> = {
+  '/__decky/widgets/bridge.js': { body: BRIDGE_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/flow.js': { body: FLOW_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/checklist.js': {
     body: CHECKLIST_JS,
     mime: 'text/javascript; charset=utf-8'
   },
+  '/__decky/widgets/matrix.js': { body: MATRIX_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/roadmap.js': { body: ROADMAP_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/mermaid.js': { body: MERMAID_JS, mime: 'text/javascript; charset=utf-8' },
   // Local marked bundle — replaces the old https://esm.sh/marked@12 import. The empty body
   // case (MARKED_JS load failed) is intentional: serves an empty module that throws on use,

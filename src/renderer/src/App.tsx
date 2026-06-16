@@ -19,7 +19,6 @@ import ConfirmEngineRemoveModal from './components/ConfirmEngineRemoveModal'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
 import type { PreviewSource, StashEntry, Engine } from '@decky/shared'
 import { LOCAL_ENGINE_ID } from '@decky/shared'
-import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
 import { bgUrlFor } from './lib/bg-images'
 import { t } from './lib/i18n'
 import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '@decky/shared'
@@ -391,7 +390,7 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
   }
   if (source.type === 'editor' || source.type === 'xlsx' || source.type === 'html') {
     if (source.title) return source.title
-    return source.path.split('/').pop() ?? source.path
+    return source.path ? source.path.split('/').pop() ?? source.path : 'html'
   }
   if (source.type === 'form') return source.spec.title ?? 'form'
   return fallback
@@ -402,6 +401,60 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
 // esm.sh and renders the markdown client-side inside `.md-body` (default.css already styles it).
 // Markdown stays as the raw text of a `<script type="text/markdown">` block (safer than a JS
 // string literal — only `</script>` would break out, not backticks/dollar signs).
+// Wrap inline HTML content for `preview_html` materialization. Accepts EITHER a full document
+// (starts with <!doctype or <html) — uses as-is — OR a body fragment, which we wrap in the
+// default mini-app scaffold (default.css + body padding). Also scans the content for
+// `data-decky-<name>` attributes and auto-appends `<script src="/__decky/widgets/<name>.js">`
+// before </body> so authors don't need to remember the boilerplate.
+const KNOWN_WIDGETS = new Set(['flow', 'checklist', 'matrix', 'roadmap', 'mermaid'])
+function injectWidgetScripts(html: string): string {
+  const seen = new Set<string>()
+  const re = /data-decky-([a-z]+)/g
+  let m
+  while ((m = re.exec(html)) !== null) {
+    const name = m[1]
+    if (KNOWN_WIDGETS.has(name)) seen.add(name)
+  }
+  if (seen.size === 0) return html
+  const tags: string[] = []
+  // Bridge first so widgets see window.__deckyRegisterWidget when they register.
+  if (!html.includes('/__decky/widgets/bridge.js')) {
+    tags.push('<script src="/__decky/widgets/bridge.js"></script>')
+  }
+  for (const name of seen) {
+    if (!html.includes(`/__decky/widgets/${name}.js`)) {
+      tags.push(`<script src="/__decky/widgets/${name}.js"></script>`)
+    }
+  }
+  if (tags.length === 0) return html
+  const block = '\n' + tags.join('\n') + '\n'
+  if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, `${block}</body>`)
+  return html + block
+}
+function wrapHtmlContent(content: string, title?: string): string {
+  const trimmed = content.trimStart()
+  const isFullDoc = /^<!doctype\b/i.test(trimmed) || /^<html\b/i.test(trimmed)
+  if (isFullDoc) return injectWidgetScripts(content)
+  const rawTitle = (title ?? '').trim()
+  const safeTitle = rawTitle.replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[ch] ?? ch)
+  const wrapped = `<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8" />
+<title>${safeTitle || 'Card'}</title>
+<link rel="stylesheet" href="/__decky/default.css">
+<style>
+  body { padding: 24px; margin: 0; }
+</style>
+</head>
+<body>
+${content}
+</body>
+</html>
+`
+  return injectWidgetScripts(wrapped)
+}
+
 function wrapMarkdownAsHtml(content: string, title?: string): string {
   // Prefer caller-provided title; else first markdown heading; else "Card".
   const headingMatch = content.match(/^#{1,6}\s+(.+?)\s*$/m)
@@ -464,6 +517,9 @@ function serializePreviewSource(src: PreviewSource, workspace: string | null): P
     return { type: 'xlsx', path: toWorkspaceRelative(src.path, workspace), title: src.title }
   }
   if (src.type === 'html') {
+    // Only path-backed html serializes; inline html content is post-materialization (not yet
+    // written to disk) — drop to 'none' to avoid losing content with no path to point at.
+    if (!src.path) return { type: 'none' }
     return {
       type: 'html',
       path: toWorkspaceRelative(src.path, workspace),
@@ -932,6 +988,18 @@ function App(): React.JSX.Element {
         const ownerWs = owner?.cwd
         if (source.type === 'markdown' && !source.path && ownerWs) {
           const html = wrapMarkdownAsHtml(source.content, source.title)
+          void window.deck.cards.write(ownerWs, target!, html, '.html').then((filePath) => {
+            apply(
+              filePath
+                ? { type: 'html', path: filePath, title: source.title }
+                : source
+            )
+            ack(filePath ?? undefined)
+          })
+        } else if (source.type === 'html' && !source.path && source.content && ownerWs) {
+          // Inline HTML (preview_html) — wrap if fragment, inject widget scripts, write to disk
+          // as a .html card. Path-backed html (preview_show on a .html) skips this branch.
+          const html = wrapHtmlContent(source.content, source.title)
           void window.deck.cards.write(ownerWs, target!, html, '.html').then((filePath) => {
             apply(
               filePath
@@ -1919,31 +1987,6 @@ function App(): React.JSX.Element {
           return changed ? next : prev
         })
       })
-    })
-  }, [])
-
-  // Dispatch widget RPC calls from main into the renderer-side widget registry. The bridge
-  // in main parks an HTTP response until reply() comes back — so the registry can throw,
-  // return a value, or resolve a Promise and we just forward the outcome.
-  useEffect(() => {
-    return window.deck.widget.onCall(async (msg) => {
-      try {
-        let result: unknown
-        if (msg.kind === 'invoke') {
-          result = await invokeWidget(msg.cardId ?? '', msg.widgetId ?? '', msg.op ?? '', msg.args)
-        } else if (msg.kind === 'get') {
-          result = getWidget(msg.cardId ?? '', msg.widgetId ?? '', msg.key ?? '')
-        } else {
-          // list — catalog of registered widget types + currently-mounted instances
-          result = { types: listWidgetTypes(), active: listActiveWidgets() }
-        }
-        window.deck.widget.reply({ reqId: msg.reqId, result })
-      } catch (err) {
-        window.deck.widget.reply({
-          reqId: msg.reqId,
-          error: err instanceof Error ? err.message : String(err)
-        })
-      }
     })
   }, [])
 

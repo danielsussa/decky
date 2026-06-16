@@ -5,10 +5,6 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeRaw from 'rehype-raw'
 import 'highlight.js/styles/github-dark.css'
 import MermaidBlock from './MermaidBlock'
-import FlowBlock from './FlowBlock'
-import ChecklistBlock from './ChecklistBlock'
-import MatrixBlock from './MatrixBlock'
-import RoadmapBlock from './RoadmapBlock'
 import BacklinksFooter from './BacklinksFooter'
 import remarkWikilinks from '../lib/remark-wikilinks'
 import { splitIntoBlocks } from '../lib/markdown-blocks'
@@ -153,7 +149,6 @@ function extractText(node: React.ReactNode): string {
 // the terminal's Cmd+click on a file ref uses).
 function makeComponents(
   cardPath: string | undefined,
-  cardId: string | undefined,
   sessionId: string | undefined,
   onImageContextMenu: (x: number, y: number, url: string) => void
 ): Components {
@@ -163,22 +158,6 @@ function makeComponents(
       const classes = className?.split(/\s+/) ?? []
       if (classes.includes('language-mermaid')) {
         return <MermaidBlock code={extractText(children).replace(/\n$/, '')} />
-      }
-      if (classes.includes('language-flow')) {
-        return <FlowBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
-      }
-      if (classes.includes('language-checklist')) {
-        return (
-          <ChecklistBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
-        )
-      }
-      if (classes.includes('language-matrix')) {
-        return <MatrixBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
-      }
-      if (classes.includes('language-roadmap')) {
-        return (
-          <RoadmapBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
-        )
       }
       return (
         <code className={className} {...rest}>
@@ -310,8 +289,8 @@ function MarkdownPreviewInner({
 
   // Stable identity so ReactMarkdown doesn't see a "new" components prop on every render.
   const components = useMemo(
-    () => makeComponents(path, cardId, sessionId, onImageContextMenu),
-    [path, cardId, sessionId]
+    () => makeComponents(path, sessionId, onImageContextMenu),
+    [path, sessionId]
   )
 
   // Restore the saved scroll position when this card mounts/refocuses. Runs whenever the

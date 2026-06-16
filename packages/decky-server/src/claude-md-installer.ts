@@ -15,47 +15,48 @@ const BLOCK_BODY = `## decky (auto-instalado)
 
 Este shell pode estar rodando dentro do **decky** (casca Electron com painel de preview à direita do terminal). Quando o servidor MCP \`decky\` aparecer em \`mcp__decky__*\`, ele tem ferramentas para **mostrar** conteúdo ao usuário em vez de só ler.
 
-- **\`preview_show\`** — quando o usuário pedir para *ver / mostrar / abrir* um arquivo (\`.md\`, \`.json\`), use **esta** tool em vez de \`Read\`. \`Read\` traz o conteúdo pro teu contexto mas o usuário **não vê** o arquivo formatado; \`preview_show\` exibe no painel central da casca.
+- **\`preview_show\`** — quando o usuário pedir para *ver / mostrar / abrir* um arquivo (\`.html\`, \`.json\`, \`.xlsx\`, \`.diff\`/\`.patch\`, \`.md\` legacy), use **esta** tool em vez de \`Read\`. \`Read\` traz o conteúdo pro teu contexto mas o usuário **não vê** o arquivo formatado; \`preview_show\` exibe no painel central da casca.
 - \`Read\` continua certo quando você precisa **processar** o conteúdo (parse, edit, search, grep).
-- Outras tools do MCP decky: \`preview_markdown\` (conteúdo inline), \`preview_json\` (tree colapsível, melhor que cuspir JSON gigante no terminal), \`preview_me\` (volta pro Live View do me daemon), \`preview_hide\`.
+- Outras tools do MCP decky: \`preview_html\` (HTML inline — canônico pra cards novos), \`preview_json\` (tree colapsível, melhor que cuspir JSON gigante no terminal), \`preview_me\` (volta pro Live View do me daemon), \`preview_hide\`. \`preview_markdown\` foi descontinuado em 2026-06-16 — chame \`preview_html\` no lugar.
 - **\`preview_diff\`** — pra mostrar mudanças de código (saída de \`git diff\`/\`git show\`/\`diff -u\`), use **esta** tool, passando o texto do diff cru. Renderiza estruturado (header por arquivo com +/-, gutter de linhas, linhas verdes/vermelhas) — **nunca** jogue o diff num bloco markdown \`\`\`diff, fica muito pior.
-- **Manter o card em sincronia depois de atuar**: um card NÃO se atualiza a partir do teu raciocínio — só um card de arquivo se auto-recarrega, e só quando o arquivo muda no disco. \`preview_show(path)\` faz live-reload a cada save (é só seguir editando o arquivo, sem re-renderizar). Já \`preview_markdown\` é materializado automaticamente em \`.decky/cards/<id>.html\` (HTML mini-app — o markdown é renderizado client-side via marked) e a resposta da tool te diz **\`card '<id>' at <path>\`** — pra editar, abre o arquivo \`.html\` e mexe no conteúdo dentro do \`<script type="text/markdown" id="md-src">...</script>\` (card live-reload pega no save). Se quiser ir além de markdown puro (CSS custom, widgets, JS), edita o HTML diretamente. \`preview_json\` continua sendo snapshot inline: pra atualizar, chame a tool de novo com \`card: '<mesmo id>'\` e o valor novo.
-- **Contexto da sessão = SÓ o card focado**: o usuário aponta UM card por sessão (a tab destacada no painel) e ESSE é o contexto. Outras tabs abertas existem mas NÃO contam — o usuário não tá pedindo pra você olhar elas. Chame \`list_cards\` **proativamente** pra descobrir o card focado quando: (1) a pergunta tem pouco contexto e parece esperar contexto prévio — ex "vamos voltar pra esse assunto?", "e aí?", "continua", "o que falta?" sem antecedente nesta conversa; (2) a pergunta referencia algo via demonstrativo ambíguo — "esse / essa / aquele / isso aí / o doc / aquela lista / o card" sem você ter id na mão; (3) o pedido é editar/atualizar algo que claramente não é desta conversa. Retorno: \`{ card }\` (único card focado) ou \`{ card: null }\` se nenhum tá focado. Pra markdown o \`path\` já é editável com \`Edit\`. Pra achar OUTRO card que não tá focado, use \`search_cards\` — não tente "listar tudo". **Não** chame se a pergunta é autocontida (instrução clara, contexto suficiente nesta conversa, trabalho técnico em arquivos do código).
-- **Biblioteca de cards**: os cards que você cria são arquivos \`.md\` reais no \`.decky/cards/\` do projeto (a env var \`$DECKY_CARDS_DIR\` tem o caminho absoluto), compartilhados entre todas as sessions do workspace. Antes de gerar um doc do zero, dê um Glob \`$DECKY_CARDS_DIR/**/*.md\` e reaproveite/edite o existente. \`$DECKY_CARDS_DIR/PINNED.md\` lista os cards fixados (contexto sempre relevante).
+- **Manter o card em sincronia depois de atuar**: um card NÃO se atualiza a partir do teu raciocínio — só um card de arquivo se auto-recarrega, e só quando o arquivo muda no disco. \`preview_show(path)\` faz live-reload a cada save (é só seguir editando o arquivo, sem re-renderizar). Já \`preview_html\` materializa o conteúdo automaticamente em \`.decky/cards/<id>.html\` e a resposta da tool te diz **\`card '<id>' at <path>\`** — pra atualizar, edita o \`.html\` diretamente (live-reload pega no save). \`preview_json\` continua sendo snapshot inline: pra atualizar, chame a tool de novo com \`card: '<mesmo id>'\` e o valor novo.
+- **\`preview_html\` aceita fragment OU documento completo**: se o \`content\` começar com \`<!doctype\` ou \`<html\`, ele é usado como está. Senão é envolvido no scaffold padrão (\`/__decky/default.css\`, body com padding). Em ambos os casos, o renderer escaneia o conteúdo por \`data-decky-<nome>\` e auto-injeta \`<script src="/__decky/widgets/<nome>.js">\` antes de \`</body>\` — não precisa lembrar de incluir scripts dos widgets, é automático.
+- **Contexto da sessão = SÓ o card focado**: o usuário aponta UM card por sessão (a tab destacada no painel) e ESSE é o contexto. Outras tabs abertas existem mas NÃO contam — o usuário não tá pedindo pra você olhar elas. Chame \`list_cards\` **proativamente** pra descobrir o card focado quando: (1) a pergunta tem pouco contexto e parece esperar contexto prévio — ex "vamos voltar pra esse assunto?", "e aí?", "continua", "o que falta?" sem antecedente nesta conversa; (2) a pergunta referencia algo via demonstrativo ambíguo — "esse / essa / aquele / isso aí / o doc / aquela lista / o card" sem você ter id na mão; (3) o pedido é editar/atualizar algo que claramente não é desta conversa. Retorno: \`{ card }\` (único card focado) ou \`{ card: null }\` se nenhum tá focado. Pra HTML o \`path\` já é editável com \`Edit\`. Pra achar OUTRO card que não tá focado, use \`search_cards\` — não tente "listar tudo". **Não** chame se a pergunta é autocontida (instrução clara, contexto suficiente nesta conversa, trabalho técnico em arquivos do código).
+- **Biblioteca de cards**: os cards que você cria são arquivos \`.html\` reais no \`.decky/cards/\` do projeto (a env var \`$DECKY_CARDS_DIR\` tem o caminho absoluto), compartilhados entre todas as sessions do workspace. Antes de gerar um doc do zero, dê um Glob \`$DECKY_CARDS_DIR/**/*.html\` e reaproveite/edite o existente. \`$DECKY_CARDS_DIR/PINNED.md\` é o único \`.md\` legítimo (index de pinned, não é card).
 - Se o MCP \`decky\` não estiver disponível (ex.: shell fora do decky, ou decky não iniciado), use \`Read\` normalmente — sem reclamar.
 
-### Widgets em cards (I/O imperativo)
+### Widgets em cards HTML
 
-Alguns cards têm **widgets vivos** — elementos interativos com estado React próprio (flow diagram, checklist, e o que mais for adicionado). Pra mutar widget, use \`card_invoke\` / \`card_get\` em vez de editar o \`.md\` — o widget continua *mounted*, animações fluem, sem reparse do markdown.
+Cards HTML podem ter **widgets vivos** — elementos interativos renderizados por um runtime vanilla JS servido em \`/__decky/widgets/<nome>.js\`. Atualmente: \`matrix\` (matriz de decisão), \`roadmap\` (timeline com deps), \`checklist\` (lista com persistência), \`flow\` (diagrama bezier), \`mermaid\`.
 
 **Descobrir o catálogo**: chame \`list_widgets()\` — retorna \`{ types, active }\`.
-- \`types\` é o catálogo: cada tipo de widget se auto-documenta com \`fence\` (sintaxe da fence no markdown), \`specSchema\` (formato do JSON), \`ops\` (mutações disponíveis com schema dos args) e \`getters\` (leitura de estado).
-- \`active\` lista os widgets já montados nos cards abertos: \`{cardId, widgetId, type}\`.
+- \`types\` é o catálogo: cada tipo de widget se auto-documenta com nome, descrição, \`specSchema\` (formato do JSON), ops e getters.
+- \`active\` lista os widgets já montados em cards abertos.
 
-**Sempre chame \`list_widgets\` antes de adivinhar ops ou montar fence** — o catálogo é a verdade. O bloco aqui no CLAUDE.md não cita widget específico de propósito, pra não envelhecer.
+**Sempre chame \`list_widgets\` antes de adivinhar specs** — o catálogo é a verdade.
 
-**Criar widget num card**: dentro do \`.md\`, uma fence com o \`type\` (achado no catálogo) + JSON contendo um \`id\`. Ex genérico:
+**Criar widget num card HTML**: dentro do HTML, um \`<div data-decky-<nome>>{...JSON spec...}</div>\`. O JSON precisa ter \`id\` se você quer endereçar o widget depois. Ex:
 
-\`\`\`<type>
-{ "id": "meu-widget", ... }
+\`\`\`html
+<div data-decky-matrix>
+{ "id": "meu-widget", "options": [...], "criteria": [...], "scores": {...} }
+</div>
 \`\`\`
 
-O \`id\` é como você endereça via \`card_invoke(cardId, widgetId, op, args)\` — \`cardId\` é o id do card (.md), \`widgetId\` é o \`id\` no JSON. Sem \`id\` no JSON o widget não se registra e \`card_invoke\` falha com "widget not found".
+O \`<script src="/__decky/widgets/matrix.js">\` é **auto-injetado** pelo \`preview_html\` — não precisa adicionar manualmente.
 
-**Quando usar cada interface**:
+**Spec \`readonly: true\`** desabilita a interação do usuário (inputs/botões viram disabled, badge "AI-only" aparece) — útil pra dashboards/análises que a AI mantém e o user só observa.
 
-- **Editar \`.md\`** (via \`Edit\` tool) — texto estático, headings, parágrafos, OU criar widget novo / mudar shape inicial do widget. O renderer anima fade-in só nos blocos top-level que mudaram (não reparseia o resto).
-- **\`card_invoke\`** — mutar estado de widget JÁ montado. Estado é **ephemeral** — sobrevive até o card recarregar; pra persistir, edite o .md depois.
-- **\`card_get\`** — ler estado VIVO (ex: posições atuais dos nós depois do usuário arrastar; items checked depois de clique no checkbox).
+**I/O imperativo (\`card_invoke\` / \`card_get\`)**: hoje conectado só pra widgets renderizados em-app (React side — flow + checklist em cards \`.md\` legacy). Vanilla widgets em HTML mini-app **ainda não** expõem ops via MCP — pra mutar, edite o JSON do \`<div data-decky-*>\` no \`.html\` direto. Quando a bridge postMessage chegar (planejado), \`card_invoke\` passa a funcionar igual.
 
-**Anti-padrão**: editar o \`.md\` pra mutar algo que é estado de widget (toggle checkbox, ativar nó). Funciona mas é coarse, perde a animação, e o usuário enxerga "arquivo mudou" em vez de "item foi tocado". Use \`card_invoke\` com a op apropriada (consulte \`list_widgets\`).
+**Anti-padrão**: tentar invocar op num widget vanilla via \`card_invoke\` — vai dar "no active window or ws client" ou timeout. Edite o JSON da spec no HTML.
 
 ### Prévia antes de enviar mensagem (WhatsApp, email, etc)
 
 Sempre que o usuário pedir para enviar uma mensagem por qualquer canal (WhatsApp, email, SMS, DM — via \`me\`/handoff ou qualquer outro caminho), **NÃO envie direto**. Primeiro renderize um card no decky (painel à direita) com prévia visual da mensagem (destinatário + assunto/contexto + texto), e só envie depois que o usuário apertar SEND. Apertar SEND é o sinal explícito de autorização — evita disparar mensagem com texto errado, destinatário errado, ou quando o usuário mudou de ideia.
 
-- **WhatsApp**: \`preview_markdown\` com header (avatar/inicial + nome + telefone), últimas 3-5 mensagens da conversa como contexto (incoming = bolha cinza à esquerda, outgoing = bolha verde à direita, com timestamps — busque via \`me\`/handoff antes), e a mensagem a enviar como bolha verde no fim com borda tracejada / opacity / label "PRÉVIA".
-- **Email**: \`preview_markdown\` com header (\`De:\`, \`Para:\`, \`Cc:\` se houver, \`Assunto:\`) e corpo formatado como vai sair (HTML/markdown renderizado, não cru); se houver thread, mostre os últimos 2-3 emails acima como contexto.
+- **WhatsApp**: \`preview_html\` com header (avatar/inicial + nome + telefone), últimas 3-5 mensagens da conversa como contexto (incoming = bolha cinza à esquerda, outgoing = bolha verde à direita, com timestamps — busque via \`me\`/handoff antes), e a mensagem a enviar como bolha verde no fim com borda tracejada / opacity / label "PRÉVIA".
+- **Email**: \`preview_html\` com header (\`De:\`, \`Para:\`, \`Cc:\` se houver, \`Assunto:\`) e corpo formatado como vai sair (HTML, não cru); se houver thread, mostre os últimos 2-3 emails acima como contexto.
 - **Outros canais**: adapte o mockup ao canal, mas mantenha destinatário + contexto + texto sempre visíveis.
 - Em seguida, \`prompt_form\` com \`textarea\` pré-preenchido (editável) para o corpo + campo \`text\` mostrando destinatário (e assunto, no email) para revisão. Botão \`submitLabel: "Enviar"\`.
 - Respeite o texto final que voltar nos \`values\` (usuário pode ter editado). Cancelar = não enviar; não reenvie sem nova autorização.

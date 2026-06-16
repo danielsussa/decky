@@ -53,6 +53,7 @@ export default function Preview({
   }
   if (source.type === 'html') {
     if (!cardId) return <div className="preview-empty"><p>card sem id — recrie a aba</p></div>
+    if (!source.path) return <div className="preview-empty"><p>materializando…</p></div>
     return (
       <HtmlPreview
         cardId={cardId}

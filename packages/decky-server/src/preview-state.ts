@@ -157,7 +157,11 @@ export async function normalizePreviewSource(wire: PreviewSourceWire): Promise<P
     throw new Error('web source requires a url')
   }
   if (wire.type === 'html') {
-    if (!wire.path) throw new Error('html source requires a path')
+    // Inline HTML (no path) — used by preview_html. Renderer materializes content to disk.
+    if (wire.content != null && !wire.path) {
+      return { type: 'html', content: wire.content, title: wire.title }
+    }
+    if (!wire.path) throw new Error('html source requires a path or content')
     // Stat como fail-fast pra paths LOCAIS — arquivo missing daria 404 silencioso dentro do
     // card. Pra paths de workspace remoto (ex: /home/pi/me/.decky/cards/foo.html) o stat dá
     // ENOENT no host do preview-server (Mac), mas o card:// resolver remoto lê via WS no

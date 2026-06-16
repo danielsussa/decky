@@ -6,6 +6,7 @@ import {
   MIME,
   getDefaultCardCss,
   getVirtualRoutes,
+  injectBridgeBootstrap,
   injectDefaultCss,
   rewriteMarkedImports,
   wrapMarkdownAsHtml
@@ -119,9 +120,14 @@ export async function resolveCardRequest(req: CardRequest): Promise<CardResponse
         }
       }
       const mime = MIME[ext] ?? 'application/octet-stream'
+      // cardId for the bridge bootstrap = the pathname minus leading slash + extension.
+      const cardId = pathname.replace(/^\/+/, '').replace(/\.html?$/i, '')
       const body =
         ext === '.html' || ext === '.htm'
-          ? rewriteMarkedImports(injectDefaultCss(buf.toString('utf-8')))
+          ? injectBridgeBootstrap(
+              rewriteMarkedImports(injectDefaultCss(buf.toString('utf-8'))),
+              cardId
+            )
           : buf
       return {
         status: 200,

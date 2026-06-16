@@ -38,7 +38,7 @@ import { searchCards } from '@decky/server'
 import { resolveWikilink, computeBacklinks } from '@decky/server'
 import { workspaceCardsDir } from '@decky/shared/node'
 import { registerCardMirrorHandlers } from './card-mirror'
-import { registerWidgetBridge } from '@decky/server'
+import { registerWidgetBridge, setCardBridgeWsUrl } from '@decky/server'
 import { migrateGlobalState } from '@decky/server'
 import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from '@decky/server'
@@ -397,6 +397,7 @@ app
       try {
         wsServer = await startWsServer()
         diag(`[ws-server] listening on ${wsServer.url}`)
+        setCardBridgeWsUrl(wsServer.url)
         registerCliWsHandlers(wsServer)
         registerStateWsHandlers(wsServer)
         registerGitWsHandlers(wsServer)

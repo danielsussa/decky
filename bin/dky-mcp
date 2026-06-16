@@ -37,14 +37,14 @@ const TOOLS = [
     }
   },
   {
-    name: 'preview_markdown',
+    name: 'preview_html',
     description:
-      'Render markdown content (inline string) in a decky card. Use when you want to show formatted text the user did not request to read from a file.',
+      'Render inline HTML content as a decky card. Pass EITHER a body fragment (will be wrapped in the default mini-app scaffold with /__decky/default.css applied) OR a full `<!doctype html>...</html>` document (used as-is). The card is materialized as a .html file under $DECKY_CARDS_DIR/<card>.html and live-reloads on edit. To embed an interactive widget, drop a `<div data-decky-<name>>{...JSON spec...}</div>` block — supported widgets: `matrix` (decision matrix), `roadmap` (timeline), `checklist`, `flow` (diagram), `mermaid`. The renderer auto-includes `<script src="/__decky/widgets/<name>.js">` for any widget tag it detects, so you do NOT need to add the script tags yourself.',
     inputSchema: {
       type: 'object',
       properties: {
-        content: { type: 'string', description: 'Markdown content.' },
-        title: { type: 'string', description: 'Optional header title.' },
+        content: { type: 'string', description: 'HTML content (fragment or full document).' },
+        title: { type: 'string', description: 'Optional <title> for the wrapped scaffold (ignored if content is a full document).' },
         card: { type: 'string', description: CARD_DESC }
       },
       required: ['content']
@@ -410,7 +410,7 @@ async function handleCall(name, args) {
       return describeResolved(`html rendered from ${a.path} as`, r)
     }
     throw new Error(
-      `unsupported file extension: .${ext}. Use preview_markdown/preview_json/preview_diff for inline content.`
+      `unsupported file extension: .${ext}. Use preview_html/preview_json/preview_diff for inline content.`
     )
   }
 
@@ -420,14 +420,23 @@ async function handleCall(name, args) {
     return describeResolved('diff rendered as', r)
   }
 
-  if (name === 'preview_markdown') {
-    if (typeof a.content !== 'string') throw new Error('preview_markdown: content required')
+  if (name === 'preview_html') {
+    if (typeof a.content !== 'string') throw new Error('preview_html: content required')
     const r = await post(
       '/preview',
-      { type: 'markdown', content: a.content, title: a.title },
+      { type: 'html', content: a.content, title: a.title },
       a.card
     )
-    return describeResolved('markdown rendered as', r)
+    return describeResolved('html rendered as', r)
+  }
+
+  // Deprecated — preview_markdown was killed when MD as a card medium was retired (2026-06-16).
+  // Kept as a guard so any stored call site / old prompt fails loudly instead of silently no-op.
+  if (name === 'preview_markdown') {
+    throw new Error(
+      'preview_markdown was removed — cards are HTML now. Use preview_html(content) instead; ' +
+      'you can include markdown-flavored body inside <article class="md-body"> if you want similar styling.'
+    )
   }
 
   if (name === 'preview_json') {

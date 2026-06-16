@@ -325,10 +325,14 @@ function rootPackageJsonVersions(): Record<string, string> {
 function buildRemotePackageJson(): string {
   // Top-level deps que o bundle do decky-server precisa em runtime. As transitivas (bindings,
   // file-uri-to-path, asn1, bcrypt-pbkdf, tweetnacl) virão automaticamente.
-  const wanted = ['better-sqlite3', 'node-pty', 'marked', 'ws']
+  // @anthropic-ai/claude-code: o CLI que o pty spawna pra sessões 'claude'. Sem ele, o
+  // execvp falha "No such file or directory" e o usuário vê só uma mensagem críptica.
+  // Instalado local em ~/.decky-server/node_modules/.bin/claude → sem sudo, sem PATH global.
+  const wanted = ['better-sqlite3', 'node-pty', 'marked', 'ws', '@anthropic-ai/claude-code']
   const versions = rootPackageJsonVersions()
   const deps: Record<string, string> = {}
   for (const name of wanted) {
+    // claude-code só existe no npm — não está no root package.json. Usa 'latest' como default.
     deps[name] = versions[name] ?? 'latest'
   }
   const pkg = {

@@ -500,6 +500,11 @@ export default function WebPreview({
         >
           <ExternalLink size={14} />
         </button>
+        {loading && (
+          <div className="web-loading-bar" aria-hidden>
+            <div className="web-loading-bar-fill" />
+          </div>
+        )}
       </div>
       <div ref={canvasRef} className="web-canvas" />
     </div>

@@ -220,6 +220,10 @@ const deckApi = {
       ipcRenderer.invoke('file:read-binary', path),
     write: (path: string, content: string, workspace?: string): Promise<boolean> =>
       wsInvoke(engineForWorkspace(workspace), 'file:write', { path, content }),
+    // Binary write via base64. Usado pelo paste de imagem em sessão remota: o terminal
+    // intercepta paste, encode a PNG e chama isto pra subir pro engine dono (PI ou local).
+    writeBinaryBase64: (path: string, base64: string, workspace?: string): Promise<boolean> =>
+      wsInvoke(engineForWorkspace(workspace), 'file:write-binary-base64', { path, base64 }),
     onChanged: (callback: (msg: { path: string }) => void): (() => void) =>
       wsOn<{ path: string }>(L, 'file:changed', callback)
   },
@@ -549,7 +553,16 @@ const deckApi = {
         for (const k of Object.keys(sessionRoutes)) delete sessionRoutes[k]
         Object.assign(sessionRoutes, routes.sessions)
       }
-    }
+    },
+    // Notifica o renderer quando um engine remoto reconecta (tunnel SSH novo + URL/token
+    // novos via reconnectAllRemoteEngines). O preload já chama upsertEngine internamente,
+    // mas o React precisa saber pra re-disparar effects que dependem de engines (ex: re-ler
+    // workspace.read dos workspaces remotos quando a conexão volta).
+    onUpdate: (callback: (engine: Engine) => void): (() => void) =>
+      wsOn<Engine>(L, 'engines:updated', callback),
+    // Síncrono — devolve engineId da sessão (default LOCAL). Usado por componentes que precisam
+    // distinguir comportamento local vs remoto sem fan-out (ex: paste de imagem no Terminal).
+    engineForSession: (id: string): string => engineForSession(id)
   },
   widget: {
     // Server forwards every widget:call here. The renderer dispatches into the widget registry

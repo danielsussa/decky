@@ -12,3 +12,5 @@ out
 .deck-dev/
 build/decky-signing.p12
 packages/decky-server/dist/
+.venv/
+scripts/out/

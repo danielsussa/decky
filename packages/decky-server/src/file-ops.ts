@@ -21,6 +21,17 @@ export async function readBinaryFile(path: string): Promise<Uint8Array | null> {
   }
 }
 
+export async function writeBinaryFileBase64(path: string, base64: string): Promise<boolean> {
+  try {
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, Buffer.from(base64, 'base64'))
+    return true
+  } catch (err) {
+    console.error('[file-ops] write binary failed:', path, err)
+    return false
+  }
+}
+
 export async function writeTextFile(path: string, content: string): Promise<boolean> {
   try {
     // Safety net for a recurring corruption bug: a stray save has, more than once, written

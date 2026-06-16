@@ -7,6 +7,8 @@ import 'highlight.js/styles/github-dark.css'
 import MermaidBlock from './MermaidBlock'
 import FlowBlock from './FlowBlock'
 import ChecklistBlock from './ChecklistBlock'
+import MatrixBlock from './MatrixBlock'
+import RoadmapBlock from './RoadmapBlock'
 import BacklinksFooter from './BacklinksFooter'
 import remarkWikilinks from '../lib/remark-wikilinks'
 import { splitIntoBlocks } from '../lib/markdown-blocks'
@@ -168,6 +170,14 @@ function makeComponents(
       if (classes.includes('language-checklist')) {
         return (
           <ChecklistBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
+        )
+      }
+      if (classes.includes('language-matrix')) {
+        return <MatrixBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
+      }
+      if (classes.includes('language-roadmap')) {
+        return (
+          <RoadmapBlock code={extractText(children).replace(/\n$/, '')} cardId={cardId ?? ''} />
         )
       }
       return (

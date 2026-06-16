@@ -158,9 +158,17 @@ export async function normalizePreviewSource(wire: PreviewSourceWire): Promise<P
   }
   if (wire.type === 'html') {
     if (!wire.path) throw new Error('html source requires a path')
-    // Stat as a fail-fast — the renderer will spin up the http server on mount and a missing
-    // file there would just 404 silently inside the web card.
-    await stat(wire.path)
+    // Stat como fail-fast pra paths LOCAIS — arquivo missing daria 404 silencioso dentro do
+    // card. Pra paths de workspace remoto (ex: /home/pi/me/.decky/cards/foo.html) o stat dá
+    // ENOENT no host do preview-server (Mac), mas o card:// resolver remoto lê via WS no
+    // engine dono. Engole o ENOENT — se o arquivo realmente não existir no remote, o WS
+    // read no card:// retorna 404 visível no DevTools, o que é tão útil quanto o fail-fast.
+    try {
+      await stat(wire.path)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'EACCES') throw err
+    }
     return { type: 'html', path: wire.path, title: wire.title ?? basename(wire.path) }
   }
   return wire as PreviewSource

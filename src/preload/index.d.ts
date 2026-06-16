@@ -93,6 +93,7 @@ export interface DeckAPI {
     readText: (path: string, workspace?: string) => Promise<string | null>
     readBinary: (path: string) => Promise<Uint8Array | null>
     write: (path: string, content: string, workspace?: string) => Promise<boolean>
+    writeBinaryBase64: (path: string, base64: string, workspace?: string) => Promise<boolean>
     onChanged: (callback: (msg: { path: string }) => void) => () => void
   }
   claude: {
@@ -287,6 +288,8 @@ export interface DeckAPI {
       workspaces?: Record<string, string>
       sessions?: Record<string, string>
     }) => void
+    onUpdate: (callback: (engine: Engine) => void) => () => void
+    engineForSession: (id: string) => string
   }
   widget: {
     onCall: (

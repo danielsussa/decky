@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0d1117" />
+<title>decky</title>
+<link rel="stylesheet" href="https://esm.sh/@xterm/xterm@6/css/xterm.css" />
+<style>
+  :root {
+    --bg-0: #0d1117;
+    --bg-1: #161b22;
+    --bg-2: #1f242c;
+    --border: #30363d;
+    --text-1: #e6edf3;
+    --text-2: #8b949e;
+    --text-3: #6e7681;
+    --accent: #58a6ff;
+    --accent-dim: #1f6feb;
+    --good: #3fb950;
+    --bad: #f85149;
+    --warn: #d29922;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg-0); color: var(--text-1); overscroll-behavior: none; }
+  body { font: 14px/1.45 system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; height: 100dvh; }
+
+  header {
+    padding: 10px 14px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  header .brand { font-weight: 600; font-size: 14px; }
+  header .brand span { opacity: 0.5; font-weight: 400; }
+  header .spacer { flex: 1; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; padding: 3px 8px; border-radius: 12px; border: 1px solid var(--border); color: var(--text-2); }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); }
+  .status.ok .dot { background: var(--good); }
+  .status.err .dot { background: var(--bad); }
+  .status.warn .dot { background: var(--warn); }
+
+  main {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .panel {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 14px;
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
+  }
+  .panel section { margin-bottom: 20px; }
+  .panel h2 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-2); font-weight: 600; }
+
+  .row {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 6px;
+    background: var(--bg-1);
+    font-family: var(--mono);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .row .label { flex: 1; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .row .meta { color: var(--text-3); font-size: 10px; margin-top: 2px; }
+  .row button {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    color: var(--text-1);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .row button.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: white; }
+  .row button.danger:hover { background: var(--bad); border-color: var(--bad); color: white; }
+  .row button:hover { background: var(--accent-dim); color: white; border-color: var(--accent-dim); }
+  .row button:active { transform: scale(0.97); }
+  .empty { color: var(--text-3); font-style: italic; font-size: 12px; padding: 8px 0; }
+  pre.error { background: var(--bg-1); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 11px; color: var(--bad); white-space: pre-wrap; word-break: break-word; }
+  input.input {
+    flex: 1; background: var(--bg-2); border: 1px solid var(--border); color: var(--text-1);
+    font-family: var(--mono); font-size: 12px; padding: 6px 10px; border-radius: 6px; min-width: 0;
+  }
+
+  /* Pairing screen */
+  .pairing {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    flex: 1;
+    padding: 24px;
+  }
+  .pairing.show { display: flex; }
+  .pairing h2 { font-size: 14px; color: var(--text-2); font-weight: 400; margin: 0 0 18px; max-width: 280px; line-height: 1.5; }
+  .pairing .code {
+    font-family: var(--mono); font-size: 56px; font-weight: 600; letter-spacing: 0.18em;
+    color: var(--accent); background: var(--bg-1); border: 1px solid var(--border);
+    padding: 18px 28px; border-radius: 12px; margin-bottom: 18px;
+  }
+  .pairing .hint { color: var(--text-3); font-size: 11px; max-width: 320px; line-height: 1.5; }
+  .pairing .actions { margin-top: 20px; display: flex; gap: 10px; }
+  .pairing .actions button {
+    background: var(--bg-2); border: 1px solid var(--border); color: var(--text-1);
+    font-family: var(--mono); font-size: 11px; padding: 7px 16px; border-radius: 6px; cursor: pointer;
+  }
+  .pairing .spin { color: var(--text-3); font-family: var(--mono); font-size: 11px; margin-top: 10px; min-height: 1.4em; }
+
+  /* Terminal pane */
+  .term-wrap {
+    display: none;
+    flex-direction: column;
+    border-top: 1px solid var(--border);
+    background: #000;
+    height: 60vh;
+    flex-shrink: 0;
+  }
+  .term-wrap.open { display: flex; }
+  .term-bar {
+    padding: 6px 10px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-2);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .term-bar .title { flex: 1; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .term-bar button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-2);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .term-bar button:hover { color: var(--bad); border-color: var(--bad); }
+  #term-host { flex: 1; min-height: 0; padding: 4px; }
+  .xterm-viewport::-webkit-scrollbar { width: 8px; }
+  .xterm-viewport::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .pending-card { background: var(--warn); color: black !important; }
+  .pending-card .label, .pending-card .meta { color: black !important; }
+  .pending-card .code-badge {
+    font-weight: 700; letter-spacing: 0.15em; background: rgba(0,0,0,0.15);
+    padding: 2px 6px; border-radius: 4px; margin-right: 8px;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">decky <span>pwa</span></div>
+    <div class="spacer"></div>
+    <div id="status" class="status"><span class="dot"></span><span id="status-text">verificando…</span></div>
+  </header>
+
+  <main>
+    <!-- Pairing UI (visível quando device não aprovado) -->
+    <div class="pairing" id="pairing">
+      <h2 id="pairing-headline">Pareando este dispositivo</h2>
+      <div class="code" id="pairing-code">····</div>
+      <div class="hint">Em outro dispositivo já autorizado, abra <strong>Devices</strong> e aprove o código acima.</div>
+      <div class="spin" id="pairing-spin">aguardando…</div>
+      <div class="actions">
+        <button id="bootstrap-btn" title="Usar admin-token (recovery)">recuperar com token</button>
+      </div>
+    </div>
+
+    <!-- App principal (visível quando approved) -->
+    <div class="panel" id="panel" style="display:none">
+      <section id="info-section" style="display:none">
+        <h2 id="info-title">host</h2>
+        <div id="info" style="font-family:var(--mono);font-size:11px;color:var(--text-2);padding:8px 0"></div>
+      </section>
+
+      <section id="devices-section">
+        <h2>devices</h2>
+        <div id="devices"></div>
+      </section>
+
+      <section>
+        <h2>abrir shell em…</h2>
+        <div class="row">
+          <input id="custom-cwd" class="input" placeholder="/home/pi" />
+          <button id="custom-open">abrir</button>
+        </div>
+      </section>
+      <section>
+        <h2>workspaces detectados</h2>
+        <div id="workspaces"><div class="empty">carregando…</div></div>
+      </section>
+      <section>
+        <h2>sessões salvas</h2>
+        <div id="sessions"></div>
+      </section>
+      <section id="error-section" style="display:none">
+        <h2>erro</h2>
+        <pre class="error" id="error"></pre>
+      </section>
+    </div>
+
+    <div class="term-wrap" id="term-wrap">
+      <div class="term-bar">
+        <span class="title" id="term-title">terminal</span>
+        <button id="term-close">×</button>
+      </div>
+      <div id="term-host"></div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { Terminal } from 'https://esm.sh/@xterm/xterm@6'
+    import { FitAddon } from 'https://esm.sh/@xterm/addon-fit@0.11'
+
+    const $status = document.getElementById('status')
+    const $statusText = document.getElementById('status-text')
+    const $panel = document.getElementById('panel')
+    const $pairing = document.getElementById('pairing')
+    const $pairingCode = document.getElementById('pairing-code')
+    const $pairingSpin = document.getElementById('pairing-spin')
+    const $pairingHeadline = document.getElementById('pairing-headline')
+    const $bootstrapBtn = document.getElementById('bootstrap-btn')
+
+    function setStatus(state, text) {
+      $status.className = `status ${state}`
+      $statusText.textContent = text
+    }
+
+    function showPairing(code) {
+      $panel.style.display = 'none'
+      $pairing.classList.add('show')
+      if (code) $pairingCode.textContent = code
+    }
+    function showPanel() {
+      $pairing.classList.remove('show')
+      $panel.style.display = ''
+    }
+    function escapeHtml(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      })[c])
+    }
+
+    // ─── Auth flow (HTTP fetch, antes do WS conectar) ─────────────────────────
+    async function authJson(path, opts = {}) {
+      const res = await fetch(path, { credentials: 'include', ...opts })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    }
+
+    async function checkAuthAndBoot() {
+      setStatus('warn', 'verificando…')
+      // Se tem ?token=... na URL, primeiro tenta bootstrap (admin path).
+      const qs = new URLSearchParams(location.search)
+      const tokenInUrl = qs.get('token')
+      if (tokenInUrl) {
+        try {
+          await authJson('/auth/bootstrap', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ token: tokenInUrl })
+          })
+          // Limpa token da URL pra não vazar em screenshots / history.
+          history.replaceState(null, '', location.pathname)
+        } catch (err) {
+          console.warn('bootstrap falhou:', err)
+        }
+      }
+
+      const me = await authJson('/auth/me').catch(() => ({ approved: false }))
+      if (me.approved) {
+        bootApp()
+        return
+      }
+      if (me.pending) {
+        showPairing(me.pending.code)
+        pollWaitPairing()
+        return
+      }
+      // Novo device sem cookie pendente → cria pending request.
+      const pending = await authJson('/auth/request-pairing', { method: 'POST' })
+      showPairing(pending.code)
+      pollWaitPairing()
+    }
+
+    async function pollWaitPairing() {
+      setStatus('warn', 'pareando')
+      $pairingSpin.textContent = 'aguardando aprovação…'
+      while (true) {
+        let res
+        try {
+          res = await authJson('/auth/wait-pairing')
+        } catch (err) {
+          $pairingSpin.textContent = `erro: ${err.message} — tentando de novo`
+          await new Promise((r) => setTimeout(r, 2000))
+          continue
+        }
+        if (res.status === 'approved') {
+          $pairingSpin.textContent = '✓ aprovado, conectando…'
+          setTimeout(() => location.reload(), 600)
+          return
+        }
+        if (res.status === 'rejected') {
+          $pairingHeadline.textContent = 'Acesso negado'
+          $pairingCode.textContent = '✕'
+          $pairingSpin.textContent = ''
+          return
+        }
+        if (res.status === 'expired') {
+          $pairingHeadline.textContent = 'Código expirado'
+          $pairingSpin.textContent = 'recarregue a página pra gerar um novo'
+          return
+        }
+        // timeout — relança o long-poll
+      }
+    }
+
+    $bootstrapBtn.addEventListener('click', async () => {
+      const token = prompt('Cole o admin-token (de ~/.decky-server/admin-token.txt):')
+      if (!token) return
+      try {
+        await authJson('/auth/bootstrap', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token })
+        })
+        location.reload()
+      } catch (err) {
+        alert(`Bootstrap falhou: ${err.message}`)
+      }
+    })
+
+    // ─── App principal (após approved) ────────────────────────────────────────
+    function bootApp() {
+      showPanel()
+      const wsUrl = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}/`
+      const pending = new Map()
+      const broadcastHandlers = new Map()
+      const ws = new WebSocket(wsUrl)
+
+      window._invoke = (kind, args) =>
+        new Promise((resolve, reject) => {
+          if (ws.readyState !== WebSocket.OPEN) return reject(new Error('ws not open'))
+          const reqId = crypto.randomUUID()
+          const timer = setTimeout(() => {
+            pending.delete(reqId)
+            reject(new Error(`${kind} timed out`))
+          }, 15_000)
+          pending.set(reqId, { resolve, reject, timer })
+          ws.send(JSON.stringify({ v: 1, kind, reqId, args }))
+        })
+      window._send = (kind, args) => {
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(JSON.stringify({ v: 1, kind, args }))
+      }
+      window._on = (kind, handler) => {
+        let set = broadcastHandlers.get(kind)
+        if (!set) {
+          set = new Set()
+          broadcastHandlers.set(kind, set)
+        }
+        set.add(handler)
+        return () => set.delete(handler)
+      }
+
+      ws.addEventListener('message', (e) => {
+        let msg
+        try { msg = JSON.parse(e.data) } catch { return }
+        if (!msg || typeof msg.kind !== 'string') return
+        if (msg.kind === 'reply' && msg.reqId) {
+          const p = pending.get(msg.reqId)
+          if (!p) return
+          clearTimeout(p.timer)
+          pending.delete(msg.reqId)
+          if (msg.ok) p.resolve(msg.result)
+          else p.reject(new Error(msg.error || 'ws error'))
+          return
+        }
+        const handlers = broadcastHandlers.get(msg.kind)
+        if (!handlers) return
+        for (const h of handlers) h(msg.args)
+      })
+
+      ws.addEventListener('error', () => setStatus('err', 'erro ws'))
+      ws.addEventListener('close', (e) => {
+        if (e.code === 4001) {
+          // Cookie expirou/foi revogado — volta pro pairing.
+          location.reload()
+        } else {
+          setStatus('warn', `desconectado (${e.code})`)
+        }
+      })
+      ws.addEventListener('open', () => {
+        setStatus('ok', `conectado · ${location.host}`)
+        loadData()
+      })
+
+      async function loadData() {
+        const [info, detectedWs, savedWs, sessions, devices] = await Promise.all([
+          window._invoke('server:info').catch(() => null),
+          window._invoke('server:list-workspaces').catch(() => []),
+          window._invoke('state:get', { key: 'workspaces' }).catch(() => null),
+          window._invoke('sessions:get-titles').catch(() => ({})),
+          window._invoke('devices:list').catch(() => ({ approved: [], pending: [] }))
+        ])
+        renderInfo(info)
+        if (info?.home) document.getElementById('custom-cwd').value = info.home
+        const all = new Set([...(Array.isArray(savedWs) ? savedWs : []), ...(detectedWs || [])])
+        renderWorkspaces(Array.from(all))
+        renderSessions(sessions || {})
+        renderDevices(devices || { approved: [], pending: [] })
+      }
+
+      // Refresh devices/sessions periódico — pra ver pendentes aparecendo sem reload manual.
+      setInterval(() => {
+        window._invoke('devices:list').then(renderDevices).catch(() => {})
+      }, 5_000)
+
+      function renderInfo(info) {
+        if (!info) return
+        document.getElementById('info-section').style.display = ''
+        document.getElementById('info').innerHTML =
+          `<div>${escapeHtml(info.hostname)} <span style="color:var(--text-3)">· ${escapeHtml(info.platform)}</span></div>` +
+          `<div>home: <code style="color:var(--accent)">${escapeHtml(info.home)}</code></div>`
+      }
+
+      function renderDevices({ approved, pending }) {
+        const el = document.getElementById('devices')
+        let html = ''
+        if (Array.isArray(pending) && pending.length > 0) {
+          html += pending.map((p) =>
+            `<div class="row pending-card">` +
+              `<div class="label"><span class="code-badge">${escapeHtml(p.code)}</span>${escapeHtml(shortUa(p.userAgent))}<div class="meta">${escapeHtml(p.ip)} · ${timeAgo(p.createdAt)}</div></div>` +
+              `<button class="primary" data-approve="${escapeHtml(p.id)}">aprovar</button>` +
+              `<button class="danger" data-reject="${escapeHtml(p.id)}">negar</button>` +
+            `</div>`
+          ).join('')
+        }
+        if (Array.isArray(approved) && approved.length > 0) {
+          html += approved.map((d) =>
+            `<div class="row">` +
+              `<div class="label">${escapeHtml(d.name)}<div class="meta">${escapeHtml(shortUa(d.userAgent))} · ${escapeHtml(d.ip)}</div></div>` +
+              `<button class="danger" data-revoke="${escapeHtml(d.id)}">revogar</button>` +
+            `</div>`
+          ).join('')
+        }
+        if (!html) html = '<div class="empty">nenhum device registrado</div>'
+        el.innerHTML = html
+        el.querySelectorAll('[data-approve]').forEach((b) =>
+          b.addEventListener('click', () =>
+            window._invoke('devices:approve', { pendingId: b.dataset.approve }).then(() =>
+              window._invoke('devices:list').then(renderDevices)
+            )
+          )
+        )
+        el.querySelectorAll('[data-reject]').forEach((b) =>
+          b.addEventListener('click', () =>
+            window._invoke('devices:reject', { pendingId: b.dataset.reject }).then(() =>
+              window._invoke('devices:list').then(renderDevices)
+            )
+          )
+        )
+        el.querySelectorAll('[data-revoke]').forEach((b) =>
+          b.addEventListener('click', () => {
+            if (!confirm('Revogar este device?')) return
+            window._invoke('devices:revoke', { deviceId: b.dataset.revoke }).then(() =>
+              window._invoke('devices:list').then(renderDevices)
+            )
+          })
+        )
+      }
+
+      function shortUa(ua) {
+        if (!ua) return 'unknown'
+        const m = ua.match(/\(([^)]+)\)/)
+        return m ? m[1] : ua.slice(0, 40)
+      }
+      function timeAgo(iso) {
+        const diff = Date.now() - new Date(iso).getTime()
+        const s = Math.floor(diff / 1000)
+        if (s < 60) return `${s}s atrás`
+        const m = Math.floor(s / 60)
+        if (m < 60) return `${m}min atrás`
+        return `${Math.floor(m / 60)}h atrás`
+      }
+
+      function renderWorkspaces(list) {
+        const el = document.getElementById('workspaces')
+        if (!Array.isArray(list) || list.length === 0) {
+          el.innerHTML = '<div class="empty">nenhum .decky/cards encontrado em $HOME — use o input acima</div>'
+          return
+        }
+        el.innerHTML = list
+          .map((cwd) =>
+            `<div class="row"><div class="label" title="${escapeHtml(cwd)}">${escapeHtml(cwd)}</div>` +
+            `<button data-cwd="${escapeHtml(cwd)}">+ shell</button></div>`
+          )
+          .join('')
+        el.querySelectorAll('button').forEach((btn) =>
+          btn.addEventListener('click', () => openShell(btn.dataset.cwd))
+        )
+      }
+      function renderSessions(map) {
+        const el = document.getElementById('sessions')
+        const entries = Object.entries(map || {})
+        if (entries.length === 0) {
+          el.innerHTML = '<div class="empty">sem títulos persistidos</div>'
+          return
+        }
+        el.innerHTML = entries
+          .map(([id, title]) =>
+            `<div class="row"><div class="label">${escapeHtml(title)}<div class="meta">${escapeHtml(id)}</div></div></div>`
+          )
+          .join('')
+      }
+
+      document.getElementById('custom-open').addEventListener('click', () => {
+        const cwd = document.getElementById('custom-cwd').value.trim() || '/'
+        openShell(cwd)
+      })
+      document.getElementById('custom-cwd').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') document.getElementById('custom-open').click()
+      })
+
+      // ─── Terminal pane ─────────────────────────────────────────────────────
+      const $termWrap = document.getElementById('term-wrap')
+      const $termHost = document.getElementById('term-host')
+      const $termTitle = document.getElementById('term-title')
+      const $termClose = document.getElementById('term-close')
+
+      let activeTerm = null
+      let activeFit = null
+      let activeSessionId = null
+      let activeUnsubData = null
+      let activeUnsubExit = null
+
+      async function openShell(cwd) {
+        await closeActive()
+        const term = new Terminal({
+          fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
+          fontSize: 13,
+          theme: {
+            background: '#000000', foreground: '#e6edf3', cursor: '#58a6ff',
+            black: '#0d1117', red: '#f85149', green: '#3fb950', yellow: '#d29922',
+            blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39c5cf', white: '#e6edf3'
+          },
+          cursorBlink: true,
+          scrollback: 3000
+        })
+        const fit = new FitAddon()
+        term.loadAddon(fit)
+        term.open($termHost)
+        activeTerm = term
+        activeFit = fit
+        $termWrap.classList.add('open')
+        $termTitle.textContent = `shell · ${cwd}`
+
+        const sessionId = `pwa-${crypto.randomUUID()}`
+        activeSessionId = sessionId
+        await new Promise((r) => requestAnimationFrame(() => r()))
+        try { fit.fit() } catch {}
+        const { cols, rows } = term
+
+        activeUnsubData = window._on('pty:data', (m) => { if (m?.id === sessionId) term.write(m.data) })
+        activeUnsubExit = window._on('pty:exit', (m) => {
+          if (m?.id === sessionId) term.write('\r\n\x1b[2m[process exited]\x1b[0m\r\n')
+        })
+
+        try {
+          await window._invoke('pty:create', { id: sessionId, cwd, cols, rows })
+        } catch (err) {
+          alert(`pty:create failed: ${err.message}`)
+          await closeActive()
+          return
+        }
+
+        term.onData((data) => window._send('pty:write', { id: sessionId, data }))
+        term.onResize(({ cols, rows }) => window._send('pty:resize', { id: sessionId, cols, rows }))
+
+        const ro = new ResizeObserver(() => { try { fit.fit() } catch {} })
+        ro.observe($termHost)
+        term._roCleanup = () => ro.disconnect()
+
+        term.focus()
+      }
+
+      async function closeActive() {
+        if (!activeTerm) return
+        if (activeSessionId) window._send('pty:kill', { id: activeSessionId })
+        activeUnsubData?.()
+        activeUnsubExit?.()
+        activeTerm._roCleanup?.()
+        activeTerm.dispose()
+        $termHost.innerHTML = ''
+        $termWrap.classList.remove('open')
+        activeTerm = null
+        activeFit = null
+        activeSessionId = null
+        activeUnsubData = null
+        activeUnsubExit = null
+      }
+
+      $termClose.addEventListener('click', () => closeActive())
+      window.addEventListener('resize', () => {
+        if (activeFit) try { activeFit.fit() } catch {}
+      })
+    }
+
+    checkAuthAndBoot()
+  </script>
+</body>
+</html>

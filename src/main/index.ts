@@ -52,6 +52,7 @@ import { registerGitWsHandlers } from '@decky/server'
 import { registerWorkspaceWsHandlers } from '@decky/server'
 import { registerTagsIndexWsHandlers } from '@decky/server'
 import { registerHistoryWsHandlers } from '@decky/server'
+import { registerCardsExtraWsHandlers, registerClaudeWsHandlers } from '@decky/server'
 import { startWsServer, type DeckyWsServer } from '@decky/server'
 import { registerDevRebuildHandlers } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
@@ -60,7 +61,7 @@ import { registerCardScheme, setupCardProtocol, cardUrlToAbsPath } from './card-
 import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
 import { setupWebViews } from './web-views'
 import { setupHistory } from './history'
-import { setupHtmlServer } from './html-server'
+import { setupHtmlServer, setHtmlRemoteEngineProvider } from './html-server'
 
 // Privileged scheme registration must happen before app is ready.
 registerAssetScheme()
@@ -401,31 +402,11 @@ app
         registerGitWsHandlers(wsServer)
         registerWorkspaceWsHandlers(wsServer)
         registerTagsIndexWsHandlers(wsServer)
-        // claude:* não tem arquivo dedicado — handlers vivem inline em index.ts.
-        wsServer.handle<void, string>('claude:get-bin', () => resolveClaudeBin())
-        wsServer.handle<{ cwd: string; uuid: string }, string | null>(
-          'claude:ai-title',
-          (args) => readAiTitle(args?.cwd ?? '', args?.uuid ?? '')
-        )
-        // cards:* extras (search/resolve-wikilink/backlinks) também sem arquivo dedicado.
-        wsServer.handle<{ workspace: string; query: string; limit?: number }, unknown>(
-          'cards:search',
-          (args) =>
-            searchCards(
-              workspaceCardsDir(args?.workspace ?? ''),
-              args?.query ?? '',
-              typeof args?.limit === 'number' ? args.limit : 20,
-              'html'
-            )
-        )
-        wsServer.handle<{ workspace: string; name: string }, string | null>(
-          'cards:resolve-wikilink',
-          (args) => resolveWikilink(workspaceCardsDir(args?.workspace ?? ''), args?.name ?? '')
-        )
-        wsServer.handle<{ workspace: string; cardPath: string }, unknown>(
-          'cards:backlinks',
-          (args) => computeBacklinks(workspaceCardsDir(args?.workspace ?? ''), args?.cardPath ?? '')
-        )
+        // claude:* (get-bin, ai-title) e cards:* extras (search/resolve-wikilink/backlinks):
+        // movidos pra @decky/server pra serem reaproveitados pelo decky-server standalone —
+        // sem isso, engines remotos quebravam quando o renderer chamava esses kinds.
+        registerClaudeWsHandlers(wsServer)
+        registerCardsExtraWsHandlers(wsServer)
         registerHistoryWsHandlers(wsServer)
         // theme:set-mode — Electron nativeTheme.themeSource só existe aqui.
         wsServer.handle<{ mode: 'dark' | 'light' }, boolean>('theme:set-mode', (args) => {
@@ -503,6 +484,23 @@ app
     setupHistory()
     setupWebViews(() => mainWindow)
     setupHtmlServer(() => wsServer)
+    // Provider que diz qual Engine (se algum) possui um path absoluto. Usado pelo card://
+    // resolver pra interceptar paths remotos e ler via WS no engine dono. Bate prefixo no
+    // state.workspaceEngines (lido a cada chamada — html:resolve só dispara uma vez por
+    // abertura de card, latency é trivial e o state pode ter mudado entre chamadas).
+    setHtmlRemoteEngineProvider(async (absPath) => {
+      const map = (await getState<Record<string, string>>('workspaceEngines')) ?? {}
+      let bestMatch: string | null = null
+      for (const ws of Object.keys(map)) {
+        if (absPath === ws || absPath.startsWith(ws.endsWith('/') ? ws : ws + '/')) {
+          if (!bestMatch || ws.length > bestMatch.length) bestMatch = ws
+        }
+      }
+      if (!bestMatch) return null
+      const engineId = map[bestMatch]
+      if (!engineId || engineId === LOCAL_ENGINE_ID) return null
+      return rendererEngines.find((e) => e.id === engineId) ?? null
+    })
     diag('handlers registered, starting preview server')
     startPreviewServer(() => mainWindow, () => wsServer)
     // O backend do handoff agora sobe POR SESSÃO em pty.ts (start no spawn / stop no exit),

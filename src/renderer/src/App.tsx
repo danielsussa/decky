@@ -20,6 +20,7 @@ import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
 import type { PreviewSource, StashEntry, Engine } from '@decky/shared'
 import { LOCAL_ENGINE_ID } from '@decky/shared'
 import { invokeWidget, getWidget, listWidgetTypes, listActiveWidgets } from './lib/widget-registry'
+import { bgUrlFor } from './lib/bg-images'
 import { t } from './lib/i18n'
 import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '@decky/shared'
 import {
@@ -540,6 +541,11 @@ function App(): React.JSX.Element {
   // Multi-engine: lista de engines (local + servers) e o mapa workspace→engineId. A árvore
   // agrupa por KIND(local|server). Tudo sem engineId mapeado é 'local' — legado e default.
   const [engines, setEngines] = useState<Engine[]>([])
+  // Bumpa quando um engine remoto reconecta (URL/token novos via reconnectAllRemoteEngines).
+  // Effects que lêem dados remotos (workspace.read pra non-active workspaces) usam isso pra
+  // re-disparar quando a conexão volta — sem isso, ficavam presos no read inicial que falhou
+  // enquanto o tunnel estava morto.
+  const [enginesVersion, setEnginesVersion] = useState(0)
   const [workspaceEngine, setWorkspaceEngine] = useState<Record<string, string>>({})
   const [collapsedEngines, setCollapsedEngines] = useState<string[]>([])
   // Persisted workspace→theme assignments. We compute each entry ONCE (greedy: prefer the hashed
@@ -694,6 +700,8 @@ function App(): React.JSX.Element {
     liveSessions,
     activeId,
     workspace,
+    workspaces,
+    workspaceEngine,
     startupCwd,
     cardsBySession,
     focusedCardBySession,
@@ -708,6 +716,8 @@ function App(): React.JSX.Element {
     liveSessions,
     activeId,
     workspace,
+    workspaces,
+    workspaceEngine,
     startupCwd,
     cardsBySession,
     focusedCardBySession,
@@ -786,6 +796,12 @@ function App(): React.JSX.Element {
     setEngines(window.deck.engines.list())
     void window.deck.state.get<Record<string, string>>('workspaceEngines').then((m) => {
       if (m && typeof m === 'object') setWorkspaceEngine(m)
+    })
+    // Engine reconectou (URL/token novos via reconnectAllRemoteEngines no main). Re-sincroniza
+    // a lista (pra refletir URL atualizada) e bumpa enginesVersion pra effects re-disparam.
+    const unsubEngines = window.deck.engines.onUpdate(() => {
+      setEngines(window.deck.engines.list())
+      setEnginesVersion((v) => v + 1)
     })
     void window.deck.state.get<Record<string, string>>('workspaceThemes').then((m) => {
       if (m && typeof m === 'object') setWorkspaceThemes(m)
@@ -1005,7 +1021,7 @@ function App(): React.JSX.Element {
         return
       }
       const ext = abs.split('.').pop()?.toLowerCase() ?? ''
-      let wire: { type: string; path: string }
+      let wire: { type: string; path: string; content?: string }
       if (ext === 'md' || ext === 'markdown') wire = { type: 'markdown', path: abs }
       else if (ext === 'html' || ext === 'htm') wire = { type: 'html', path: abs }
       else if (ext === 'diff' || ext === 'patch') wire = { type: 'diff', path: abs }
@@ -1013,15 +1029,40 @@ function App(): React.JSX.Element {
       else wire = { type: 'editor', path: abs }
       const newCardId = `file-${Date.now().toString(36)}`
       if (detail.focus === false) noFocusIdsRef.current.add(newCardId)
-      void fetch('http://127.0.0.1:6790/preview', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-deck-session-id': detail.sessionId,
-          'x-deck-card-id': newCardId
-        },
-        body: JSON.stringify(wire)
-      }).catch((err) => console.warn('[decky:open-path] preview POST failed', err))
+      // Workspace remoto: o preview-server roda no MAC e faz readFile do path. Pra paths
+      // remotos (ex: /home/pi/me/.decky/cards/foo.md), readFile dá ENOENT e o POST retorna
+      // 400. Pre-fetcha o content via file.readText (roteado pro engine remoto) e envia
+      // inline — preview-state.normalizePreviewSource já trata `content != null` skip-read.
+      // (markdown/diff/editor textuais; html/xlsx ficam pra outro PR — html usa card:// e
+      // xlsx é binário.)
+      const goPost = (): Promise<unknown> =>
+        fetch('http://127.0.0.1:6790/preview', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-deck-session-id': detail.sessionId,
+            'x-deck-card-id': newCardId
+          },
+          body: JSON.stringify(wire)
+        }).catch((err) => console.warn('[decky:open-path] preview POST failed', err))
+      const isTextual = wire.type === 'markdown' || wire.type === 'diff' || wire.type === 'editor'
+      const { workspaces: wsList, workspaceEngine: wsEngine } = stateRef.current
+      const owningWs = wsList.find((w) => abs === w || abs.startsWith(w.endsWith('/') ? w : w + '/'))
+      const engineId = owningWs ? wsEngine[owningWs] : undefined
+      if (isTextual && engineId && engineId !== LOCAL_ENGINE_ID && owningWs) {
+        void window.deck.file
+          .readText(abs, owningWs)
+          .then((content) => {
+            if (content != null) wire.content = content
+            void goPost()
+          })
+          .catch((err) => {
+            console.warn('[decky:open-path] remote readText failed', err)
+            void goPost()
+          })
+      } else {
+        void goPost()
+      }
     }
     window.addEventListener('decky:open-path', onOpenPath)
     // Focus the card that currently shows a given path (own session or pinned). Used by
@@ -1131,6 +1172,7 @@ function App(): React.JSX.Element {
       unsubAdd()
       unsubConflict()
       unsubNewSession()
+      unsubEngines()
       window.removeEventListener('decky:web-open', onWebOpen)
       window.removeEventListener('decky:open-path', onOpenPath)
       window.removeEventListener('decky:focus-path', onFocusPath)
@@ -1526,7 +1568,12 @@ function App(): React.JSX.Element {
   // collision-avoidance at registration); the mode (dark/light) is a global toggle. Both reapply
   // to :root; terminals tint themselves.
   useEffect(() => {
-    applyTheme(themeFor(workspace), mode)
+    const th = themeFor(workspace)
+    applyTheme(th, mode, document.documentElement, workspace)
+    // Override --bg-image com a PNG bundlada local (assets/bg/<theme>/<n>.png). Fallback
+    // pras URLs Unsplash do applyTheme se ainda não geramos imagem pro tema.
+    const localBg = bgUrlFor(th.id, workspace)
+    if (localBg) document.documentElement.style.setProperty('--bg-image', `url("${localBg}")`)
   }, [workspace, mode, themeFor])
 
   // Auto-expand the active workspace so its sessions show in the tree.
@@ -1537,29 +1584,67 @@ function App(): React.JSX.Element {
 
   // Read the session lists of ALL non-active workspaces (display-only labels) — also feeds
   // cross-workspace Cmd+Arrow navigation, so it can't be gated on expand state.
+  //
+  // `workspaceEngine` no deps: workspace.read é roteado por engineForWorkspace no preload, que
+  // olha o mapa populado por setRoutes (useEffect acima). Sem essa dep, no boot rodávamos
+  // antes do mapa estar lá → workspace remoto era lido do engine LOCAL → null → cache vazio.
   useEffect(() => {
     for (const ws of workspaces) {
       if (ws === workspace) continue // active workspace uses live `sessions`
-      void window.deck.workspace.read<WorkspaceState>(ws).then(async (data) => {
-        const sess = data?.sessions ?? []
-        // Label fallback chain matches the active workspace: session_set_title (persisted
-        // `titles`) → claude's aiTitle (read from the .jsonl) → the random placeholder. Without
-        // the aiTitle step, sessions without an explicit title showed the random name until you
-        // opened them (which made them active and triggered the aiTitle fetch).
-        const list: TreeSession[] = await Promise.all(
-          sess.map(async (s) => {
-            let label = data?.titles?.[s.id]
-            if (!label && s.kind === 'claude' && s.claudeSessionId) {
-              label =
-                (await window.deck.claude.aiTitle(s.cwd ?? ws, s.claudeSessionId)) ?? undefined
+      void window.deck.workspace
+        .read<WorkspaceState>(ws)
+        .then(async (data) => {
+          const sess = data?.sessions ?? []
+          // Label fallback chain matches the active workspace: session_set_title (persisted
+          // `titles`) → claude's aiTitle (read from the .jsonl) → the random placeholder. Sem
+          // a aiTitle step, sessões sem título explícito mostravam o placeholder aleatório até
+          // serem abertas (que dispara o aiTitle fetch).
+          const list: TreeSession[] = await Promise.all(
+            sess.map(async (s) => {
+              let label = data?.titles?.[s.id]
+              if (!label && s.kind === 'claude' && s.claudeSessionId) {
+                // aiTitle pode falhar (engine remoto antigo sem o handler 'claude:ai-title',
+                // .jsonl ainda não escrito, etc) — não derruba a sessão inteira: cai pro
+                // s.label (placeholder aleatório) e segue. Sem este try a Promise.all
+                // rejeitava e nada era populado no cache.
+                try {
+                  label =
+                    (await window.deck.claude.aiTitle(s.cwd ?? ws, s.claudeSessionId)) ?? undefined
+                } catch {
+                  // best-effort: silencia, usa fallback
+                }
+              }
+              return { id: s.id, label: label || s.label, kind: s.kind }
+            })
+          )
+          setWsSessionsCache((c) => {
+            const prev = c[ws]
+            // Lista veio vazia E o cache anterior tinha conteúdo: provavelmente um erro
+            // transitório (engine remoto reconectando, workspace.json não escrito ainda).
+            // Mantém o cache bom — sem isso, voltar pra workspace local enquanto o engine
+            // remoto está reconectando apaga as sessões remotas da árvore.
+            if (list.length === 0 && prev && prev.length > 0) return c
+            // Skip update if content didn't change — evita re-render desnecessário.
+            if (
+              prev &&
+              prev.length === list.length &&
+              prev.every(
+                (p, i) =>
+                  p.id === list[i].id && p.label === list[i].label && p.kind === list[i].kind
+              )
+            ) {
+              return c
             }
-            return { id: s.id, label: label || s.label, kind: s.kind }
+            return { ...c, [ws]: list }
           })
-        )
-        setWsSessionsCache((c) => (c[ws] ? c : { ...c, [ws]: list }))
-      })
+        })
+        .catch((err) => {
+          // Read falhou (engine remoto offline, WS timeout). NÃO toca no cache — preserva o
+          // que já estava lá. Loga pro DevTools pra debug em vez de comer silencioso.
+          console.warn(`[workspace.read] ${ws} failed:`, err)
+        })
     }
-  }, [workspaces, workspace])
+  }, [workspaces, workspace, workspaceEngine, enginesVersion])
 
   // Promote the active session to most-recently-used; evict the LRU past the cap.
   useEffect(() => {

@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { xtermTheme, type Mode, type Theme } from '@decky/shared'
+import { LOCAL_ENGINE_ID, xtermTheme, type Mode, type Theme } from '@decky/shared'
 
 // xterm's onData carries genuine keystrokes AND automatic terminal→app reports the TUI
 // solicits: cursor-position/DA/DSR replies, focus in/out, and mouse tracking (motion reports
@@ -292,6 +292,51 @@ export default function Terminal({
     host.addEventListener('mousedown', onMouseDownCapture, true)
     host.addEventListener('click', onClickCapture, true)
 
+    // Paste de imagem em sessão remota: claude-code lê clipboard do host onde roda — no PI o
+    // clipboard fica vazio. Quando colamos imagem no terminal remoto, interceptamos antes de
+    // xterm: codamos PNG em base64, subimos pro engine dono em /tmp/decky-paste-<sess>-<ts>.png
+    // (file:write-binary-base64 já roteado), injetamos `Read <path>\n` no PTY. claude vê o path
+    // e abre com Read tool. Local segue paste default (claude lê clipboard direto).
+    const onPasteCapture = (e: ClipboardEvent): void => {
+      const isRemote = window.deck.engines.engineForSession(id) !== LOCAL_ENGINE_ID
+      if (!isRemote) return
+      const items = e.clipboardData?.items
+      if (!items) return
+      let imgItem: DataTransferItem | null = null
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]
+        if (it.kind === 'file' && it.type.startsWith('image/')) {
+          imgItem = it
+          break
+        }
+      }
+      if (!imgItem) return
+      e.preventDefault()
+      e.stopPropagation()
+      const blob = imgItem.getAsFile()
+      if (!blob) return
+      void (async () => {
+        try {
+          const buf = await blob.arrayBuffer()
+          let bin = ''
+          const bytes = new Uint8Array(buf)
+          for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+          const base64 = btoa(bin)
+          const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/gif' ? 'gif' : 'png'
+          const path = `/tmp/decky-paste-${id}-${Date.now().toString(36)}.${ext}`
+          const ok = await window.deck.file.writeBinaryBase64(path, base64, cwd)
+          if (!ok) {
+            console.warn('[paste] writeBinaryBase64 failed')
+            return
+          }
+          window.deck.pty.write(id, `Read ${path}\n`)
+        } catch (err) {
+          console.warn('[paste] image upload failed:', err)
+        }
+      })()
+    }
+    host.addEventListener('paste', onPasteCapture, true)
+
     let disposed = false
     let ptyCreated = false
     let unsubData: (() => void) | null = null
@@ -388,6 +433,7 @@ export default function Terminal({
       ro.disconnect()
       host.removeEventListener('mousedown', onMouseDownCapture, true)
       host.removeEventListener('click', onClickCapture, true)
+      host.removeEventListener('paste', onPasteCapture, true)
       linkDispose.dispose()
       unsubData?.()
       unsubExit?.()

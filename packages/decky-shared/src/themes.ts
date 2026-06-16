@@ -32,12 +32,21 @@ export interface Theme {
   name: string
   dark: Surface
   light: Surface
+  // Curated paisagem URLs (Unsplash CDN, no API key). applyTheme picks one deterministically
+  // by hashing the workspace path so each workspace sticks to a stable image across reloads.
+  bgImages: string[]
 }
 
 export const THEMES: Theme[] = [
   {
     id: 'abissal',
     name: 'Abissal',
+    bgImages: [
+      'https://images.unsplash.com/photo-1549074862-6173e20d02a8?w=1920&q=80',
+      'https://images.unsplash.com/photo-1612158560555-34306ad5e77c?w=1920&q=80',
+      'https://images.unsplash.com/photo-1560364897-91578ff41817?w=1920&q=80',
+      'https://images.unsplash.com/photo-1668110648714-1070e851f855?w=1920&q=80'
+    ],
     dark: {
       vars: {
         '--bg-0': '#0a1929',
@@ -68,6 +77,12 @@ export const THEMES: Theme[] = [
   {
     id: 'floresta',
     name: 'Floresta',
+    bgImages: [
+      'https://i.redd.it/4vztk5m7p9651.jpg',
+      'https://images.unsplash.com/photo-1448375240586-882707db888b?w=1920&q=80',
+      'https://images.unsplash.com/photo-1542273917363-3b1817f69a2d?w=1920&q=80',
+      'https://images.unsplash.com/photo-1507041957456-9c397ce39c97?w=1920&q=80'
+    ],
     dark: {
       vars: {
         '--bg-0': '#1a2419',
@@ -98,6 +113,12 @@ export const THEMES: Theme[] = [
   {
     id: 'cerrado',
     name: 'Cerrado',
+    bgImages: [
+      'https://images.unsplash.com/photo-1422466654108-5e533f591881?w=1920&q=80',
+      'https://images.unsplash.com/photo-1623745493581-2f7b3d0d2140?w=1920&q=80',
+      'https://images.unsplash.com/photo-1533487882887-b0200fdba191?w=1920&q=80',
+      'https://images.unsplash.com/photo-1563356995-99ea66bd64c2?w=1920&q=80'
+    ],
     dark: {
       vars: {
         '--bg-0': '#241e15',
@@ -128,6 +149,12 @@ export const THEMES: Theme[] = [
   {
     id: 'lava',
     name: 'Lava',
+    bgImages: [
+      'https://images.unsplash.com/photo-1619266465172-02a857c3556d?w=1920&q=80',
+      'https://images.unsplash.com/photo-1580250642511-1660fe42ad58?w=1920&q=80',
+      'https://images.unsplash.com/photo-1582721478779-0ae163c05a60?w=1920&q=80',
+      'https://images.unsplash.com/photo-1616627577385-5c0c4dab0257?w=1920&q=80'
+    ],
     dark: {
       vars: {
         '--bg-0': '#241410',
@@ -158,6 +185,12 @@ export const THEMES: Theme[] = [
   {
     id: 'geleira',
     name: 'Geleira',
+    bgImages: [
+      'https://images.unsplash.com/photo-1515963763434-572a9708571f?w=1920&q=80',
+      'https://images.unsplash.com/photo-1526923268711-fa1c7e80f0e3?w=1920&q=80',
+      'https://images.unsplash.com/photo-1593429741141-0571ce6223b3?w=1920&q=80',
+      'https://images.unsplash.com/photo-1591149863434-41b60b803c69?w=1920&q=80'
+    ],
     dark: {
       vars: {
         '--bg-0': '#0e1a24',
@@ -281,9 +314,19 @@ export function xtermTheme(t: Theme, mode: Mode): Record<string, string> {
 
 // Push a theme's CSS variables onto an element (default :root), overriding the stylesheet
 // defaults. Sets data-theme/data-mode so CSS can hook the few hardcoded surfaces (e.g. JSON).
-export function applyTheme(t: Theme, mode: Mode, el: HTMLElement = document.documentElement): void {
+// Also sets --bg-image to one of the theme's curated bgImages, picked deterministically by
+// hashing `seed` (typically the workspace path) so each workspace sticks to a stable paisagem
+// across reloads. Without seed, picks the first.
+export function applyTheme(
+  t: Theme,
+  mode: Mode,
+  el: HTMLElement = document.documentElement,
+  seed?: string | null
+): void {
   const s = t[mode]
   for (const [k, v] of Object.entries(s.vars)) el.style.setProperty(k, v)
   el.dataset.theme = t.id
   el.dataset.mode = mode
+  const idx = seed ? djb2(seed) % t.bgImages.length : 0
+  el.style.setProperty('--bg-image', `url("${t.bgImages[idx]}")`)
 }

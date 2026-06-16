@@ -1,14 +1,24 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   closeHistoryDb,
   ensureToken,
   generateAndSaveToken,
   openHistoryDb,
   readSavedToken,
+  registerCardMirrorWsHandlers,
+  registerCardsCoreWsHandlers,
+  registerCardsExtraWsHandlers,
+  registerClaudeWsHandlers,
   registerCliWsHandlers,
+  registerDevicesWsHandlers,
+  registerFileWsHandlers,
   registerGitWsHandlers,
   registerHistoryWsHandlers,
   registerPtyWsHandlers,
+  registerServerInfoWsHandlers,
+  registerSessionsWsHandlers,
   registerStateWsHandlers,
   registerTagsIndexWsHandlers,
   registerWorkspaceWsHandlers,
@@ -23,7 +33,11 @@ import {
 // — vêm nas próximas PRs (browser-manager com Playwright, etc).
 
 const DEFAULT_PORT = Number(process.env.DECKY_SERVER_PORT) || 8447
-const DEFAULT_HOST = process.env.DECKY_SERVER_HOST || '127.0.0.1'
+// Bind padrão era loopback (127.0.0.1) — só processos no mesmo host conectavam, via tunnel
+// SSH no caso do decky desktop. Pra PWA acessar do celular/outro PC na rede, escuta em
+// 0.0.0.0. O token bearer ainda protege (gerado random em ensureToken). Pra rede menos
+// confiável: continua possível restringir via DECKY_SERVER_HOST=127.0.0.1.
+const DEFAULT_HOST = process.env.DECKY_SERVER_HOST || '0.0.0.0'
 
 async function start(): Promise<void> {
   console.log('[decky-server] starting…')
@@ -41,15 +55,27 @@ async function start(): Promise<void> {
     console.warn('[decky-server] history db failed to open:', err)
   }
 
+  // PWA web bundle: o mesmo httpServer do WS serve a UI estática pra browsers (celular,
+  // outro PC). Default fica em ~/.decky-server/web/; skipa se o dir não existe — server segue
+  // só WS, comportamento pré-PWA.
+  const webDir = process.env.DECKY_SERVER_WEB_DIR || join(serverDir(), 'web')
+  const staticRoot = existsSync(webDir) ? webDir : undefined
+
   let ws: DeckyWsServer
   try {
-    ws = await startWsServer({ host: DEFAULT_HOST, port: DEFAULT_PORT, token })
+    ws = await startWsServer({ host: DEFAULT_HOST, port: DEFAULT_PORT, token, staticRoot })
   } catch (err) {
     console.error('[decky-server] failed to start WS server:', err)
     process.exit(1)
   }
   console.log(`[decky-server] WS listening at ${ws.url}`)
   console.log(`[decky-server] connect with: ${ws.url}?token=${token}`)
+  if (staticRoot) {
+    console.log(`[decky-server] serving web bundle from ${staticRoot}`)
+    console.log(`[decky-server] open browser at http://${DEFAULT_HOST}:${ws.port}/?token=${token}`)
+  } else {
+    console.log(`[decky-server] (no web bundle at ${webDir} — PWA disabled; WS-only)`)
+  }
 
   registerCliWsHandlers(ws)
   registerStateWsHandlers(ws)
@@ -58,8 +84,16 @@ async function start(): Promise<void> {
   registerTagsIndexWsHandlers(ws)
   registerHistoryWsHandlers(ws)
   registerPtyWsHandlers(ws)
+  registerClaudeWsHandlers(ws)
+  registerCardsCoreWsHandlers(ws)
+  registerCardsExtraWsHandlers(ws)
+  registerCardMirrorWsHandlers(ws)
+  registerSessionsWsHandlers(ws)
+  registerFileWsHandlers(ws)
+  registerServerInfoWsHandlers(ws)
+  registerDevicesWsHandlers(ws)
   console.log(
-    '[decky-server] handlers registered (cli, state, git, workspace, tagsIndex, history, pty)'
+    '[decky-server] handlers registered (cli, state, git, workspace, tagsIndex, history, pty, claude, cards, mirror, sessions, file)'
   )
   console.log('[decky-server] ready — Ctrl+C para encerrar')
 

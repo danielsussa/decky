@@ -5,6 +5,7 @@ import {
   applyAutoFix,
   readTextFile,
   readBinaryFile,
+  writeBinaryFileBase64,
   writeTextFile,
   type DeckyWsServer
 } from '@decky/server'
@@ -126,5 +127,10 @@ export function registerFileWatchHandlers(
   )
   ws.handle<{ path: string; content: string }, boolean>('file:write', (args) =>
     writeTextFile(args?.path ?? '', args?.content ?? '')
+  )
+  // Binary write via base64 — usado por paste de imagem (sessão local ou remota; aqui é o
+  // caminho do engine local). Mesma implementação que o standalone server usa.
+  ws.handle<{ path: string; base64: string }, boolean>('file:write-binary-base64', (args) =>
+    writeBinaryFileBase64(args?.path ?? '', args?.base64 ?? '')
   )
 }

@@ -2,7 +2,7 @@ import * as pty from 'node-pty'
 import os from 'os'
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { workspaceCardsDir } from '@decky/shared/node'
 import { sessionHandoffSocketPath } from './handoff-paths'
 import { sanitizeTranscript } from './transcript-repair'
@@ -62,6 +62,10 @@ export function loginShellPath(): string {
   if (cachedPath) return cachedPath
   const shell = process.env.SHELL || '/bin/zsh'
   const fallback = ['/opt/homebrew/bin', '/usr/local/bin', join(os.homedir(), '.local', 'bin')]
+  // CLIs (claude, codex…) instalados localmente pelo install pipeline do decky-server vão
+  // pra ~/.decky-server/node_modules/.bin. Inclui no PATH pra spawnar mesmo quando o host
+  // remoto não tem `claude` global (e sem precisar de sudo pro install).
+  const serverLocalBin = join(os.homedir(), '.decky-server', 'node_modules', '.bin')
   let resolved = ''
   try {
     resolved = execSync(`${shell} -lc 'echo $PATH'`, { encoding: 'utf-8', timeout: 3000 }).trim()
@@ -69,13 +73,40 @@ export function loginShellPath(): string {
     // login shell unavailable — fall back to the common dirs below
   }
   // Order: login-shell PATH first (user's preferred toolchain wins), then the
-  // fallback dirs, then whatever the GUI process already had. Set dedups.
+  // fallback dirs, then whatever the GUI process already had, então o .bin local
+  // do decky-server por último (fallback se nada mais resolver). Set dedups.
   const parts = new Set<string>()
   for (const p of resolved.split(':')) if (p) parts.add(p)
   for (const p of fallback) parts.add(p)
   for (const p of (process.env.PATH || '').split(':')) if (p) parts.add(p)
+  parts.add(serverLocalBin)
   cachedPath = Array.from(parts).join(':')
   return cachedPath
+}
+
+/**
+ * Resolve o bin a executar no HOST onde este pty-manager roda. O renderer (no client) pode ter
+ * detectado um path absoluto no Mac e mandado isso como command[0]; num engine remoto esse path
+ * não existe. Estratégia:
+ *   - basename simples (sem '/') → deixa direto, execvp acha pelo PATH.
+ *   - path absoluto que EXISTE → usa direto.
+ *   - path absoluto que NÃO existe → cai pro basename (resolve pelo PATH, que inclui o
+ *     ~/.decky-server/node_modules/.bin onde o install pipeline coloca claude/codex).
+ */
+function resolveBinForHost(file: string): string {
+  if (!isAbsolute(file)) return file
+  if (existsSync(file)) return file
+  return basename(file)
+}
+
+function binMissingHint(originalBin: string): string {
+  const name = basename(originalBin)
+  return (
+    `\r\n\x1b[31m[decky] '${name}' não encontrado neste host.\x1b[0m\r\n` +
+    `\x1b[2mO engine remoto precisa do CLI instalado. Reabra o "Connect to Server…" pra ` +
+    `reinstalar o engine, ou rode manualmente:\x1b[0m\r\n` +
+    `\x1b[2m  cd ~/.decky-server && npm install ${name === 'claude' ? '@anthropic-ai/claude-code' : name}\x1b[0m\r\n`
+  )
 }
 
 const ptys = new Map<string, pty.IPty>()
@@ -210,30 +241,44 @@ function triggerRecovery(id: string): void {
 
 function spawnPty(args: CreatePtyArgs): void {
   spawnArgs.set(args.id, args)
-  const file = args.command?.[0] ?? args.shell ?? defaultShell()
+  const requestedFile = args.command?.[0] ?? args.shell ?? defaultShell()
+  // O renderer pode ter mandado um path absoluto resolvido no host LOCAL (Mac); num engine
+  // remoto esse path não existe. Refaz o resolve aqui, no host onde realmente vamos spawnar.
+  const file = resolveBinForHost(requestedFile)
   const rawArgv = args.command ? args.command.slice(1) : []
   const argv = resolveClaudeArgv(rawArgv, args.cwd ?? os.homedir())
 
-  const term = pty.spawn(file, argv, {
-    name: 'xterm-256color',
-    cols: args.cols,
-    rows: args.rows,
-    cwd: args.cwd ?? os.homedir(),
-    env: {
-      ...(process.env as { [key: string]: string }),
-      // GUI launch gives us launchd's minimal PATH; restore the user's real
-      // PATH so claude (and the MCP servers + node/npx it spawns) find node.
-      PATH: loginShellPath(),
-      DECKY_SESSION_ID: args.id,
-      DECKY_URL: process.env.DECKY_URL || 'http://127.0.0.1:6790',
-      // Where this workspace's shared card .md files live, so the bot can Glob/Read them.
-      DECKY_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir()),
-      // Socket DESTA sessão pro handoff CLI/SDK/MCP. O backend só dirige cards da própria
-      // sessão — sem isso, qualquer cliente caía no socket global e mexia em card de
-      // outra sessão/workspace. Bound pelo callback onHandoffStart abaixo.
-      HANDOFF_SOCKET: sessionHandoffSocketPath(args.id)
-    }
-  })
+  let term: pty.IPty
+  try {
+    term = pty.spawn(file, argv, {
+      name: 'xterm-256color',
+      cols: args.cols,
+      rows: args.rows,
+      cwd: args.cwd ?? os.homedir(),
+      env: {
+        ...(process.env as { [key: string]: string }),
+        // GUI launch gives us launchd's minimal PATH; restore the user's real
+        // PATH so claude (and the MCP servers + node/npx it spawns) find node.
+        PATH: loginShellPath(),
+        DECKY_SESSION_ID: args.id,
+        DECKY_URL: process.env.DECKY_URL || 'http://127.0.0.1:6790',
+        // Where this workspace's shared card .md files live, so the bot can Glob/Read them.
+        DECKY_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir()),
+        // Socket DESTA sessão pro handoff CLI/SDK/MCP. O backend só dirige cards da própria
+        // sessão — sem isso, qualquer cliente caía no socket global e mexia em card de
+        // outra sessão/workspace. Bound pelo callback onHandoffStart abaixo.
+        HANDOFF_SOCKET: sessionHandoffSocketPath(args.id)
+      }
+    })
+  } catch (err) {
+    // node-pty pode jogar throw síncrono quando o bin não existe no PATH. Sem este catch a
+    // exception se perdia no WS e o renderer mostrava 'execvp(3) failed: No such file or
+    // directory' — mensagem inútil pro usuário.
+    console.warn(`[pty] spawn '${file}' failed:`, err)
+    events.onData?.(args.id, binMissingHint(requestedFile))
+    events.onExit?.(args.id, 127)
+    return
+  }
 
   ptys.set(args.id, term)
   // Sobe o backend handoff scoped na sessão. Idempotente — recovery respawn cai no mesmo.

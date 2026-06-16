@@ -8,7 +8,7 @@ import { approvePending, listAll, rejectPending, revokeDevice } from './devices'
 import { deleteCard, listCards, writeCard } from './cards-store'
 import { computeBacklinks, resolveWikilink } from './cards-wikilinks'
 import { readAiTitle, resolveClaudeBin } from './claude-bin'
-import { readTextFile, writeBinaryFileBase64, writeTextFile } from './file-ops'
+import { readBinaryFileBase64, readTextFile, writeBinaryFileBase64, writeTextFile } from './file-ops'
 import { getSessionTitles } from './preview-state'
 import type { DeckyWsServer } from './ws-server'
 
@@ -151,5 +151,10 @@ export function registerFileWsHandlers(ws: DeckyWsServer): void {
   // image no clipboard, encode base64 e sobe pra /tmp/decky-paste-X.png no host do engine).
   ws.handle<{ path: string; base64: string }, boolean>('file:write-binary-base64', (args) =>
     writeBinaryFileBase64(args?.path ?? '', args?.base64 ?? '')
+  )
+  // Counterpart read. Assets binários (.png, .jpg, .woff) embutidos em cards de workspace
+  // remoto vêm por aqui — remote-card-fetcher detecta extensão binária e usa este handler.
+  ws.handle<{ path: string }, string | null>('file:read-binary-base64', (args) =>
+    readBinaryFileBase64(args?.path ?? '')
   )
 }

@@ -279,10 +279,26 @@ async function fastSwap(
   }
 
   send('\n✓ fast-swap done — click Restart when ready\n')
+  // Hook A (sync remoto) também roda no caminho fastSwap — antes só rodava no dev-unpack,
+  // então mudanças em packages/decky-server/src/ não chegavam ao PI quando fast-swap pegava.
+  if (onRebuildComplete) {
+    void onRebuildComplete(send).catch((err) => {
+      send(`\n⚠ remote sync threw: ${(err as Error).message}\n`)
+    })
+  }
   return { ok: true }
 }
 
 let rebuilding = false
+
+// Hook chamada após cada rebuild bem-sucedido (fastSwap ou dev-unpack). Configurado via
+// setRebuildCompleteHook pelo main no boot — evita import circular (main/index importa este
+// módulo). Recebe o `send` pro hook logar progresso no painel do rebuild.
+type RebuildCompleteHook = (send: (line: string) => void) => Promise<void>
+let onRebuildComplete: RebuildCompleteHook | null = null
+export function setRebuildCompleteHook(hook: RebuildCompleteHook | null): void {
+  onRebuildComplete = hook
+}
 
 async function doRebuild(
   send: (line: string) => void
@@ -349,6 +365,14 @@ async function doRebuild(
 
     // Don't auto-relaunch: o usuário pode estar ocupado em outra sessão. UI vira botão Restart.
     send('\n✓ built — click Restart when ready\n')
+    // Sync pros engines remotos em paralelo. Não bloqueia a UI do rebuild — logs fluem por
+    // emitOutput. Falha individual de um engine não derruba o rebuild "ok" (já temos o swap
+    // local; remoto pode ser re-sincronizado depois).
+    if (onRebuildComplete) {
+      void onRebuildComplete(send).catch((err) => {
+        send(`\n⚠ remote sync threw: ${(err as Error).message}\n`)
+      })
+    }
     return { ok: true }
   } catch (err) {
     send(`\n✗ ${(err as Error).message}\n`)
@@ -357,6 +381,7 @@ async function doRebuild(
     rebuilding = false
   }
 }
+
 
 function doRelaunch(): void {
   // LaunchServices (`open <bundle>`) em vez do exec default do app.relaunch — sobrevive ao

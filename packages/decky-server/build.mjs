@@ -56,3 +56,29 @@ if (result.errors.length) {
 }
 
 console.log(`✓ built ${outDir}/decky-server.js`)
+
+// dk-mcp self-contained bundle. O source vive em bin/dky-mcp e usa dynamic import pra
+// @modelcontextprotocol/sdk; no PI não tem node_modules instalados, então o source puro
+// quebra no spawn. Aqui esbuild empacota tudo num único .js que o claude no engine remoto
+// consegue rodar com `node`. Mesma config do build/afterPack.cjs (electron-builder) — mas
+// pra o caminho de dev/sync remoto, que não passa por afterPack.
+const dkMcpSrc = join(__dirname, '..', '..', 'bin', 'dky-mcp')
+const dkMcpOut = join(outDir, 'dk-mcp.bundled.js')
+const mcpResult = await build({
+  entryPoints: [dkMcpSrc],
+  bundle: true,
+  platform: 'node',
+  target: 'node18',
+  format: 'cjs',
+  outfile: dkMcpOut,
+  sourcemap: false,
+  minify: false,
+  logLevel: 'info'
+})
+
+if (mcpResult.errors.length) {
+  console.error('dk-mcp build errors:', mcpResult.errors)
+  process.exit(1)
+}
+
+console.log(`✓ built ${dkMcpOut}`)

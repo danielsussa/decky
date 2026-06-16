@@ -162,7 +162,13 @@ class WebViewsManager {
         // With contextIsolation on, the preload runs in an isolated world and the page keeps
         // bare Chromium. The guest is still sandboxed with no Node — dropping isolation only
         // affects how the preload's spoofs reach the page, not what the page can do.
-        contextIsolation: false
+        contextIsolation: false,
+        // webSecurity OFF — cards card://ws-XXX/foo.html precisam embeber recursos same-origin
+        // (img ./asset.png, iframe http://127.0.0.1:6789 do Live View). Default `true` aplica
+        // CSP estilo navegador que bloqueia cross-scheme (card:// → http://). Sem Node + sandbox
+        // continua isolando o renderer; o trade-off é exatamente o que cards precisam: HTML
+        // arbitrário com assets locais + iframes pra serviços do host.
+        webSecurity: false
       }
     })
     const wc = view.webContents

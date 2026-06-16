@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   closeHistoryDb,
+  ensureDeckMcpRegistered,
   ensureToken,
   generateAndSaveToken,
   openHistoryDb,
@@ -23,6 +24,7 @@ import {
   registerTagsIndexWsHandlers,
   registerWorkspaceWsHandlers,
   serverDir,
+  startStandalonePreviewServer,
   startWsServer,
   type DeckyWsServer
 } from '../src/index'
@@ -93,8 +95,25 @@ async function start(): Promise<void> {
   registerServerInfoWsHandlers(ws)
   registerDevicesWsHandlers(ws)
   console.log(
-    '[decky-server] handlers registered (cli, state, git, workspace, tagsIndex, history, pty, claude, cards, mirror, sessions, file)'
+    '[decky-server] handlers registered (cli, state, git, workspace, tagsIndex, history, pty, claude, cards, mirror, sessions, file, devices)'
   )
+
+  // Preview-server HTTP (porta 6790) — dk-mcp do claude bate aqui pra preview_*, formulários,
+  // RPC de widgets, busca em cards. Sem isso, MCP `preview_html` etc falham com ECONNREFUSED
+  // quando claude roda nesta máquina.
+  const previewPort = Number(process.env.DECKY_PREVIEW_PORT) || 6790
+  startStandalonePreviewServer(() => ws, { port: previewPort })
+
+  // Registra o dk-mcp no ~/.claude.json se existir um bin local (ex: empacotado pelo install
+  // pipeline em ~/.decky-server/dk-mcp.js). Idempotente — no-op se já registrado.
+  const dkMcpPath = process.env.DECKY_DK_MCP_PATH || join(serverDir(), 'dk-mcp.js')
+  if (existsSync(dkMcpPath)) {
+    void ensureDeckMcpRegistered(dkMcpPath).catch((err) => {
+      console.warn('[mcp-installer] failed:', err)
+    })
+  } else {
+    console.log(`[decky-server] dk-mcp not found at ${dkMcpPath} — MCP tools won't be auto-registered`)
+  }
   console.log('[decky-server] ready — Ctrl+C para encerrar')
 
   let shuttingDown = false

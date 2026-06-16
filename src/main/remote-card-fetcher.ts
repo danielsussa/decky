@@ -24,15 +24,26 @@ import type { Engine } from '@decky/shared'
 // Sem este módulo, o WebContentsView que carrega card://ws-XXX/foo.html mostrava "not found"
 // pra todos os cards do engine remoto.
 
-// host → engine (lookup em hot path; nunca remove — o engine pode reconectar a qualquer momento).
-const hostToEngine = new Map<string, Engine>()
+// host → engineId. Cacheamos só o ID — a Engine atual (URL/token) vem do provider injetado
+// pelo main, que SEMPRE devolve a versão fresca de `rendererEngines`. Sem isso, quando o
+// reconnect abre tunnel com porta nova, o cached Engine ficava com URL morta e o próximo
+// fetch dava ECONNREFUSED → "remote read failed" → 502 no card://.
+const hostToEngineId = new Map<string, string>()
+
+let engineLookup: (id: string) => Engine | undefined = () => undefined
+
+export function setRemoteCardEngineLookup(fn: (id: string) => Engine | undefined): void {
+  engineLookup = fn
+}
 
 export function setRemoteCardEngine(host: string, engine: Engine): void {
-  hostToEngine.set(host, engine)
+  hostToEngineId.set(host, engine.id)
 }
 
 export function getRemoteCardEngine(host: string): Engine | undefined {
-  return hostToEngine.get(host)
+  const id = hostToEngineId.get(host)
+  if (!id) return undefined
+  return engineLookup(id)
 }
 
 // Conexão WS short-lived por request. Boa o suficiente pra começar (cards são poucos por session
@@ -120,7 +131,7 @@ export async function resolveRemoteCardRequest(req: {
     return null
   }
   const host = parsed.hostname
-  const engine = hostToEngine.get(host)
+  const engine = getRemoteCardEngine(host)
   if (!engine) return null // local — handler delega
 
   const cardsDir = getCardsDirForHost(host)
@@ -154,6 +165,48 @@ export async function resolveRemoteCardRequest(req: {
     return { status: 403, body: 'forbidden' }
   }
 
+  const ext = extname(target).toLowerCase()
+  // Extensões binárias: lê via base64 e decodifica num Buffer. PNG/JPG/etc lidos como UTF-8
+  // viram string corrompida — sem este branch, imagens em cards remotos quebravam.
+  const BINARY_EXTS = new Set([
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.webp',
+    '.avif',
+    '.ico',
+    '.woff',
+    '.woff2',
+    '.ttf',
+    '.otf',
+    '.wasm',
+    '.pdf'
+  ])
+  if (BINARY_EXTS.has(ext)) {
+    let b64: string | null
+    try {
+      b64 = await wsInvoke<string | null>(engine.url, engine.token, 'file:read-binary-base64', {
+        path: target
+      })
+    } catch (err) {
+      return { status: 502, body: `remote read failed: ${(err as Error).message}` }
+    }
+    if (b64 == null) return { status: 404, body: 'not found' }
+    const mime = MIME[ext] ?? 'application/octet-stream'
+    return {
+      status: 200,
+      headers: {
+        'content-type': mime,
+        'cache-control': 'no-store',
+        // CORS open: o card HTML carrega de card:// e referencia `./img.png` que vira
+        // outra origem card:// pro browser. Sem ACAO, alguns user agents bloqueiam.
+        'access-control-allow-origin': '*'
+      },
+      body: Buffer.from(b64, 'base64')
+    }
+  }
+
   let content: string | null
   try {
     content = await wsInvoke<string | null>(engine.url, engine.token, 'file:read-text', {
@@ -167,7 +220,6 @@ export async function resolveRemoteCardRequest(req: {
   }
   if (content == null) return { status: 404, body: 'not found' }
 
-  const ext = extname(target).toLowerCase()
   // .md → wrap como HTML scaffold (marked client-side) — paridade com fluxo local.
   if (ext === '.md') {
     return {
@@ -183,8 +235,7 @@ export async function resolveRemoteCardRequest(req: {
       body: rewriteMarkedImports(injectDefaultCss(content))
     }
   }
-  // Outros assets textuais (css/js) — devolve como veio. Binários (.png etc) NÃO chegam aqui
-  // pelo file:read-text (string only); são uma limitação conhecida pra cards remotos por enquanto.
+  // Outros textuais (css/js/svg/json) — devolve como veio.
   const mime = MIME[ext] ?? 'text/plain; charset=utf-8'
   return {
     status: 200,

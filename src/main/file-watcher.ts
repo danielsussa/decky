@@ -3,8 +3,9 @@ import { dirname, join } from 'node:path'
 import { ipcMain, type BrowserWindow } from 'electron'
 import {
   applyAutoFix,
-  readTextFile,
   readBinaryFile,
+  readBinaryFileBase64,
+  readTextFile,
   writeBinaryFileBase64,
   writeTextFile,
   type DeckyWsServer
@@ -132,5 +133,8 @@ export function registerFileWatchHandlers(
   // caminho do engine local). Mesma implementação que o standalone server usa.
   ws.handle<{ path: string; base64: string }, boolean>('file:write-binary-base64', (args) =>
     writeBinaryFileBase64(args?.path ?? '', args?.base64 ?? '')
+  )
+  ws.handle<{ path: string }, string | null>('file:read-binary-base64', (args) =>
+    readBinaryFileBase64(args?.path ?? '')
   )
 }

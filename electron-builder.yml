@@ -5,6 +5,10 @@ directories:
 files:
   - '!**/.vscode/*'
   - '!src/*'
+  # .decky/ é workspace state local (cards/transcripts do próprio projeto). Não entra no
+  # bundle — pode ter symlinks (ex: cards/bg-review/imgs → src/renderer/src/assets/bg) que
+  # apontam pra dirs excluídos por !src/*, batendo ENOENT no electron-builder packaging.
+  - '!.decky/**'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'

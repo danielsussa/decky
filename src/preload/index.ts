@@ -46,6 +46,11 @@ function subscribeEnginePty(engineId: string): void {
 // deck.engines.add → subscribeEnginePty.
 for (const e of listEngines()) subscribeEnginePty(e.id)
 
+// preview:source-changed pode vir do preview-server de QUALQUER engine (local Electron OU
+// remoto standalone). reqIdToEngine lembra qual engine originou cada reqId pro ack
+// `preview:resolved` voltar pelo socket certo. Pequeno e expira na primeira ack.
+const reqIdToEngine = new Map<string, string>()
+
 // Reconexão automática: o main dispara doOpenRemote em background pra cada engine remoto no
 // boot e emite 'engines:updated' (no engine local) quando o tunnel volta vivo. Aqui escutamos
 // e fazemos upsertEngine, que troca a url+token cacheados e força reconexão da WS — sem isso,
@@ -118,16 +123,45 @@ const deckApi = {
         source: PreviewSource
         reqId?: string
       }) => void
-    ): (() => void) =>
-      wsOn<{ sessionId: string; cardId: string | null; source: PreviewSource; reqId?: string }>(
-        L,
-        'preview:source-changed',
-        callback
-      ),
-    // Ack a preview:source-changed broadcast: tell server which card the inline source actually
-    // landed on so the HTTP /preview response can echo cardId+path back to the MCP caller.
+    ): (() => void) => {
+      // Fan-in: previews podem chegar de QUALQUER engine (local + cada remoto rodando
+      // preview-server próprio). Pra cada engine conhecido + futuros (engines:updated), assina
+      // o broadcast. Cada reqId é mapeado pro engine de origem pra o ack `preview:resolved`
+      // voltar pra quem disparou (essencial pro POST /preview no engine certo desbloquear).
+      const wrap = (engineId: string) =>
+        (m: {
+          sessionId: string
+          cardId: string | null
+          source: PreviewSource
+          reqId?: string
+        }): void => {
+          if (m?.reqId) reqIdToEngine.set(m.reqId, engineId)
+          callback(m)
+        }
+      const unsubs: Array<() => void> = []
+      const subscribed = new Set<string>()
+      const subscribeOne = (id: string): void => {
+        if (subscribed.has(id)) return
+        subscribed.add(id)
+        unsubs.push(wsOn(id, 'preview:source-changed', wrap(id)))
+      }
+      for (const e of listEngines()) subscribeOne(e.id)
+      // Cobre engines adicionados em runtime (Add server, reconect via engines:updated).
+      const unsubEnginesUpdated = wsOn<Engine>(L, 'engines:updated', (engine) => {
+        subscribeOne(engine.id)
+      })
+      return () => {
+        for (const u of unsubs) u()
+        unsubEnginesUpdated()
+      }
+    },
+    // Ack a preview:source-changed broadcast: roteado pelo engine que originou esse reqId
+    // (cacheado em reqIdToEngine quando o broadcast chegou). Sem o lookup, ack de preview do
+    // engine remoto ia pro local — POST /preview no PI ficaria pendurado pra sempre.
     resolved: (payload: { reqId: string; cardId: string; path?: string; title?: string }): void => {
-      void wsSend(L, 'preview:resolved', payload)
+      const engineId = reqIdToEngine.get(payload.reqId) ?? L
+      reqIdToEngine.delete(payload.reqId)
+      void wsSend(engineId, 'preview:resolved', payload)
     }
   },
   workspace: {

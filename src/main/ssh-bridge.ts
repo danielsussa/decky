@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -482,6 +483,14 @@ async function doInstall(ctx: InstallContext): Promise<{ ok: boolean; error?: st
 // ── Start server + SSH tunnel ──────────────────────────────────────────────
 
 const REMOTE_SERVER_PORT = 8447
+// Live View do handoff escuta na 6789 no host onde o claude roda. Pra cards HTML do
+// workspace remoto referenciarem o iframe `http://127.0.0.1:6789/tab/X` direto, abrimos
+// um tunnel extra com porta LOCAL fixa = 6789. Se 6789 local estiver ocupada, skipa.
+const LIVE_VIEW_PORT = 6789
+
+// Tunnels secundários: 1 por host, vida atrelada ao tunnel principal. Não bloqueiam
+// open-remote — best-effort.
+const extraTunnels = new Map<string, TunnelHandle>()
 const TOKEN_WAIT_TIMEOUT_MS = 10_000
 const TOKEN_WAIT_INTERVAL_MS = 300
 
@@ -524,11 +533,20 @@ interface TunnelHandle {
 
 const tunnels = new Map<string, TunnelHandle>()
 
-/** Spawn de `ssh -N -L <local>:127.0.0.1:<remote>` pra criar o forward. */
-async function openTunnel(host: string, identity: string | undefined, remotePort: number): Promise<TunnelHandle> {
+/** Spawn de `ssh -N -L <local>:127.0.0.1:<remote>` pra criar o forward.
+ *  Se `desiredLocalPort` for setado, tenta bind nele (não dinâmico). Usado pra portas
+ *  bem-conhecidas do host remoto (Live View = 6789) — cards HTML com URLs hardcoded
+ *  `http://127.0.0.1:6789` falham se virar uma porta aleatória.
+ */
+async function openTunnel(
+  host: string,
+  identity: string | undefined,
+  remotePort: number,
+  desiredLocalPort?: number
+): Promise<TunnelHandle> {
   const parsed = parseHost(host)
   const userAtHost = parsed.user ? `${parsed.user}@${parsed.host}` : parsed.host
-  const localPort = await pickFreeLocalPort()
+  const localPort = desiredLocalPort ?? (await pickFreeLocalPort())
   const sshArgs = [
     '-N',
     '-L',
@@ -676,6 +694,21 @@ async function doOpenRemote(ctx: {
     // Garantia: se o decky fechar antes do user, o tunnel cai junto.
     app.on('before-quit', () => tunnel.kill())
 
+    // Tunnel best-effort pra Live View do handoff (porta 6789). Cards HTML remotos com
+    // iframes `http://127.0.0.1:6789/tab/X` passam a ver o handoff do PI via essa porta
+    // LOCAL no Mac. Falha (ex: 6789 ocupada por outro processo) é só warning — não derruba
+    // open-remote, só significa que esses iframes vão continuar em branco até liberar a porta.
+    const prevExtra = extraTunnels.get(ctx.host)
+    if (prevExtra) prevExtra.kill()
+    try {
+      const extra = await openTunnel(ctx.host, ctx.identity, LIVE_VIEW_PORT, LIVE_VIEW_PORT)
+      extraTunnels.set(ctx.host, extra)
+      app.on('before-quit', () => extra.kill())
+      console.log(`[ssh] live-view tunnel up: 127.0.0.1:${LIVE_VIEW_PORT} → ${ctx.host}:${LIVE_VIEW_PORT}`)
+    } catch (err) {
+      console.warn(`[ssh] live-view tunnel (port ${LIVE_VIEW_PORT}) failed: ${(err as Error).message}`)
+    }
+
     const localUrl = `ws://127.0.0.1:${tunnel.localPort}`
     emitStep('open-tunnel', 'ok', `${localUrl}`)
     return { ok: true, localUrl, token }
@@ -724,4 +757,118 @@ export async function openRemoteSilent(
   identity: string | undefined
 ): Promise<OpenRemoteResult> {
   return doOpenRemote({ host, identity, emit: () => {} })
+}
+
+// ── Sync remote: rebuild local → sobe bundles novos pro engine remoto ─────────
+
+function sha256OfFile(path: string): string | null {
+  try {
+    const buf = readFileSync(path)
+    return createHash('sha256').update(buf).digest('hex')
+  } catch {
+    return null
+  }
+}
+
+function findOptionalBundle(relPath: string): string | null {
+  const appPath = app.getAppPath()
+  const candidates = [
+    join(appPath, relPath),
+    join(appPath, '..', relPath),
+    join(appPath, '..', '..', relPath)
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  return null
+}
+
+export interface SyncResult {
+  ok: boolean
+  uploaded: string[]
+  skipped: string[]
+  error?: string
+}
+
+/**
+ * Sobe os bundles atualizados (decky-server.js, dk-mcp.js, web/index.html) pro engine remoto
+ * via SSH/SFTP. Compara SHA256 local vs remoto (via `sha256sum`) — só sobe o que mudou.
+ * Após upload, mata o server e reinicia. Quem chamar precisa REABRIR o tunnel SSH local pra
+ * pegar a nova porta dinâmica do server reiniciado (doOpenRemote faz isso).
+ */
+export async function syncServerBundlesToRemote(
+  host: string,
+  identity: string | undefined
+): Promise<SyncResult> {
+  const result: SyncResult = { ok: true, uploaded: [], skipped: [] }
+
+  const localServer = findOptionalBundle('packages/decky-server/dist/decky-server.js')
+  const localDkMcp = findOptionalBundle('packages/decky-server/dist/dk-mcp.bundled.js')
+  const localWeb = findOptionalBundle('packages/decky-server/web/index.html')
+  if (!localServer) {
+    return { ok: false, uploaded: [], skipped: [], error: 'decky-server.js bundle não encontrado local — rode build primeiro' }
+  }
+
+  let session: SshSession
+  try {
+    session = await sshConnect(host, identity)
+  } catch (err) {
+    return { ok: false, uploaded: [], skipped: [], error: (err as Error).message }
+  }
+
+  try {
+    const home = await execOn(session.client, 'echo $HOME', 3_000)
+    const homeDir = home.stdout.trim()
+    if (!home.ok || !homeDir) {
+      return { ok: false, uploaded: [], skipped: [], error: '$HOME unresolved' }
+    }
+    const remoteBase = `${homeDir}/.decky-server`
+
+    // Garante dirs.
+    await execOn(session.client, `mkdir -p "${remoteBase}/dist" "${remoteBase}/web"`, 6_000)
+
+    const tasks: Array<{ name: string; local: string; remote: string }> = [
+      { name: 'decky-server.js', local: localServer, remote: `${remoteBase}/dist/decky-server.js` }
+    ]
+    if (localDkMcp) tasks.push({ name: 'dk-mcp.js', local: localDkMcp, remote: `${remoteBase}/dk-mcp.js` })
+    if (localWeb) tasks.push({ name: 'web/index.html', local: localWeb, remote: `${remoteBase}/web/index.html` })
+
+    for (const t of tasks) {
+      const localHash = sha256OfFile(t.local)
+      if (!localHash) continue
+      // Best-effort: pega hash remoto. Se sha256sum não existir ou der erro, considera diff.
+      const remoteHashCheck = await execOn(
+        session.client,
+        `sha256sum "${t.remote}" 2>/dev/null | awk '{print $1}' || true`,
+        5_000
+      )
+      const remoteHash = remoteHashCheck.stdout.trim()
+      if (remoteHash && remoteHash === localHash) {
+        result.skipped.push(t.name)
+        continue
+      }
+      const up = await putOn(session.client, t.local, t.remote)
+      if (!up.ok) {
+        return { ok: false, uploaded: result.uploaded, skipped: result.skipped, error: `${t.name}: ${up.error}` }
+      }
+      result.uploaded.push(t.name)
+    }
+
+    // Se subiu o decky-server.js, restart no remoto. Outros bundles não precisam restart
+    // (dk-mcp é spawnado pelo claude on-demand; web é HTTP estático servido como-is).
+    if (result.uploaded.includes('decky-server.js')) {
+      await execOn(
+        session.client,
+        `PID=$(lsof -ti:8447 2>/dev/null); if [ -n "$PID" ]; then kill "$PID"; sleep 1; fi
+         cd ${remoteBase} && nohup node dist/decky-server.js start >> ${remoteBase}/decky-server.log 2>&1 < /dev/null & disown
+         sleep 2
+         lsof -ti:8447 >/dev/null && echo restarted || echo failed-to-start`,
+        15_000
+      )
+    }
+
+    return result
+  } finally {
+    session.end()
+  }
 }

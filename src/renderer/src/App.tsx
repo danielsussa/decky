@@ -855,9 +855,13 @@ function App(): React.JSX.Element {
     })
     // Engine reconectou (URL/token novos via reconnectAllRemoteEngines no main). Re-sincroniza
     // a lista (pra refletir URL atualizada) e bumpa enginesVersion pra effects re-disparam.
-    const unsubEngines = window.deck.engines.onUpdate(() => {
+    const unsubEngines = window.deck.engines.onUpdate((engine) => {
+      console.log('[engines:updated]', engine?.id, '→ url=', engine?.url)
       setEngines(window.deck.engines.list())
-      setEnginesVersion((v) => v + 1)
+      setEnginesVersion((v) => {
+        console.log('[engines:updated] bumping enginesVersion', v, '→', v + 1)
+        return v + 1
+      })
     })
     void window.deck.state.get<Record<string, string>>('workspaceThemes').then((m) => {
       if (m && typeof m === 'object') setWorkspaceThemes(m)
@@ -1657,12 +1661,15 @@ function App(): React.JSX.Element {
   // olha o mapa populado por setRoutes (useEffect acima). Sem essa dep, no boot rodávamos
   // antes do mapa estar lá → workspace remoto era lido do engine LOCAL → null → cache vazio.
   useEffect(() => {
+    console.log('[wsCache] effect fired — workspaces:', workspaces.length, 'enginesVersion:', enginesVersion)
     for (const ws of workspaces) {
       if (ws === workspace) continue // active workspace uses live `sessions`
+      console.log('[wsCache] reading', ws)
       void window.deck.workspace
         .read<WorkspaceState>(ws)
         .then(async (data) => {
           const sess = data?.sessions ?? []
+          console.log('[wsCache]', ws, '→ sessions=', sess.length)
           // Label fallback chain matches the active workspace: session_set_title (persisted
           // `titles`) → claude's aiTitle (read from the .jsonl) → the random placeholder. Sem
           // a aiTitle step, sessões sem título explícito mostravam o placeholder aleatório até

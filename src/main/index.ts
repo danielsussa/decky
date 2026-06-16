@@ -31,7 +31,11 @@ import {
   rehydratePreviews
 } from './preview-server'
 import { registerLegacyIpcBridges } from './legacy-ipc'
-import { openRemoteSilent, registerSshHandlers } from './ssh-bridge'
+import {
+  openRemoteSilent,
+  registerSshHandlers,
+  syncServerBundlesToRemote
+} from './ssh-bridge'
 import { registerCardsHandlers } from './cards-store'
 import { registerTagsIndexHandlers } from './tags-index-watcher'
 import { searchCards } from '@decky/server'
@@ -54,7 +58,7 @@ import { registerTagsIndexWsHandlers } from '@decky/server'
 import { registerHistoryWsHandlers } from '@decky/server'
 import { registerCardsExtraWsHandlers, registerClaudeWsHandlers } from '@decky/server'
 import { startWsServer, type DeckyWsServer } from '@decky/server'
-import { registerDevRebuildHandlers } from './dev-rebuild'
+import { registerDevRebuildHandlers, setRebuildCompleteHook } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
 import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
 import { registerCardScheme, setupCardProtocol, cardUrlToAbsPath } from './card-protocol'
@@ -62,6 +66,7 @@ import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
 import { setupWebViews } from './web-views'
 import { setupHistory } from './history'
 import { setupHtmlServer, setHtmlRemoteEngineProvider } from './html-server'
+import { setRemoteCardEngineLookup } from './remote-card-fetcher'
 
 // Privileged scheme registration must happen before app is ready.
 registerAssetScheme()
@@ -185,12 +190,26 @@ async function addServerEngine(cfg: ServerEngineConfig & { url: string }): Promi
   return serverConfigToEngine(engine)
 }
 
-async function reconnectAllRemoteEngines(): Promise<void> {
+async function reconnectAllRemoteEngines(opts: { syncFirst?: boolean } = {}): Promise<void> {
   const servers = await loadServerConfigs()
   await Promise.allSettled(
     servers.map(async (s) => {
       if (!s.sshHost) return
       try {
+        // Safety net: ao reconectar, sincroniza bundles locais → remoto antes de reabrir o
+        // tunnel. Pega o caso "rebuildei mas o sync original falhou (rede caiu)" e "fechei o
+        // decky, atualizei, abri de novo — engine remoto ficou stale". Idempotente — só sobe
+        // o que mudou de hash.
+        if (opts.syncFirst) {
+          const sync = await syncServerBundlesToRemote(s.sshHost, s.sshIdentity)
+          if (sync.uploaded.length > 0) {
+            diag(`[engines] sync ${s.id}: uploaded ${sync.uploaded.join(', ')}`)
+          } else if (sync.ok) {
+            diag(`[engines] sync ${s.id}: all bundles up-to-date`)
+          } else {
+            diag(`[engines] sync ${s.id} failed: ${sync.error}`)
+          }
+        }
         const r = await openRemoteSilent(s.sshHost, s.sshIdentity)
         if (!r.ok || !r.localUrl || !r.token) {
           diag(`[engines] reconnect ${s.id} failed: ${r.error ?? 'no result'}`)
@@ -211,6 +230,48 @@ async function reconnectAllRemoteEngines(): Promise<void> {
         diag(`[engines] reconnect ${s.id} ok — ${r.localUrl}`)
       } catch (err) {
         diag(`[engines] reconnect ${s.id} threw: ${(err as Error).message}`)
+      }
+    })
+  )
+}
+
+// Hook A: depois do rebuild local, sincroniza bundles + restart pra cada engine remoto +
+// reabre tunnel SSH (nova porta dinâmica). Logs vão pro painel do rebuild via `send`.
+async function syncAllRemoteEnginesAfterRebuild(send: (line: string) => void): Promise<void> {
+  const servers = await loadServerConfigs()
+  const remotes = servers.filter((s) => !!s.sshHost)
+  if (remotes.length === 0) {
+    send('\n(no remote engines to sync)\n')
+    return
+  }
+  send(`\n→ syncing ${remotes.length} remote engine(s)…\n`)
+  await Promise.allSettled(
+    remotes.map(async (s) => {
+      const sync = await syncServerBundlesToRemote(s.sshHost!, s.sshIdentity)
+      if (!sync.ok) {
+        send(`  ✗ ${s.label}: ${sync.error}\n`)
+        return
+      }
+      if (sync.uploaded.length === 0) {
+        send(`  • ${s.label}: up-to-date\n`)
+        return
+      }
+      send(`  ✓ ${s.label}: uploaded ${sync.uploaded.join(', ')}\n`)
+      // Tunnel reabre — sync já reiniciou o server (porta dinâmica nova).
+      const r = await openRemoteSilent(s.sshHost!, s.sshIdentity)
+      if (r.ok && r.localUrl && r.token) {
+        const cfgs = await loadServerConfigs()
+        const i = cfgs.findIndex((c) => c.id === s.id)
+        if (i >= 0) {
+          cfgs[i] = { ...cfgs[i], url: r.localUrl, token: r.token }
+          await setState('engines', cfgs)
+        }
+        rendererEngines = await buildEngineList()
+        const eng = rendererEngines.find((e) => e.id === s.id)
+        if (eng) wsServer?.broadcast('engines:updated', eng)
+        send(`    tunnel reaberto → ${r.localUrl}\n`)
+      } else {
+        send(`    ⚠ tunnel reopen failed: ${r.error}\n`)
       }
     })
   )
@@ -460,6 +521,9 @@ app
     registerWidgetBridge(() => wsServer)
     registerFileWatchHandlers(() => mainWindow, () => wsServer)
     registerDevRebuildHandlers(() => mainWindow, () => wsServer)
+    // Hook A: rebuild local conclui → sync pra cada engine remoto (uploaded bundles + restart
+    // server + reabre tunnel). Logs aparecem no painel do rebuild via `send`.
+    setRebuildCompleteHook(syncAllRemoteEnginesAfterRebuild)
     setupAssetProtocol()
     setupCardProtocol()
     // Global default UA: strip the Electron/app token so any web surface that falls back to it
@@ -502,6 +566,10 @@ app
       if (!engineId || engineId === LOCAL_ENGINE_ID) return null
       return rendererEngines.find((e) => e.id === engineId) ?? null
     })
+    // Lookup pra hostToEngineId no remote-card-fetcher: SEMPRE retorna a versão fresca do
+    // engine (URL/token atual após reconnect). Sem isso, fetchs same-origin via card:// pra
+    // workspace remoto davam ECONNREFUSED → 502 — engine cacheado ficava com URL morta.
+    setRemoteCardEngineLookup((id) => rendererEngines.find((e) => e.id === id))
     diag('handlers registered, starting preview server')
     startPreviewServer(() => mainWindow, () => wsServer)
     // O backend do handoff agora sobe POR SESSÃO em pty.ts (start no spawn / stop no exit),
@@ -633,7 +701,9 @@ app
     // engines:updated pro preload trocar a url morta pela nova. NÃO bloqueia o boot — engine
     // fica com url stale por alguns segundos, depois reconecta. Falhas silenciosas (host
     // offline) deixam a engine com url velha — user vai ver erro real ao tentar usar.
-    void reconnectAllRemoteEngines()
+    // syncFirst: ANTES de reabrir o tunnel, sincroniza bundles locais com o remoto (safety
+    // net pra rebuilds que tinha falhado o sync, ou pra sync de versão nova ao boot do decky).
+    void reconnectAllRemoteEngines({ syncFirst: true })
 
     app.on('activate', function () {
       // On macOS it's common to re-create a window in the app when the

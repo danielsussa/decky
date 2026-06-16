@@ -21,6 +21,18 @@ export async function readBinaryFile(path: string): Promise<Uint8Array | null> {
   }
 }
 
+// Counterpart de writeBinaryFileBase64: lê bytes e devolve base64. Usado pra servir assets
+// binários (.png, .jpg, .woff, .wasm, …) embutidos em cards de workspace REMOTO via WS — o
+// protocolo WS é JSON-only, então binários só passam encodados.
+export async function readBinaryFileBase64(path: string): Promise<string | null> {
+  try {
+    const buf = await readFile(path)
+    return buf.toString('base64')
+  } catch {
+    return null
+  }
+}
+
 export async function writeBinaryFileBase64(path: string, base64: string): Promise<boolean> {
   try {
     await mkdir(dirname(path), { recursive: true })

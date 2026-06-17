@@ -7,12 +7,26 @@ export type { PreviewSource, Locale, Engine }
 export type PtyDataMsg = { id: string; data: string }
 export type PtyExitMsg = { id: string; code: number }
 export type PtyClaudeMsg = { id: string; running: boolean; sessionId?: string }
+export type ClaudeSessionInfo = {
+  id: string
+  title: string | null
+  gitBranch: string | null
+  lastPrompt: string | null
+  mtimeMs: number
+}
 
 export interface DeckAPI {
   pty: {
     create: (
       id: string,
-      opts: { cwd?: string; cols: number; rows: number; shell?: string; command?: string[] }
+      opts: {
+        cwd?: string
+        cols: number
+        rows: number
+        shell?: string
+        command?: string[]
+        claudeSessionId?: string
+      }
     ) => Promise<void>
     write: (id: string, data: string) => void
     resize: (id: string, cols: number, rows: number) => void
@@ -108,6 +122,8 @@ export interface DeckAPI {
     onTitleChange: (callback: (msg: { id: string; title: string }) => void) => () => void
     onAdd: (callback: (msg: { cwd: string }) => void) => () => void
     onWebTab: (callback: (msg: { title?: string }) => void) => () => void
+    listClaude: (cwd: string) => Promise<ClaudeSessionInfo[]>
+    deleteClaude: (cwd: string, id: string) => Promise<void>
   }
   app: {
     locale: Locale
@@ -201,6 +217,7 @@ export interface DeckAPI {
     reload: (cardId: string) => void
     stop: (cardId: string) => void
     openDevTools: (cardId: string) => void
+    onReload: (callback: (msg: { path: string }) => void) => () => void
     getState: (cardId: string) => Promise<{
       url: string
       title: string

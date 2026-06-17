@@ -1,5 +1,6 @@
 import { readFile, unlink } from 'node:fs/promises'
 import { extname, join, relative } from 'node:path'
+import { isCardManifest } from '@decky/shared'
 import { getCardsDirForHost } from './card-host-registry'
 import {
   DEFAULT_CSS_PATH,
@@ -8,6 +9,7 @@ import {
   getVirtualRoutes,
   injectBridgeBootstrap,
   injectDefaultCss,
+  renderManifest,
   rewriteMarkedImports,
   wrapMarkdownAsHtml
 } from './card-render'
@@ -57,7 +59,7 @@ export async function resolveCardRequest(req: CardRequest): Promise<CardResponse
           .filter(Boolean)
           .join('/')
         await Promise.all(
-          ['.html', '.md'].map(async (ext) => {
+          ['.html', '.md', '.json'].map(async (ext) => {
             const target = join(cardsDir, safe + ext)
             const rel = relative(cardsDir, target)
             if (rel.startsWith('..') || rel === '..') return
@@ -107,9 +109,50 @@ export async function resolveCardRequest(req: CardRequest): Promise<CardResponse
     if (rel.startsWith('..') || rel === '..') {
       return { status: 403, body: 'forbidden' }
     }
+
+    // URL SEM extensão → card-manifesto cuja URL omite o `.json` (card://host/foo → foo.json).
+    // O `.json` é detalhe de implementação; a URL do card fica limpa. Resolve <target>.json e,
+    // se for manifesto, renderiza. Senão, cai no fluxo normal (provavelmente 404).
+    if (extname(target) === '') {
+      try {
+        const raw = await readFile(target + '.json')
+        const parsed = JSON.parse(raw.toString('utf-8'))
+        if (isCardManifest(parsed)) {
+          const cardId = pathname.replace(/^\/+/, '')
+          return {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+            body: injectBridgeBootstrap(renderManifest(parsed), cardId)
+          }
+        }
+      } catch {
+        // não existe / não é manifesto → segue pro fluxo normal
+      }
+    }
+
     try {
       const buf = await readFile(target)
       const ext = extname(target).toLowerCase()
+      // .json card-manifesto ({ kind:'manifest', widgets:[...] }) → renderiza pra HTML on-the-fly
+      // (renderManifest). É o modelo "1 card = N widgets": a fonte é o JSON, o HTML é derivado.
+      // .json que NÃO é manifesto cai no serving cru (application/json) lá embaixo.
+      if (ext === '.json') {
+        let parsed: unknown = null
+        try {
+          parsed = JSON.parse(buf.toString('utf-8'))
+        } catch {
+          parsed = null
+        }
+        if (isCardManifest(parsed)) {
+          const cardId = pathname.replace(/^\/+/, '').replace(/\.json$/i, '')
+          return {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+            // renderManifest já injeta o link do default.css; só falta o bootstrap do bridge.
+            body: injectBridgeBootstrap(renderManifest(parsed), cardId)
+          }
+        }
+      }
       // .md → wrap em scaffold HTML (marked client-side) pra cards .md legados ainda
       // renderizarem corretamente também via este protocol.
       if (ext === '.md') {

@@ -44,6 +44,7 @@ import { registerWorkspaceWsHandlers } from '@decky/server'
 import { registerTagsIndexWsHandlers } from '@decky/server'
 import { registerHistoryWsHandlers } from '@decky/server'
 import { registerCardsExtraWsHandlers } from '@decky/server'
+import { listClaudeSessions, deleteClaudeSession, type ClaudeSessionInfo } from '@decky/server'
 import { startWsServer, type DeckyWsServer } from '@decky/server'
 import { registerDevRebuildHandlers } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
@@ -275,6 +276,15 @@ app
         // sessions:get-titles — Map vive em preview-state (@decky/server).
         wsServer.handle<void, Record<string, string>>('sessions:get-titles', () =>
           getSessionTitles()
+        )
+        // claudeSessions:list — conversas do claude no disco pra este cwd (aiTitle, branch, mtime).
+        // O renderer usa pra reconciliar o título das abas abertas + montar o picker de anteriores.
+        wsServer.handle<{ cwd: string }, ClaudeSessionInfo[]>('claudeSessions:list', (args) =>
+          listClaudeSessions(args?.cwd ?? '')
+        )
+        // claudeSessions:delete — apaga DEFINITIVAMENTE o .jsonl da conversa (o "x" do picker).
+        wsServer.handle<{ cwd: string; id: string }, void>('claudeSessions:delete', (args) =>
+          deleteClaudeSession(args?.cwd ?? '', args?.id ?? '')
         )
         // preview:get-all/rehydrate — funções puras no server.
         wsServer.handle<void, Record<string, import('@decky/shared').PreviewSource>>(

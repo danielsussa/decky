@@ -13,7 +13,9 @@ function resolveHtmlPath(path: string): string {
   // dessa árvore (preview_show de .html avulso), o fallback é o próprio dirname.
   const cardsRoot = findCardsRoot(path) ?? dirname(path)
   registerCardsDir(cardsRoot)
-  return cardUrlFor(path, cardsRoot)
+  // Card-manifesto (.json): a URL omite a extensão (card://host/foo, não foo.json) — o .json é
+  // detalhe de implementação. O resolver card:// reconhece o path sem extensão e serve o .json.
+  return cardUrlFor(path, cardsRoot).replace(/\.json$/i, '')
 }
 
 export function setupHtmlServer(getWsServer: () => DeckyWsServer | null): void {

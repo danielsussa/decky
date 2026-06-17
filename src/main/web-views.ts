@@ -171,6 +171,10 @@ class WebViewsManager {
         webSecurity: false
       }
     })
+    // Fundo transparente: deixa o shell da app (bg-0 + overlay de paisagem do tema) aparecer
+    // atrás do card quando a página não pinta o próprio fundo (cards card:// usam body transparente).
+    // Sites externos pintam o próprio bg, então seguem opacos onde desenham.
+    view.setBackgroundColor('#00000000')
     const wc = view.webContents
     const state: ViewState = {
       view,

@@ -42,6 +42,15 @@ export default function HtmlPreview({
     }
   }, [path])
 
+  // Push-based live reload: when something mutates this card's source file (e.g. `decky
+  // add-widget`/`title` editing the manifest .json), main broadcasts `card:reload { path }` and
+  // we reload just this card's WebContentsView — no dependency on the fs watcher firing.
+  useEffect(() => {
+    return window.deck.web.onReload((msg) => {
+      if (msg.path === path) window.deck.web.reload(cardId)
+    })
+  }, [path, cardId])
+
   if (error) {
     return (
       <div className="preview-empty">
@@ -57,7 +66,7 @@ export default function HtmlPreview({
   // Basename do .html original — usado pelo WebPreview pra esconder o ruído da URL
   // local-server (`http://127.0.0.1:<porta>/xxx.html`) e mostrar só `xxx.html` quando
   // o address bar está blur. Ao focar, a URL real reaparece.
-  const basename = path.split('/').pop() ?? path
+  const basename = (path.split('/').pop() ?? path).replace(/\.json$/i, '')
   return (
     <WebPreview
       cardId={cardId}

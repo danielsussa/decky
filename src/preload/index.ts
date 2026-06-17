@@ -24,6 +24,13 @@ function engineForSession(_id?: string): string {
 type PtyDataMsg = { id: string; data: string }
 type PtyExitMsg = { id: string; code: number }
 type PtyClaudeMsg = { id: string; running: boolean; sessionId?: string }
+type ClaudeSessionInfo = {
+  id: string
+  title: string | null
+  gitBranch: string | null
+  lastPrompt: string | null
+  mtimeMs: number
+}
 
 const deckApi = {
   pty: {
@@ -32,7 +39,14 @@ const deckApi = {
     // por engineForSession(id); o renderer registra a rota da sessão ANTES do create.
     create: (
       id: string,
-      opts: { cwd?: string; cols: number; rows: number; shell?: string; command?: string[] }
+      opts: {
+        cwd?: string
+        cols: number
+        rows: number
+        shell?: string
+        command?: string[]
+        claudeSessionId?: string
+      }
     ): Promise<void> => {
       const eng = engineForSession(id)
       if (eng === L) return ipcRenderer.invoke('pty:create', { id, ...opts })
@@ -209,7 +223,14 @@ const deckApi = {
     onAdd: (callback: (msg: { cwd: string }) => void): (() => void) =>
       wsOn<{ cwd: string }>(L, 'session:add', callback),
     onWebTab: (callback: (msg: { title?: string }) => void): (() => void) =>
-      wsOn<{ title?: string }>(L, 'webtab:new', callback)
+      wsOn<{ title?: string }>(L, 'webtab:new', callback),
+    // Conversas do claude guardadas no disco pra este cwd (aiTitle/branch/mtime) — usado pra
+    // reconciliar o título das abas abertas + montar o picker de "sessões anteriores".
+    listClaude: (cwd: string): Promise<ClaudeSessionInfo[]> =>
+      wsInvoke(L, 'claudeSessions:list', { cwd }),
+    // Apaga DEFINITIVAMENTE a conversa do claude do disco (o "x" do picker de anteriores).
+    deleteClaude: (cwd: string, id: string): Promise<void> =>
+      wsInvoke(L, 'claudeSessions:delete', { cwd, id })
   },
   app: {
     locale: resolvedLocale,
@@ -326,6 +347,14 @@ const deckApi = {
     reload: (cardId: string): void => ipcRenderer.send('web:reload', cardId),
     stop: (cardId: string): void => ipcRenderer.send('web:stop', cardId),
     openDevTools: (cardId: string): void => ipcRenderer.send('web:open-devtools', cardId),
+    // Push-based live reload (POST /cards/reload → main → here): a card whose source file is
+    // `path` should re-render. The HtmlPreview for that path calls web.reload(cardId). Decouples
+    // the reload from the fs watcher — the action that mutates the card drives the refresh.
+    onReload: (callback: (msg: { path: string }) => void): (() => void) => {
+      const listener = (_: unknown, msg: { path: string }): void => callback(msg)
+      ipcRenderer.on('card:reload', listener)
+      return () => ipcRenderer.removeListener('card:reload', listener)
+    },
     getState: (
       cardId: string
     ): Promise<{

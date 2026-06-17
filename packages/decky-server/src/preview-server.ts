@@ -11,11 +11,9 @@ import {
   clearPreviewSource,
   getPreviewSource,
   getPreviewSources,
-  getSessionTitles,
   isFormPending,
   normalizePreviewSource,
   parkPreviewAndAwait,
-  setSessionTitle,
   submitFormOutcome
 } from './preview-state'
 import { awaitWidgetCall } from './widget-bridge'
@@ -43,10 +41,6 @@ function broadcastPreview(
   reqId?: string
 ): void {
   ws?.broadcast('preview:source-changed', { sessionId, cardId, source, reqId })
-}
-
-function broadcastSessionTitle(ws: DeckyWsServer | null, id: string, title: string): void {
-  ws?.broadcast('session:title-changed', { id, title })
 }
 
 function cardIdFrom(req: IncomingMessage): string | null {
@@ -343,32 +337,6 @@ async function handleRequest(
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
     }
-    return
-  }
-
-  // POST /sessions/<id>/title { title }
-  const titleMatch = req.method === 'POST' && /^\/sessions\/([^/]+)\/title\/?$/.exec(url)
-  if (titleMatch) {
-    try {
-      const id = decodeURIComponent(titleMatch[1])
-      const raw = await readBody(req)
-      const body = JSON.parse(raw) as { title?: unknown }
-      if (typeof body.title !== 'string' || body.title.length === 0) {
-        sendJson(res, 400, { error: 'title must be a non-empty string' })
-        return
-      }
-      const title = body.title.slice(0, 80)
-      setSessionTitle(id, title)
-      broadcastSessionTitle(getWsServer(), id, title)
-      sendJson(res, 200, { ok: true, id, title })
-    } catch (err) {
-      sendJson(res, 400, { error: (err as Error).message })
-    }
-    return
-  }
-
-  if (req.method === 'GET' && url === '/sessions/titles') {
-    sendJson(res, 200, getSessionTitles())
     return
   }
 

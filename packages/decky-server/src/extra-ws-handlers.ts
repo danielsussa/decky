@@ -14,6 +14,7 @@ import {
   writeTextFile
 } from './file-ops'
 import { getSessionTitles } from './preview-state'
+import { listClaudeSessions, deleteClaudeSession, type ClaudeSessionInfo } from './claude-sessions'
 import type { DeckyWsServer } from './ws-server'
 
 // Handlers WS que antes viviam só em src/main (Electron). Migrados aqui pra que o decky-server
@@ -67,6 +68,15 @@ export function registerCardMirrorWsHandlers(ws: DeckyWsServer): void {
 
 export function registerSessionsWsHandlers(ws: DeckyWsServer): void {
   ws.handle<void, Record<string, string>>('sessions:get-titles', () => getSessionTitles())
+  // Conversas do claude guardadas no disco pra este cwd — o renderer usa pra reconciliar o título
+  // das abas abertas (aiTitle) e pro picker de "sessões anteriores".
+  ws.handle<{ cwd: string }, ClaudeSessionInfo[]>('claudeSessions:list', (args) =>
+    listClaudeSessions(args?.cwd ?? '')
+  )
+  // Apaga DEFINITIVAMENTE o .jsonl da conversa (o "x" do picker de "sessões anteriores").
+  ws.handle<{ cwd: string; id: string }, void>('claudeSessions:delete', (args) =>
+    deleteClaudeSession(args?.cwd ?? '', args?.id ?? '')
+  )
 }
 
 // Info estático do host — usado pelo PWA pra mostrar contexto (que máquina, que home dir) e

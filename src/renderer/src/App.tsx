@@ -12,7 +12,8 @@ import CommandPalette, { type Command } from './components/CommandPalette'
 import CardSearch from './components/CardSearch'
 import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
-import type { PreviewSource, StashEntry } from '@decky/shared'
+import type { PreviewSource } from '@decky/shared'
+import { KNOWN_WIDGET_TYPES } from '@decky/shared'
 import { bgUrlFor } from './lib/bg-images'
 import { t } from './lib/i18n'
 import {
@@ -58,6 +59,15 @@ const PANELS: { id: PanelId; title: string; paletteLabel: string }[] = [
 const HOME = '/Users/danielkanczuk'
 const LAST_WORKSPACE_KEY = 'lastWorkspace'
 
+// Contexto de cards de uma CONVERSA do claude (keyado por claudeSessionId, não pelo id da aba):
+// quais cards estavam abertos, qual focado, e os previews. É a "decoração" durável da conversa —
+// fechar a aba não perde isto; reabrir a conversa (picker) restaura. Ver [[project_claude-sessions-import]].
+interface ClaudeCardCtx {
+  cards: string[]
+  focused: string | null
+  previews: Record<string, PreviewSource>
+}
+
 interface WorkspaceState {
   sessions: Session[]
   activeId?: string
@@ -66,9 +76,9 @@ interface WorkspaceState {
   previews?: Record<string, Record<string, PreviewSource>>
   titles?: Record<string, string>
   pinned?: Record<string, PreviewSource>
-  // "Save for later" — closed sessions stashed by the user via the close-popover.
-  // Restore = re-spawn the same Session with previews rehydrated. Workspace-scoped, same as `pinned`.
-  stash?: StashEntry[]
+  // Cards associados por CONVERSA do claude (claudeSessionId → contexto). Sobrevive ao fechar a aba;
+  // o picker "sessões anteriores" restaura daqui. Substituiu o antigo `stash`.
+  cardsByClaudeSession?: Record<string, ClaudeCardCtx>
 }
 
 function pickTitles(sessions: Session[], titles: Record<string, string>): Record<string, string> {
@@ -349,7 +359,7 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
 // default mini-app scaffold (default.css + body padding). Also scans the content for
 // `data-decky-<name>` attributes and auto-appends `<script src="/__decky/widgets/<name>.js">`
 // before </body> so authors don't need to remember the boilerplate.
-const KNOWN_WIDGETS = new Set(['flow', 'checklist', 'matrix', 'roadmap', 'mermaid'])
+const KNOWN_WIDGETS = new Set<string>(KNOWN_WIDGET_TYPES)
 function injectWidgetScripts(html: string): string {
   const seen = new Set<string>()
   const re = /data-decky-([a-z]+)/g
@@ -498,36 +508,38 @@ function serializePreviews(
   return out
 }
 
-function serializeStash(stash: StashEntry[], workspace: string | null): StashEntry[] {
-  return stash.map((entry) => ({
-    ...entry,
-    cards: entry.cards.map((c) => ({
-      cardId: c.cardId,
-      source: serializePreviewSource(c.source as PreviewSource, workspace)
-    }))
-  }))
+// Serializa o cardsByClaudeSession pra disco (mesmo tratamento de previews que serializePreviews,
+// mas o shape é { cards, focused, previews } por conversa).
+function serializeCardsByClaude(
+  map: Record<string, ClaudeCardCtx>,
+  workspace: string | null
+): Record<string, ClaudeCardCtx> {
+  const out: Record<string, ClaudeCardCtx> = {}
+  for (const [sid, ctx] of Object.entries(map)) {
+    const previews: Record<string, PreviewSource> = {}
+    for (const [cid, src] of Object.entries(ctx.previews)) {
+      previews[cid] = serializePreviewSource(src, workspace)
+    }
+    out[sid] = { cards: ctx.cards, focused: ctx.focused, previews }
+  }
+  return out
 }
 
-async function rehydrateStash(
-  stash: StashEntry[] | undefined,
+// Rehidrata (resolve paths / re-lê conteúdo file-backed) reusando o IPC de preview.rehydrate:
+// empacota os previews de cada conversa como uma "session" keyada pelo claudeSessionId, desempacota.
+async function rehydrateCardsByClaude(
+  map: Record<string, ClaudeCardCtx> | undefined,
   workspace: string
-): Promise<StashEntry[]> {
-  if (!stash?.length) return []
-  // Reuse the preview rehydrate IPC (reads file-backed content + resolves paths) by
-  // packing each entry as a single "session" keyed by entry.id, then unpacking.
+): Promise<Record<string, ClaudeCardCtx>> {
+  if (!map || !Object.keys(map).length) return {}
   const byCard: Record<string, Record<string, PreviewSource>> = {}
-  for (const entry of stash) {
-    byCard[entry.id] = {}
-    for (const c of entry.cards) byCard[entry.id][c.cardId] = c.source as PreviewSource
-  }
+  for (const [sid, ctx] of Object.entries(map)) byCard[sid] = ctx.previews ?? {}
   const re = await window.deck.preview.rehydrate(byCard, workspace)
-  return stash.map((entry) => {
-    const cards = re[entry.id] ?? {}
-    return {
-      ...entry,
-      cards: entry.cards.map((c) => ({ cardId: c.cardId, source: cards[c.cardId] ?? c.source }))
-    }
-  })
+  const out: Record<string, ClaudeCardCtx> = {}
+  for (const [sid, ctx] of Object.entries(map)) {
+    out[sid] = { cards: ctx.cards ?? [], focused: ctx.focused ?? null, previews: re[sid] ?? ctx.previews ?? {} }
+  }
+  return out
 }
 
 function App(): React.JSX.Element {
@@ -569,11 +581,19 @@ function App(): React.JSX.Element {
   >({})
   // Pinned cards are workspace-global: shown in every session, source kept here.
   const [pinned, setPinned] = useState<Record<string, PreviewSource>>({})
-  // "Save for later" stash for the ACTIVE workspace. Each entry = a closed session snapshot
-  // (Session + its previews). Persisted in workspace.json next to `pinned`. Cross-workspace
-  // close (App.tsx ~handleClose else-branch) appends straight to the file without touching this.
-  const [stash, setStash] = useState<StashEntry[]>([])
+  // Cards associados por CONVERSA do claude (claudeSessionId → {cards, focused, previews}). Mantido
+  // pelo effect abaixo a partir dos mapas vivos (keyados por id-da-aba) das sessões abertas que têm
+  // claudeSessionId, preservando conversas fechadas. Persistido no workspace.json; o picker restaura.
+  const [cardsByClaudeSession, setCardsByClaudeSession] = useState<Record<string, ClaudeCardCtx>>({})
   const [titles, setTitles] = useState<Record<string, string>>({})
+  // claudeSessionId -> aiTitle (título auto-gerado pelo claude), lido dos .jsonl do workspace.
+  // Dá nome real às abas (prioridade: título explícito > aiTitle > placeholder). Não persiste.
+  const [aiTitleBySid, setAiTitleBySid] = useState<Record<string, string>>({})
+  // Lista completa das conversas do claude do workspace ativo (do disco) — fonte do picker
+  // "sessões anteriores". Recarregada por workspace junto do aiTitleBySid.
+  const [claudeSessions, setClaudeSessions] = useState<
+    { id: string; title: string | null; gitBranch: string | null; lastPrompt: string | null; mtimeMs: number }[]
+  >([])
   const [wsLoaded, setWsLoaded] = useState(false)
   const [lastWorkspaceResolved, setLastWorkspaceResolved] = useState(false)
   // Per-workspace abs path to <workspace>/.decky[-dev]/cards/tags-index.html. Materialized by
@@ -677,7 +697,7 @@ function App(): React.JSX.Element {
     previewsByCard,
     titles,
     pinned,
-    stash,
+    cardsByClaudeSession,
     wsLoaded
   })
   stateRef.current = {
@@ -692,7 +712,7 @@ function App(): React.JSX.Element {
     previewsByCard,
     titles,
     pinned,
-    stash,
+    cardsByClaudeSession,
     wsLoaded
   }
 
@@ -801,10 +821,11 @@ function App(): React.JSX.Element {
     const unsubClaude = window.deck.pty.onClaude(({ id, running, sessionId }) => {
       const patch = (s: Session): Session => {
         if (s.id !== id) return s
-        // PIN: uma vez que a aba tem claudeSessionId, a captura do poll NÃO o sobrescreve. Uma
-        // conversa resumida (`claude --resume X`) é estável = X; deixar o poll reescrever causava o
-        // swap (uma aba ativa "roubava" a conversa de outra no mesmo cwd). Só seta quando ainda não há.
-        const nextSid = s.claudeSessionId ?? (running && sessionId ? sessionId : undefined)
+        // Atualiza pro id capturado — o birthtime (no pty-manager) garante que é a conversa DESTA
+        // aba, não a de outra ativa (o que conserta o swap na fonte). Mantém o id atual quando o
+        // claude sai pro shell sem id novo (sticky). E PERMITE re-associação: se um claude NOVO
+        // inicia na mesma aba (saiu de A, abriu B), o birthtime captura B e a aba vira B.
+        const nextSid = running && sessionId ? sessionId : s.claudeSessionId
         if (s.claude === running && s.claudeSessionId === nextSid) return s
         return { ...s, claude: running, claudeSessionId: nextSid }
       }
@@ -1092,7 +1113,7 @@ function App(): React.JSX.Element {
           previews: serializePreviews(filterToSessionIds(s.previewsByCard, ids), ws),
           titles: pickTitles(s.sessions, s.titles),
           pinned: serializePreviews({ p: s.pinned }, ws).p,
-          stash: serializeStash(s.stash, ws)
+          cardsByClaudeSession: serializeCardsByClaude(s.cardsByClaudeSession, ws)
         })
         .finally(() => void window.deck.app.flushDone())
     })
@@ -1190,7 +1211,7 @@ function App(): React.JSX.Element {
         previews: serializePreviews(filterToSessionIds(previewsByCard, prevIds), prevWs),
         titles: pickTitles(sessions, titles),
         pinned: serializePreviews({ p: pinned }, prevWs).p,
-        stash: serializeStash(stash, prevWs)
+        cardsByClaudeSession: serializeCardsByClaude(cardsByClaudeSession, prevWs)
       })
     }
     // Drop the previous workspace's cached session list so the tree re-reads it fresh next expand.
@@ -1250,8 +1271,8 @@ function App(): React.JSX.Element {
           ? ((await window.deck.preview.rehydrate({ p: data.pinned }, workspace)).p ?? {})
           : {}
         if (!cancelled) setPinned(pinnedRe)
-        const stashRe = await rehydrateStash(data.stash, workspace)
-        if (!cancelled) setStash(stashRe)
+        const claudeCtxRe = await rehydrateCardsByClaude(data.cardsByClaudeSession, workspace)
+        if (!cancelled) setCardsByClaudeSession(claudeCtxRe)
       } else {
         const def = defaultSession(workspace)
         pendingActiveRef.current = null
@@ -1266,7 +1287,7 @@ function App(): React.JSX.Element {
         setFocusedCardBySession((prev) => mergeSessionScopedMap(prev, {}, wsIds))
         setPreviewsByCard((prev) => mergeSessionScopedMap(prev, {}, wsIds))
         setPinned({})
-        setStash([])
+        setCardsByClaudeSession({})
       }
       void window.deck.state.set(LAST_WORKSPACE_KEY, workspace)
       setWsLoaded(true)
@@ -1307,7 +1328,7 @@ function App(): React.JSX.Element {
         previews: serializePreviews(filterToSessionIds(previewsByCard, ids), workspace),
         titles: pickTitles(sessions, titles),
         pinned: serializePreviews({ p: pinned }, workspace).p,
-        stash: serializeStash(stash, workspace)
+        cardsByClaudeSession: serializeCardsByClaude(cardsByClaudeSession, workspace)
       })
     }, 400)
     return () => clearTimeout(t)
@@ -1321,7 +1342,7 @@ function App(): React.JSX.Element {
     previewsByCard,
     titles,
     pinned,
-    stash
+    cardsByClaudeSession
   ])
 
   useEffect(() => {
@@ -1845,11 +1866,105 @@ function App(): React.JSX.Element {
     void window.deck.cards.write(workspace, 'PINNED', lines.join('\n') + '\n')
   }, [pinned, workspace, wsLoaded])
 
-  // Tab name priority: explicit session_set_title > default label.
+  // Mantém o cardsByClaudeSession a partir dos mapas vivos (keyados por id-da-aba): pra cada aba
+  // ABERTA com claudeSessionId, grava {cards, focused, previews} sob a conversa. Conversas fechadas
+  // não são iteradas → suas entradas ficam preservadas (é o que faz o contexto sobreviver ao fechar).
+  useEffect(() => {
+    setCardsByClaudeSession((prev) => {
+      let next = prev
+      for (const s of sessions) {
+        const sid = s.claudeSessionId
+        if (!sid) continue
+        const cards = cardsBySession[s.id] ?? []
+        const focused = focusedCardBySession[s.id] ?? null
+        const previews = previewsByCard[s.id] ?? {}
+        const cur = prev[sid]
+        const same =
+          !!cur &&
+          cur.focused === focused &&
+          cur.previews === previews &&
+          cur.cards.length === cards.length &&
+          cur.cards.every((c, i) => c === cards[i])
+        if (same) continue
+        if (next === prev) next = { ...prev }
+        next[sid] = { cards, focused, previews }
+      }
+      return next
+    })
+  }, [sessions, cardsBySession, focusedCardBySession, previewsByCard])
+
+  // Lê o aiTitle das conversas do claude deste workspace (uma vez por workspace) pra dar nome real
+  // às abas. Lê dos arquivos ~/.claude/projects/<slug>/*.jsonl via o server. Não persiste (display).
+  useEffect(() => {
+    if (!wsLoaded || !workspace) return
+    let cancelled = false
+    void window.deck.sessions.listClaude(workspace).then((list) => {
+      if (cancelled) return
+      const bySid: Record<string, string> = {}
+      for (const c of list) if (c.title) bySid[c.id] = c.title
+      setAiTitleBySid(bySid)
+      setClaudeSessions(list)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [wsLoaded, workspace])
+
+  // Tab name priority: explicit session_set_title > claude aiTitle > default placeholder.
   const sessionsWithTitles = sessions.map((s) => {
-    const label = titles[s.id] || s.label
+    const ai = s.claudeSessionId ? aiTitleBySid[s.claudeSessionId] : undefined
+    const label = titles[s.id] || ai || s.label
     return label !== s.label ? { ...s, label } : s
   })
+
+  // Picker "sessões anteriores": conversas do claude do workspace ativo que NÃO estão abertas como
+  // aba, mais recentes primeiro, limitadas (a pasta pode ter centenas).
+  const openClaudeSids = new Set(
+    sessions.map((s) => s.claudeSessionId).filter(Boolean) as string[]
+  )
+  // Não abertas, mais recentes primeiro (claudeSessions já vem ordenado por mtime desc). A lista
+  // fica escondida até o toggle, então renderizar todas (scroll) é ok.
+  const claudePrev = claudeSessions.filter((c) => !openClaudeSids.has(c.id))
+
+  // Abre uma conversa anterior do claude como nova aba (shell + autorun `claude --resume <id>` no
+  // TerminalHost, via o claudeSessionId). Se já estiver aberta, só foca.
+  const loadClaudeSession = (sessionId: string): void => {
+    if (!workspace) return
+    const open = sessions.find((s) => s.claudeSessionId === sessionId)
+    if (open) {
+      setActiveId(open.id)
+      return
+    }
+    const def = { ...defaultSession(workspace), claudeSessionId: sessionId }
+    setSessions((prev) => [...prev, def])
+    setActiveId(def.id)
+    // Restaura o contexto de cards da conversa (cards abertos, foco, previews) na nova aba, se
+    // houver. É o que substitui o stash: a conversa carrega de volta seu painel direito.
+    const ctx = cardsByClaudeSession[sessionId]
+    if (ctx) {
+      setCardsBySession((p) => ({ ...p, [def.id]: ctx.cards }))
+      setFocusedCardBySession((p) => ({ ...p, [def.id]: ctx.focused }))
+      setPreviewsByCard((p) => ({ ...p, [def.id]: ctx.previews }))
+    }
+  }
+
+  // "x" do picker: apaga DEFINITIVAMENTE a conversa anterior — some da lista E remove o .jsonl do
+  // disco (não dá mais pra `--resume`), além de descartar o contexto de cards guardado por ela.
+  const deleteClaudeSession = (sessionId: string): void => {
+    if (!workspace) return
+    void window.deck.sessions.deleteClaude(workspace, sessionId)
+    setClaudeSessions((prev) => prev.filter((c) => c.id !== sessionId))
+    setAiTitleBySid((prev) => {
+      if (!(sessionId in prev)) return prev
+      const { [sessionId]: _drop, ...rest } = prev
+      return rest
+    })
+    setCardsByClaudeSession((prev) => {
+      if (!(sessionId in prev)) return prev
+      const { [sessionId]: _drop, ...rest } = prev
+      return rest
+    })
+  }
 
   // Dot states: purple/pulsing while WORKING (recent output OR a recent "still processing"
   // signal — the latter tolerates gaps in claude's status repaints so a long "Composing…/
@@ -1956,35 +2071,11 @@ function App(): React.JSX.Element {
     }
   }, [focusedCardBySession])
 
-  const handleClose = (ws: string, id: string, mode: 'save' | 'discard' = 'discard'): void => {
+  // Fecha uma aba. Sempre "discard" — nada se perde: o contexto de cards da CONVERSA fica salvo em
+  // cardsByClaudeSession (keyado por claudeSessionId) e reabre pelo picker "sessões anteriores".
+  // Abas órfãs (sem claude) não têm contexto persistido → efêmeras, fechar não guarda nada.
+  const handleClose = (ws: string, id: string): void => {
     const isActiveWs = ws === workspace
-    // Build the stash entry BEFORE we wipe the session's state below. Skip if there's
-    // nothing meaningful to save (no own cards) — popover already gates on this, but
-    // belt-and-suspenders for keyboard / programmatic callers.
-    let entry: StashEntry | null = null
-    if (mode === 'save' && isActiveWs) {
-      const sess = sessions.find((s) => s.id === id)
-      const sessPrev = previewsByCard[id] ?? {}
-      const ownCardIds = (cardsBySession[id] ?? []).filter((cid) => !pinned[cid])
-      if (sess && ownCardIds.length > 0) {
-        entry = {
-          id: `stash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-          savedAt: Date.now(),
-          title: titles[id] || sess.label,
-          session: {
-            id: sess.id,
-            label: sess.label,
-            project: sess.project,
-            cwd: sess.cwd
-          },
-          focusedCardId: focusedCardBySession[id] ?? undefined,
-          cards: ownCardIds
-            .filter((cid) => sessPrev[cid])
-            .map((cid) => ({ cardId: cid, source: sessPrev[cid] }))
-        }
-      }
-    }
-    if (entry) setStash((prev) => [entry as StashEntry, ...prev])
     if (isActiveWs) {
       setSessions((prev) => {
         const idx = prev.findIndex((s) => s.id === id)
@@ -2009,42 +2100,12 @@ function App(): React.JSX.Element {
       void (async () => {
         const data = await window.deck.workspace.read<WorkspaceState>(ws)
         if (!data || !Array.isArray(data.sessions)) return
-        const closedSess = data.sessions.find((s) => s.id === id)
         const nextSessions = data.sessions.filter((s) => s.id !== id)
         if (nextSessions.length === data.sessions.length) return
         const remaining = new Set(nextSessions.map((s) => s.id))
         const nextActive =
           data.activeId && remaining.has(data.activeId) ? data.activeId : nextSessions[0]?.id
-        // Cross-workspace "save for later": build the entry from on-disk data (it's already
-        // in wire format) and append. The previewsByCard for this session lives in the workspace's
-        // own previews map — pinned cards are workspace-global so we exclude them here too.
-        let nextStash: StashEntry[] | undefined = data.stash
-        if (mode === 'save' && closedSess) {
-          const sessCards = data.previews?.[id] ?? {}
-          const pinnedIds = new Set(Object.keys(data.pinned ?? {}))
-          const ownCardIds = (data.cardsBySession?.[id] ?? []).filter((cid) => !pinnedIds.has(cid))
-          if (ownCardIds.length > 0) {
-            const newEntry: StashEntry = {
-              id: `stash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-              savedAt: Date.now(),
-              title: data.titles?.[id] || closedSess.label,
-              session: {
-                id: closedSess.id,
-                label: closedSess.label,
-                project: closedSess.project,
-                cwd: closedSess.cwd
-              },
-              focusedCardId: data.focusedCardBySession?.[id] ?? undefined,
-              cards: ownCardIds
-                .filter((cid) => sessCards[cid])
-                .map((cid) => ({
-                  cardId: cid,
-                  source: sessCards[cid] as unknown as PreviewSource
-                }))
-            }
-            nextStash = [newEntry, ...(data.stash ?? [])]
-          }
-        }
+        // `...data` preserva cardsByClaudeSession (o contexto da conversa não se perde ao fechar).
         void window.deck.workspace.write(ws, {
           ...data,
           sessions: nextSessions,
@@ -2054,8 +2115,7 @@ function App(): React.JSX.Element {
           previews: filterToSessionIds(data.previews ?? {}, remaining),
           titles: data.titles
             ? Object.fromEntries(Object.entries(data.titles).filter(([k]) => remaining.has(k)))
-            : undefined,
-          stash: nextStash
+            : undefined
         })
       })()
     }
@@ -2099,59 +2159,6 @@ function App(): React.JSX.Element {
     setActiveId(def.id)
   }
 
-  // Restore a "save for later" entry as a session.
-  // - revive=true (click default): reuse entry.session as-is so claude --session-id resumes
-  //   the original transcript. If the same id is somehow already live, fall back to a fresh id.
-  // - revive=false (Shift+click): mint a fresh sessionId, cards still come back.
-  // - keep=true (Cmd/Ctrl+click): leave the entry in the stash; otherwise consume it.
-  const restoreFromStash = (entryId: string, opts: { revive: boolean; keep: boolean }): void => {
-    const entry = stash.find((e) => e.id === entryId)
-    if (!entry) return
-    const idCollision =
-      sessions.some((s) => s.id === entry.session.id) ||
-      liveSessions.some((s) => s.id === entry.session.id)
-    const revive = opts.revive && !idCollision
-    const baseSess: Session = revive
-      ? {
-          id: entry.session.id,
-          label: entry.session.label,
-          project: entry.session.project,
-          cwd: entry.session.cwd
-        }
-      : defaultSession(entry.session.cwd)
-    const targetId = baseSess.id
-    const cardMap: Record<string, PreviewSource> = {}
-    for (const c of entry.cards) cardMap[c.cardId] = c.source as PreviewSource
-    setSessions((prev) => [...prev, baseSess])
-    setCardsBySession((prev) => ({ ...prev, [targetId]: entry.cards.map((c) => c.cardId) }))
-    setPreviewsByCard((prev) => ({ ...prev, [targetId]: cardMap }))
-    if (entry.focusedCardId && cardMap[entry.focusedCardId]) {
-      setFocusedCardBySession((prev) => ({ ...prev, [targetId]: entry.focusedCardId ?? null }))
-    } else {
-      const first = entry.cards[0]?.cardId ?? null
-      setFocusedCardBySession((prev) => ({ ...prev, [targetId]: first }))
-    }
-    setActiveId(targetId)
-    if (!opts.keep) setStash((prev) => prev.filter((e) => e.id !== entryId))
-  }
-
-  const discardStash = (entryId: string): void => {
-    setStash((prev) => prev.filter((e) => e.id !== entryId))
-  }
-
-  // Add folder: dialog nativo → registra o path na lista de workspaces (state-store) e foca nele.
-  // Idempotente — se o path já está registrado, só seta o workspace.
-  const addFolder = async (): Promise<void> => {
-    const path = await window.deck.app.pickFolder()
-    if (!path) return
-    setWorkspaces((prev) => {
-      if (prev.includes(path)) return prev
-      const next = [...prev, path]
-      void window.deck.state.set('workspaces', next)
-      return next
-    })
-    setWorkspace(path)
-  }
 
   // Open a browser card in the active session, focused. Empty url = "nova aba" (URL bar
   // auto-focuses); with url = navigates straight there (used by palette `//query` shortcut).
@@ -2763,18 +2770,14 @@ function App(): React.JSX.Element {
                   mode={mode}
                   themeFor={themeFor}
                   nameOf={projectFromCwd}
-                  ownCardCount={(sid) =>
-                    (cardsBySession[sid] ?? []).filter((cid) => !pinned[cid]).length
-                  }
-                  stash={stash}
+                  claudePrev={claudePrev}
+                  onLoadClaudeSession={loadClaudeSession}
+                  onDeleteClaudeSession={deleteClaudeSession}
                   onToggleExpand={toggleExpand}
                   onSelectSession={selectSession}
                   onNewSession={newSessionIn}
                   onCloseSession={handleClose}
                   onCloseWorkspace={closeWorkspace}
-                  onAddFolder={() => addFolder()}
-                  onRestoreStash={restoreFromStash}
-                  onDiscardStash={discardStash}
                 />
               </ResizableSplit>
             </section>

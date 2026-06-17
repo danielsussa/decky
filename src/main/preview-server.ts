@@ -13,12 +13,10 @@ import {
   getCardsForSession,
   getPreviewSource,
   getPreviewSources,
-  getSessionTitles,
   isFormPending,
   normalizePreviewSource,
   parkPreviewAndAwait,
   searchCards,
-  setSessionTitle,
   submitFormOutcome,
   type DeckyWsServer
 } from '@decky/server'
@@ -54,7 +52,7 @@ function broadcastPreview(
   getWsServer()?.broadcast('preview:source-changed', { sessionId, cardId, source, reqId })
 }
 
-function broadcastSessionTitle(
+export function broadcastSessionTitle(
   getWindow: () => BrowserWindow | null,
   getWsServer: () => DeckyWsServer | null,
   id: string,
@@ -591,32 +589,6 @@ async function handleRequest(
     return
   }
 
-  // POST /sessions/<id>/title  { title: string }
-  const titleMatch = req.method === 'POST' && /^\/sessions\/([^/]+)\/title\/?$/.exec(url)
-  if (titleMatch) {
-    try {
-      const id = decodeURIComponent(titleMatch[1])
-      const raw = await readBody(req)
-      const body = JSON.parse(raw) as { title?: unknown }
-      if (typeof body.title !== 'string' || body.title.length === 0) {
-        sendJson(res, 400, { error: 'title must be a non-empty string' })
-        return
-      }
-      const title = body.title.slice(0, 80)
-      setSessionTitle(id, title)
-      broadcastSessionTitle(getWindow, getWsServer, id, title)
-      sendJson(res, 200, { ok: true, id, title })
-    } catch (err) {
-      sendJson(res, 400, { error: (err as Error).message })
-    }
-    return
-  }
-
-  if (req.method === 'GET' && url === '/sessions/titles') {
-    sendJson(res, 200, getSessionTitles())
-    return
-  }
-
   // POST /sessions/web-tab { title?: string } — open a new EMPTY web tab (a browser card) in the
   // active session, focused, labeled with `title` until it navigates. It lives inside the current
   // session, so there's no session id to mint. The caller is `decky new-tab`.
@@ -633,6 +605,29 @@ async function handleRequest(
       }
       getWsServer()?.broadcast('webtab:new', { title })
       sendJson(res, 200, { ok: true, title })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
+    return
+  }
+
+  // POST /cards/reload { path } — push-based live reload: tells the renderer to re-render the
+  // open card(s) whose source file is `path`. Used after a card-manifesto is mutated on disk
+  // (decky add-widget/title) so the card updates deterministically, WITHOUT depending on the fs
+  // watcher firing — the mutation itself drives the reload.
+  if (req.method === 'POST' && url === '/cards/reload') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as { path?: unknown }
+      const path = typeof body.path === 'string' ? body.path : ''
+      if (!path) {
+        sendJson(res, 400, { error: 'path required' })
+        return
+      }
+      const win = getWindow()
+      if (win && !win.isDestroyed()) win.webContents.send('card:reload', { path })
+      getWsServer()?.broadcast('card:reload', { path })
+      sendJson(res, 200, { ok: true, path })
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
     }

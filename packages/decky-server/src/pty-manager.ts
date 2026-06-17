@@ -5,6 +5,7 @@ import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync } from 'nod
 import { basename, isAbsolute, join } from 'node:path'
 import { workspaceCardsDir } from '@decky/shared/node'
 import { sessionHandoffSocketPath } from './handoff-paths'
+import { claudeSessionFile, readLatestAiTitle } from './claude-sessions'
 
 // PTY multiplexer + lifecycle. Puro Node — sem Electron API. Eventos saem via callbacks
 // registrados em setPtyManagerEvents (shim Electron registra-os apontando pra webContents.send;
@@ -79,6 +80,12 @@ export interface CreatePtyArgs {
   shell?: string
   /** Custom command to spawn. If set, takes precedence over shell. command[0] = file, rest = args. */
   command?: string[]
+  /**
+   * Conversa do claude que esta aba VAI resumir (autorun `claude --resume <id>`). Quando setado,
+   * semeamos o tracker de captura com ela: a aba JÁ sabe sua conversa, então NÃO tenta capturar
+   * nenhuma — é o que impede uma aba resumida de "roubar" a conversa nova de outra aba (swap).
+   */
+  claudeSessionId?: string
 }
 
 export interface ClaudeInfo {
@@ -102,6 +109,11 @@ export interface PtyManagerEvents {
    * claude" e qual conversa resumir no próximo boot. Local-only (engines remotos caem fora).
    */
   onClaude?(id: string, info: ClaudeInfo): void
+  /**
+   * O aiTitle (título auto-gerado pelo claude) da conversa desta aba mudou — empurra pro título da
+   * sessão (a aba). É a fonte ÚNICA de nome de sessão; ver syncAiTitle/readLatestAiTitle.
+   */
+  onTitle?(id: string, title: string): void
 }
 
 let events: PtyManagerEvents = {}
@@ -153,6 +165,8 @@ const lastProc = new Map<string, string>() // id -> último foreground process v
 const sidById = new Map<string, string>() // id -> claudeSessionId já emitido p/ a invocação atual
 const claudeStartAt = new Map<string, number>() // id -> instante em que algo (claude) virou foreground
 const cwdById = new Map<string, string>() // id -> cwd (pra achar o .jsonl do claude)
+const lastTitleMtime = new Map<string, number>() // id -> mtime do .jsonl já lido (gate de re-parse)
+const lastTitle = new Map<string, string>() // id -> último aiTitle empurrado (dedup de evento)
 
 // Basename do processo: tira o `-` de login-shell e qualquer path ("/usr/bin/node" -> "node").
 function procBase(p: string): string {
@@ -205,13 +219,38 @@ function resolveClaudeSessionByBirth(
       } catch {
         continue
       }
-      if (born + 3000 < sinceMs) continue // criado ANTES deste claude → não é desta aba
-      if (!best || born > best.born) best = { id: sid, born }
+      // JANELA: a conversa DESTA aba nasce perto do claudeStartAt. Fora de [-3s, +5s] não é dela —
+      // crucial pro limite SUPERIOR: sem ele, uma aba que resumiu conversa antiga (sem .jsonl novo)
+      // ficava elegível pra qualquer .jsonl nascido depois e ROUBAVA a conversa nova de outra aba.
+      if (born < sinceMs - 3000 || born > sinceMs + 5000) continue
+      // Dentro da janela, pega o nascido MAIS PRÓXIMO do claudeStartAt (= a conversa DESTA aba). Pegar
+      // "o mais novo" deixava uma aba roubar o .jsonl de OUTRA aba que iniciou claude poucos s depois.
+      if (!best || Math.abs(born - sinceMs) < Math.abs(best.born - sinceMs)) best = { id: sid, born }
     }
     return best?.id ?? null
   } catch {
     return null // dir não existe (claude nunca rodou neste cwd) etc.
   }
+}
+
+// Sync contínuo aiTitle → título da aba. Roda no poll pra cada aba com conversa do claude já
+// resolvida (sidById). Gated por mtime do .jsonl (não re-parseia a cada 1.5s) e por valor (não
+// re-emite o mesmo título). O aiTitle só aparece após alguns turnos — até lá readLatestAiTitle dá
+// null e a aba mantém o placeholder aleatório.
+function syncAiTitle(id: string, cwd: string, claudeSessionId: string): void {
+  const file = claudeSessionFile(cwd, claudeSessionId)
+  let mtimeMs: number
+  try {
+    mtimeMs = statSync(file).mtimeMs
+  } catch {
+    return
+  }
+  if (lastTitleMtime.get(id) === mtimeMs) return
+  lastTitleMtime.set(id, mtimeMs)
+  const title = readLatestAiTitle(file)
+  if (!title || lastTitle.get(id) === title) return
+  lastTitle.set(id, title)
+  events.onTitle?.(id, title)
 }
 
 function pollProcesses(): void {
@@ -234,35 +273,42 @@ function pollProcesses(): void {
       // claude em foreground (nome 'claude' ou a versão X.Y.Z) → flip imediato (responsivo p/ a
       // animação de borda).
       if (looksLikeClaude(base)) events.onClaude?.(id, { running: true })
-      // Voltou pro prompt do shell depois do claude → running:false. O claudeSessionId persiste
-      // sticky no renderer, então o resume do próximo boot NÃO depende deste flag instantâneo.
-      else if (looksLikeClaude(procBase(prev))) {
+      // Claude → SHELL = realmente voltou pro prompt → running:false + solta o vínculo da conversa.
+      // CRÍTICO: exige isShellProc(base). Sem isso, um tool call do claude (foreground vira 'node'/
+      // 'git'/… por um instante) era lido como "claude saiu", limpava o sidById e o bloco abaixo
+      // RE-VINCULAVA a aba à conversa mais nova do cwd — quando havia OUTRA sessão aberta, a aba
+      // roubava o título (e o claudeSessionId de --resume) dela. Tool calls (não-shell) agora não
+      // mexem no vínculo; ele só solta no retorno ao shell. O claudeSessionId persiste sticky no
+      // renderer, então o resume do próximo boot NÃO depende deste flag instantâneo.
+      else if (looksLikeClaude(procBase(prev)) && isShellProc(base)) {
         events.onClaude?.(id, { running: false })
         sidById.delete(id) // a próxima invocação de claude nesta aba re-resolve a conversa
         claudeStartAt.delete(id)
+        lastTitleMtime.delete(id) // próxima conversa (.jsonl novo) re-sincroniza do zero
+        lastTitle.delete(id)
       }
     }
 
-    // Captura a conversa desta invocação (uma vez — fica sticky no renderer; basta UMA vez p/ o
-    // boot seguinte fazer `claude --resume <id>`). Re-tenta a cada poll porque o claude demora um
-    // instante até criar o .jsonl.
-    if (!sidById.has(id)) {
-      // Conversas já reivindicadas por OUTRAS abas vivas — nenhuma aba captura a mesma (dedup).
+    // Captura a conversa que ESTA aba criou, por BIRTHTIME, SÓ numa janela curta (≤7s) logo após o
+    // claude virar foreground (claudeStartAt). Fora da janela PARAMOS de tentar — essa era a falha:
+    // uma aba que resumiu conversa antiga (sem .jsonl novo) capturava pra sempre e ROUBAVA a conversa
+    // nova de OUTRA aba (nascida depois). Abas resumidas (`claude --resume X`) não criam .jsonl novo
+    // → não capturam nada na janela → mantêm o sid persistido (correto), sem roubar ninguém. Um
+    // não-shell que NÃO é claude também não cria .jsonl → resolve dá null (sem falso-positivo).
+    const since = claudeStartAt.get(id) ?? 0
+    if (!sidById.has(id) && since > 0 && Date.now() - since <= 7000 && !isShellProc(base)) {
       const claimed = new Set<string>()
       for (const [otherId, sid] of sidById) if (otherId !== id) claimed.add(sid)
-      // Captura por BIRTHTIME desde que o claude virou foreground (claudeStartAt): pega a conversa
-      // que ESTA aba criou, não a mais ESCRITA (que pode ser de outra aba ativa no mesmo cwd — era
-      // a causa do swap). Vale p/ qualquer não-shell em foreground ('claude'/semver e 'node', que é
-      // como o claude-code aparece às vezes); um não-shell que NÃO é claude não cria .jsonl novo →
-      // resolve dá null (sem falso-positivo). Abas resumidas (`claude --resume X`) não criam .jsonl
-      // novo, mas já têm o sid pinado no renderer, então não dependem desta captura.
-      const since = claudeStartAt.get(id) ?? 0
-      const sessionId = !isShellProc(base) ? resolveClaudeSessionByBirth(cwd, since, claimed) : null
+      const sessionId = resolveClaudeSessionByBirth(cwd, since, claimed)
       if (sessionId) {
         sidById.set(id, sessionId)
         events.onClaude?.(id, { running: true, sessionId })
       }
     }
+
+    // aiTitle → título da aba (contínuo). Só pra abas cuja conversa do claude já foi resolvida.
+    const claudeSid = sidById.get(id)
+    if (claudeSid) syncAiTitle(id, cwd, claudeSid)
   }
 }
 
@@ -363,8 +409,12 @@ function spawnPty(args: CreatePtyArgs): void {
   ptys.set(args.id, term)
   cwdById.set(args.id, args.cwd ?? os.homedir())
   lastProc.delete(args.id)
-  sidById.delete(args.id)
   claudeStartAt.delete(args.id)
+  // SEED: se a aba vai resumir uma conversa conhecida, semeia o tracker com ela → a aba não tenta
+  // capturar nenhuma conversa (já sabe a sua) e não rouba a de outra aba. Limpo no exit do claude
+  // (volta pro shell), então um claude NOVO depois (re-associação) volta a capturar normalmente.
+  if (args.claudeSessionId) sidById.set(args.id, args.claudeSessionId)
+  else sidById.delete(args.id)
   startProcPolling()
   // Sobe o backend handoff scoped na sessão. Idempotente.
   events.onHandoffStart?.(args.id)

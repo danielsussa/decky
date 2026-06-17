@@ -113,6 +113,9 @@ interface TerminalProps {
    * sessão que tava com claude). Lido só no mount — mudar depois NÃO re-spawna nem re-injeta.
    */
   autorun?: string
+  /** Conversa do claude que o autorun vai resumir — passada ao pty.create pra SEMEAR o tracker de
+   *  captura (a aba já sabe sua conversa, não tenta capturar/roubar outra). Ver pty-manager. */
+  claudeSessionId?: string
   /** When true, terminal is visible. When transitioning false → true, refits to the new container size. */
   visible?: boolean
   /** Light/dark mode — drives the xterm surface (re-applied live on change, no re-spawn). */
@@ -128,6 +131,7 @@ export default function Terminal({
   cwd,
   command,
   autorun,
+  claudeSessionId,
   visible = true,
   mode,
   theme,
@@ -316,7 +320,7 @@ export default function Terminal({
       if (host.clientWidth < 20 || term.cols < 20) return
       ptyCreated = true
       const { cols, rows } = term
-      void window.deck.pty.create(id, { cols, rows, cwd, command }).then(() => {
+      void window.deck.pty.create(id, { cols, rows, cwd, command, claudeSessionId }).then(() => {
         if (disposed) return
         term.onData((data) => {
           if (isUserTyping(data)) onUserInputRef.current?.()

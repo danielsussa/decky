@@ -54,22 +54,3 @@ export type PreviewSourceWire =
   | { type: 'editor'; path: string; title?: string }
   | { type: 'xlsx'; path: string; title?: string }
   | { type: 'form'; spec: FormSpec }
-
-// "Save for later" snapshot of a closed session — the session object is preserved
-// whole so revive can spawn the same pty and the cards rehydrate via the existing
-// pinned/previews pipeline.
-export type StashSessionMeta = {
-  id: string
-  label: string
-  project?: string
-  cwd: string
-}
-
-export type StashEntry = {
-  id: string
-  savedAt: number
-  title: string
-  session: StashSessionMeta
-  focusedCardId?: string
-  cards: Array<{ cardId: string; source: PreviewSourceWire }>
-}

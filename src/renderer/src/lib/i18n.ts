@@ -88,7 +88,6 @@ const messages = {
   'ws.closeWorkspace': { pt: 'fechar workspace', en: 'close workspace' },
   'ws.closeSession': { pt: 'fechar sessão', en: 'close session' },
   'ws.newSession': { pt: 'nova sessão', en: 'new session' },
-  'ws.addFolder': { pt: 'Adicionar pasta…', en: 'Add folder…' },
   'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
   'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
   'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },

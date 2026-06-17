@@ -41,6 +41,7 @@ export default function TerminalHost({
               id={s.id}
               cwd={s.cwd}
               autorun={autorun}
+              claudeSessionId={s.claudeSessionId}
               visible={isActive}
               mode={mode}
               theme={themeFor(s.cwd)}

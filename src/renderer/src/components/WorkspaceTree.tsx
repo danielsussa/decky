@@ -1,42 +1,19 @@
-import {
-  ChevronRight,
-  ChevronDown,
-  FolderPlus,
-  Plus,
-  X,
-  Bookmark,
-  Clock,
-  Server,
-  Monitor
-} from 'lucide-react'
+import { ChevronRight, ChevronDown, FolderPlus, Plus, X, Bookmark, Clock } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { Mode, Theme, EngineKind } from '@decky/shared'
+import type { Mode, Theme } from '@decky/shared'
 import type { StashEntry } from '@decky/shared'
 import { t } from '../lib/i18n'
 
 export interface TreeSession {
   id: string
   label: string
-  kind: 'claude' | 'shell'
-}
-
-// Um grupo KIND na árvore: o engine (local|server) + seus workspaces. A árvore é
-// KIND ▸ WS ▸ SESSION — adicionar um server cria um grupo irmão do local, sem nunca escondê-lo.
-export interface EngineGroup {
-  id: string
-  kind: EngineKind
-  label: string
-  /** Server only: estado da conexão pra pintar o indicador (online/conectando/offline). */
-  status?: 'online' | 'connecting' | 'offline'
-  workspaces: string[]
 }
 
 export type CloseSessionMode = 'save' | 'discard'
 
 interface WorkspaceTreeProps {
   isFocused?: boolean
-  engines: EngineGroup[]
-  collapsedEngines: string[]
+  workspaces: string[]
   activeWorkspace: string | null
   activeSessionId?: string
   // Cmd+Arrow nav cursor parked in another workspace; renders as a "hover" highlight
@@ -54,26 +31,21 @@ interface WorkspaceTreeProps {
   // Workspace-scoped stash entries for the ACTIVE workspace. Non-active workspaces don't
   // surface their stash in the tree yet — would need a second IPC read.
   stash: StashEntry[]
-  onToggleEngine: (engineId: string) => void
   onToggleExpand: (ws: string) => void
   onSelectSession: (ws: string, sessionId: string) => void
   onNewSession: (ws: string) => void
   onCloseSession: (ws: string, sessionId: string, mode: CloseSessionMode) => void
   onCloseWorkspace: (ws: string) => void
   onAddFolder: () => void
-  /** Click no X de um engine server (visível só no hover do row). Local não chama (não tem X). */
-  onRemoveEngine: (engineId: string) => void
   onRestoreStash: (entryId: string, opts: { revive: boolean; keep: boolean }) => void
   onDiscardStash: (entryId: string) => void
 }
 
-// The left-panel navigation: KIND(local|server) ▸ WS ▸ SESSION. Each engine groups its
-// workspaces; each workspace expands to its sessions. Selecting a session switches workspace if
-// needed; the terminal renders in TerminalHost below.
+// The left-panel navigation: WS ▸ SESSION. Each workspace expands to its sessions. Selecting a
+// session switches workspace if needed; the terminal renders in TerminalHost below.
 export default function WorkspaceTree({
   isFocused,
-  engines,
-  collapsedEngines,
+  workspaces,
   activeWorkspace,
   activeSessionId,
   previewedSession,
@@ -83,14 +55,12 @@ export default function WorkspaceTree({
   mode,
   themeFor,
   nameOf,
-  onToggleEngine,
   onToggleExpand,
   onSelectSession,
   onNewSession,
   onCloseSession,
   onCloseWorkspace,
   onAddFolder,
-  onRemoveEngine,
   ownCardCount,
   stash,
   onRestoreStash,
@@ -109,7 +79,6 @@ export default function WorkspaceTree({
       ? [...expanded, previewedSession.ws]
       : expanded
 
-  // Per-workspace subtree — idêntico ao layout antigo, só extraído pra ser mapeado por engine.
   const renderWorkspace = (ws: string): React.JSX.Element => {
     const isOpen = visualExpanded.includes(ws)
     const isActiveWs = ws === activeWorkspace
@@ -168,16 +137,11 @@ export default function WorkspaceTree({
           </button>
         </div>
         {isOpen && (
-          <div
-            className="wstree-children"
-            style={{ ['--ws-tint' as string]: wsAccent }}
-          >
+          <div className="wstree-children" style={{ ['--ws-tint' as string]: wsAccent }}>
             {sessions.map((s) => {
               const isActiveSession = isActiveWs && s.id === activeSessionId
               const isPreviewedSession =
-                !!previewedSession &&
-                previewedSession.ws === ws &&
-                previewedSession.id === s.id
+                !!previewedSession && previewedSession.ws === ws && previewedSession.id === s.id
               // Show activity for ANY session (the live pool keeps cross-workspace sessions
               // running), so a session working in another workspace still pulses.
               const act = activity[s.id]
@@ -232,11 +196,7 @@ export default function WorkspaceTree({
               )
             })}
             {isActiveWs && stash.length > 0 && stashOpenFor[ws] && (
-              <StashSection
-                entries={stash}
-                onRestore={onRestoreStash}
-                onDiscard={onDiscardStash}
-              />
+              <StashSection entries={stash} onRestore={onRestoreStash} onDiscard={onDiscardStash} />
             )}
             <button type="button" className="wstree-new" onClick={() => onNewSession(ws)}>
               <Plus size={12} />
@@ -249,61 +209,9 @@ export default function WorkspaceTree({
   }
 
   return (
-    <div
-      className="wstree panel-focusable"
-      data-panel="tree"
-      data-focused={isFocused}
-    >
+    <div className="wstree panel-focusable" data-panel="tree" data-focused={isFocused}>
       <div className="wstree-title">workspaces</div>
-      {engines.map((engine) => {
-        const engineOpen = !collapsedEngines.includes(engine.id)
-        const isServer = engine.kind === 'server'
-        return (
-          <div className="wstree-engine" key={engine.id} data-kind={engine.kind}>
-            <div className="wstree-engine-row">
-              <button
-                type="button"
-                className="wstree-caret"
-                onClick={() => onToggleEngine(engine.id)}
-                aria-label={engineOpen ? 'colapsar' : 'expandir'}
-              >
-                {engineOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-              </button>
-              {isServer ? <Server size={12} /> : <Monitor size={12} />}
-              <span className="wstree-engine-name" title={engine.label}>
-                {engine.label}
-              </span>
-              {isServer && (
-                <span
-                  className={`wstree-engine-status wstree-engine-status-${engine.status ?? 'offline'}`}
-                  title={engine.status ?? 'offline'}
-                />
-              )}
-              {isServer && (
-                <button
-                  type="button"
-                  className="wstree-engine-remove"
-                  onClick={(e) => {
-                    // Stop pra não disparar onToggleEngine do row pai (que tem caret separado,
-                    // mas qualquer click no row vira hover state e queremos prevenir mesmo).
-                    e.stopPropagation()
-                    onRemoveEngine(engine.id)
-                  }}
-                  title={t('engineRemove.btnTitle')}
-                  aria-label={t('engineRemove.btnTitle')}
-                >
-                  <X size={12} />
-                </button>
-              )}
-            </div>
-            {engineOpen && (
-              <div className="wstree-engine-children">
-                {engine.workspaces.map((ws) => renderWorkspace(ws))}
-              </div>
-            )}
-          </div>
-        )
-      })}
+      {workspaces.map((ws) => renderWorkspace(ws))}
       <button type="button" className="wstree-add" onClick={onAddFolder}>
         <FolderPlus size={13} />
         <span>{t('ws.addFolder')}</span>

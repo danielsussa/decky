@@ -11,17 +11,10 @@ import ShortcutsPanel from './components/ShortcutsPanel'
 import CommandPalette, { type Command } from './components/CommandPalette'
 import CardSearch from './components/CardSearch'
 import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
-import FirstRunModal from './components/FirstRunModal'
-import AddServerModal from './components/AddServerModal'
-import EnginePickerModal from './components/EnginePickerModal'
-import RemoteFolderModal from './components/RemoteFolderModal'
-import ConfirmEngineRemoveModal from './components/ConfirmEngineRemoveModal'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
-import type { PreviewSource, StashEntry, Engine } from '@decky/shared'
-import { LOCAL_ENGINE_ID } from '@decky/shared'
+import type { PreviewSource, StashEntry } from '@decky/shared'
 import { bgUrlFor } from './lib/bg-images'
 import { t } from './lib/i18n'
-import { CLI_SPECS, buildArgs, type CliKind, type DetectedCli } from '@decky/shared'
 import {
   applyTheme,
   assignNewWorkspaceTheme,
@@ -65,46 +58,6 @@ const PANELS: { id: PanelId; title: string; paletteLabel: string }[] = [
 const HOME = '/Users/danielkanczuk'
 const LAST_WORKSPACE_KEY = 'lastWorkspace'
 
-const DECKY_SESSION_PROMPT = [
-  'You are running INSIDE the decky IDE: a 2-panel UI (sessions left, decky-grid center with cards) paired with an MCP server named "decky".',
-  '',
-  'Available decky tools (PREFER these over plain terminal output whenever the user wants to *see* or *read* something):',
-  '- mcp__decky__session_set_title(title): label this tab. CALL this immediately at the start of any NEW conversation with 1-3 short words (e.g. "fixing auth bug"). Skip in continued conversations unless focus shifts.',
-  '- mcp__decky__preview_show(path): render a .md/.json file in a decky card. USE THIS — NOT `Read` or `cat` — when the user asks to *show/view/open* a file. Read brings content into your context; preview_show actually displays it to them.',
-  '- mcp__decky__preview_markdown(content, title?): render inline markdown content in a decky card.',
-  '- mcp__decky__preview_json(value): render a JSON tree in a decky card (better than cat-ing JSON to terminal).',
-  '- mcp__decky__preview_diff(content, title?): render a unified diff (raw `git diff`/`git show`/`diff -u` output) as a STRUCTURED diff card (per-file headers, +/- counts, line-number gutter, green/red lines). ALWAYS use this for code changes — never a ```diff markdown fence. Pass the diff text verbatim.',
-  "- mcp__decky__preview_me(url?): route a decky card to the me browser daemon's Live View (embedded iframe). USE THIS — NEVER `open <url>` or `open -a Chrome` — when the user asks to see what `me` (browser automation) is doing or to open a 127.0.0.1:6789/tab/... URL.",
-  '- mcp__decky__preview_hide(): clear the active card.',
-  '',
-  'IMPORTANT — Cards as the default surface for content:',
-  'Whenever your response is STRUCTURED CONTENT the user will want to read or keep visible (lists, tables, markdown, JSON, file contents, examples, summaries, plans), CALL preview_markdown or preview_json — decky routes it to the user\'s focused card automatically. Then give a short one-line confirmation in the terminal ("listed in card", "shown in preview").',
-  'Reserve raw terminal text for: short answers, confirmations, asking the user a question, status updates while you work.',
-  '',
-  'Examples:',
-  '- "create a list of 10 names" → preview_markdown("# Names\\n- Ana\\n- Bruno\\n…") + short "listed in card" confirmation. NOT a one-line CSV in the terminal.',
-  '- "show me the pendencies file" → preview_show(path) NOT Read.',
-  '- "what changed?" / showing a git diff → run `git diff`, pass its output to preview_diff(content). NOT a ```diff markdown block.',
-  '- "give me a quick yes/no" → plain terminal answer (no card needed).',
-  '',
-  'Rule of thumb: if the answer would benefit from being formatted/scrollable/kept visible, it goes in a card. Plain conversation stays in the terminal.',
-  '',
-  'IMPORTANT — Keep an open card in sync after you act:',
-  'A card does NOT update from your reasoning — only a file-backed card auto-reloads, and only when its file changes on disk.',
-  '- preview_show(path): live-reloads on every save — just keep editing the file, no re-render needed.',
-  '- preview_markdown / preview_json: a SNAPSHOT of what you passed. After you change anything it shows (finished a step, revised a list/plan/table, recomputed a value), CALL THE SAME TOOL AGAIN with the updated content. A stale card is worse than none.',
-  "- Showing something you'll keep revising (a running plan/checklist/status table)? Write it to a real file and preview_show(path) so your edits auto-refresh it.",
-  '',
-  "SHARED CARD LIBRARY — the cards you create are real .md files in this project's `.decky/cards/` (the env var `$DECKY_CARDS_DIR` holds the absolute path), SHARED across all sessions of this workspace. A doc one session produced is often useful to another.",
-  '- Use SEMANTIC `card` ids so files are findable, and "/" for subfolders: card:"saude/carol-agua", card:"pr/42-resumo". Avoid generic ids.',
-  '- BEFORE generating a doc from scratch, check what already exists: Glob `$DECKY_CARDS_DIR/**/*.md` (run `echo "$DECKY_CARDS_DIR"` if you need the literal path), then Read/Grep the relevant ones and build on them instead of duplicating.',
-  '- To revise an existing card, reuse the same `card` id (overwrites the file) or just edit the .md directly (the card live-updates via file-watch).',
-  '',
-  'PINNED CONTEXT — `$DECKY_CARDS_DIR/PINNED.md` lists cards the user pinned. Pinned cards are shown in EVERY session and are meant as shared, always-relevant context. At the start of a task, read PINNED.md and the files it points to.',
-  '',
-  'CLICKABLE FILE REFS — Cmd/Ctrl+click on a path printed in the terminal opens it as a decky card (same pipeline as preview_show). The renderer detects path tokens by their FILE EXTENSION, so when you mention files to the user write them with the extension intact (e.g. "validacao/relatorio.xlsx", not "relatorio" alone). Relative paths resolve against the session cwd. For paths emitted via a `Bash` tool you control (printing to stdout from a script), you may additionally wrap them in an OSC 8 hyperlink — `printf \'\\033]8;;decky-file:///abs/path\\033\\\\visible-text\\033]8;;\\033\\\\\\n\'` — to render an underlined affordance; not needed for paths cited in your own response text (Cmd+click handles those). Skip the wrapping for paths cited inside cards (markdown links do that) and for paths already passed to a `preview_*` tool.'
-].join('\n')
-
 interface WorkspaceState {
   sessions: Session[]
   activeId?: string
@@ -114,8 +67,7 @@ interface WorkspaceState {
   titles?: Record<string, string>
   pinned?: Record<string, PreviewSource>
   // "Save for later" — closed sessions stashed by the user via the close-popover.
-  // Restore = re-spawn the same Session (claudeSessionId resumes claude transcript)
-  // with previews rehydrated. Workspace-scoped, same as `pinned`.
+  // Restore = re-spawn the same Session with previews rehydrated. Workspace-scoped, same as `pinned`.
   stash?: StashEntry[]
 }
 
@@ -150,10 +102,6 @@ function mergeSessionScopedMap<T>(
     if (workspaceIds.has(k) && !(k in prev)) out[k] = v
   }
   return out
-}
-
-function freshClaudeId(): string {
-  return crypto.randomUUID()
 }
 
 // eslint-disable-next-line no-control-regex
@@ -311,33 +259,28 @@ function randomSessionName(): string {
   return `${a}-${j}`
 }
 
-function defaultCliSession(cwd: string, cliKind: CliKind): Session {
-  const spec = CLI_SPECS[cliKind]
+function defaultSession(cwd: string): Session {
   return {
-    id: `${cliKind}-${Date.now().toString(36)}`,
+    id: `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     label: randomSessionName(),
     project: projectFromCwd(cwd),
-    cwd,
-    kind: 'claude',
-    cliKind,
-    // Only CLIs that support --session-id get a stable id.
-    claudeSessionId: spec.supportsResume ? freshClaudeId() : undefined
+    cwd
   }
 }
 
+// Drop legacy claude-specific fields persistidos antes do refactor "terminal direto" — o disco
+// pode ter `kind`/`cliKind` em sessões antigas; preservamos id/label/cwd e ignoramos o resto.
+// `claude`/`claudeSessionId` são re-introduzidos (resume on restart): se a sessão tava com claude
+// rodando no último save, o boot relança `claude --resume <id>` por cima do shell.
 function migrateSessions(list: Session[]): Session[] {
-  return list.map((s) => {
-    if (s.kind !== 'claude') return s
-    // Legacy sessions had no cliKind → they were always claude.
-    const cliKind: CliKind = s.cliKind ?? 'claude'
-    const needsId = CLI_SPECS[cliKind].supportsResume && !s.claudeSessionId
-    if (s.cliKind === cliKind && !needsId) return s
-    return {
-      ...s,
-      cliKind,
-      claudeSessionId: needsId ? freshClaudeId() : s.claudeSessionId
-    }
-  })
+  return list.map((s) => ({
+    id: s.id,
+    label: s.label,
+    project: s.project,
+    cwd: s.cwd,
+    claude: s.claude,
+    claudeSessionId: s.claudeSessionId
+  }))
 }
 
 function sourcePath(source: PreviewSource | undefined): string | undefined {
@@ -390,7 +333,7 @@ function cardTitle(source: PreviewSource | undefined, fallback: string): string 
   }
   if (source.type === 'editor' || source.type === 'xlsx' || source.type === 'html') {
     if (source.title) return source.title
-    return source.path ? source.path.split('/').pop() ?? source.path : 'html'
+    return source.path ? (source.path.split('/').pop() ?? source.path) : 'html'
   }
   if (source.type === 'form') return source.spec.title ?? 'form'
   return fallback
@@ -436,7 +379,10 @@ function wrapHtmlContent(content: string, title?: string): string {
   const isFullDoc = /^<!doctype\b/i.test(trimmed) || /^<html\b/i.test(trimmed)
   if (isFullDoc) return injectWidgetScripts(content)
   const rawTitle = (title ?? '').trim()
-  const safeTitle = rawTitle.replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[ch] ?? ch)
+  const safeTitle = rawTitle.replace(
+    /[<>&"]/g,
+    (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[ch] ?? ch
+  )
   const wrapped = `<!doctype html>
 <html lang="pt-br">
 <head>
@@ -459,7 +405,10 @@ function wrapMarkdownAsHtml(content: string, title?: string): string {
   // Prefer caller-provided title; else first markdown heading; else "Card".
   const headingMatch = content.match(/^#{1,6}\s+(.+?)\s*$/m)
   const rawTitle = (title ?? headingMatch?.[1] ?? '').trim()
-  const safeTitle = rawTitle.replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[ch] ?? ch)
+  const safeTitle = rawTitle.replace(
+    /[<>&"]/g,
+    (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[ch] ?? ch
+  )
   // Escape `</script>` inside the content so it can't break out of the markdown holder.
   const safeContent = content.replace(/<\/script/gi, '<\\/script')
   return `<!doctype html>
@@ -582,28 +531,10 @@ async function rehydrateStash(
 }
 
 function App(): React.JSX.Element {
-  // List of AI CLIs found on PATH (claude/codex/cline). null = not yet fetched.
-  const [detectedClis, setDetectedClis] = useState<DetectedCli[] | null>(null)
-  // The user's chosen default CLI for new sessions. null = legacy state (treat as 'claude').
-  const [defaultCli, setDefaultCli] = useState<CliKind | null>(null)
-  // Whether to show the first-run banner asking the user to pick a default CLI.
-  const [firstRunPending, setFirstRunPending] = useState(false)
-  // User-triggered (re)open of the CLI picker after first-run, e.g. from the menu.
-  const [cliSettingsOpen, setCliSettingsOpen] = useState(false)
   const [startupCwd, setStartupCwd] = useState<string | null>(null)
   const [workspace, setWorkspace] = useState<string | null>(null)
   // Registry of folders opened as workspaces (global, ~/.decky/state.json) — drives the switcher.
   const [workspaces, setWorkspaces] = useState<string[]>([])
-  // Multi-engine: lista de engines (local + servers) e o mapa workspace→engineId. A árvore
-  // agrupa por KIND(local|server). Tudo sem engineId mapeado é 'local' — legado e default.
-  const [engines, setEngines] = useState<Engine[]>([])
-  // Bumpa quando um engine remoto reconecta (URL/token novos via reconnectAllRemoteEngines).
-  // Effects que lêem dados remotos (workspace.read pra non-active workspaces) usam isso pra
-  // re-disparar quando a conexão volta — sem isso, ficavam presos no read inicial que falhou
-  // enquanto o tunnel estava morto.
-  const [enginesVersion, setEnginesVersion] = useState(0)
-  const [workspaceEngine, setWorkspaceEngine] = useState<Record<string, string>>({})
-  const [collapsedEngines, setCollapsedEngines] = useState<string[]>([])
   // Persisted workspace→theme assignments. We compute each entry ONCE (greedy: prefer the hashed
   // theme, fall back to the nearest unused hue) when the workspace is registered, then never
   // recompute it — so removing/re-adding doesn't churn the colors of other workspaces.
@@ -616,24 +547,8 @@ function App(): React.JSX.Element {
   const [activeId, setActiveId] = useState<string | undefined>(undefined)
   // GLOBAL pool of sessions with a live pty (most-recent at the end), ACROSS workspaces — so
   // switching workspace doesn't kill the one you left. LRU-capped at MAX_LIVE_SESSIONS; each
-  // holds its own cwd/claudeSessionId so its terminal keeps running while hidden.
+  // holds its own cwd so its terminal keeps running while hidden.
   const [liveSessions, setLiveSessions] = useState<Session[]>([])
-  // Empurra os mapas de roteamento (workspace cwd → engineId, session id → engineId) pro preload
-  // sempre que mudam. Só entradas não-local importam (o preload faz default pra 'local'); pty/
-  // cards/git/etc de uma sessão de server passam a ir pelo engine remoto dono.
-  useEffect(() => {
-    const known = new Set(engines.map((e) => e.id))
-    const wsRoutes: Record<string, string> = {}
-    for (const [ws, id] of Object.entries(workspaceEngine)) {
-      if (id !== LOCAL_ENGINE_ID && known.has(id)) wsRoutes[ws] = id
-    }
-    const sessionRoutes: Record<string, string> = {}
-    for (const s of [...sessions, ...liveSessions]) {
-      const id = workspaceEngine[s.cwd]
-      if (id && id !== LOCAL_ENGINE_ID && known.has(id)) sessionRoutes[s.id] = id
-    }
-    window.deck.engines.setRoutes({ workspaces: wsRoutes, sessions: sessionRoutes })
-  }, [engines, workspaceEngine, sessions, liveSessions])
   // Which workspaces are expanded in the tree, and a display-only cache of the session
   // lists of NON-active workspaces (read lazily from their workspace.json).
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<string[]>([])
@@ -670,7 +585,6 @@ function App(): React.JSX.Element {
   // When you last "saw" each session (focused it / left it). Activity after this is unseen →
   // drives the green "done while you were away" dot until you return.
   const [seenAt, setSeenAt] = useState<Record<string, number>>({})
-  const [aiTitles, setAiTitles] = useState<Record<string, string>>({})
   const [gitStats, setGitStats] = useState<{
     isRepo: boolean
     additions: number
@@ -757,7 +671,6 @@ function App(): React.JSX.Element {
     activeId,
     workspace,
     workspaces,
-    workspaceEngine,
     startupCwd,
     cardsBySession,
     focusedCardBySession,
@@ -773,7 +686,6 @@ function App(): React.JSX.Element {
     activeId,
     workspace,
     workspaces,
-    workspaceEngine,
     startupCwd,
     cardsBySession,
     focusedCardBySession,
@@ -839,29 +751,10 @@ function App(): React.JSX.Element {
 
   // Mount: resolve env + subscriptions.
   useEffect(() => {
-    void window.deck.cli.list().then(setDetectedClis)
-    void window.deck.cli.getDefault().then(setDefaultCli)
-    void window.deck.cli.isFirstRun().then(setFirstRunPending)
     void window.deck.app.getStartupCwd().then(setStartupCwd)
     void window.deck.sessions.getTitles().then(setTitles)
     void window.deck.state.get<string[]>('workspaces').then((ws) => {
       if (Array.isArray(ws)) setWorkspaces(ws)
-    })
-    // Engines: a lista vem do argv (síncrona, já no preload). O mapa workspace→engineId persiste
-    // no state — popula quando o user faz "Add folder" escolhendo um engine remoto.
-    setEngines(window.deck.engines.list())
-    void window.deck.state.get<Record<string, string>>('workspaceEngines').then((m) => {
-      if (m && typeof m === 'object') setWorkspaceEngine(m)
-    })
-    // Engine reconectou (URL/token novos via reconnectAllRemoteEngines no main). Re-sincroniza
-    // a lista (pra refletir URL atualizada) e bumpa enginesVersion pra effects re-disparam.
-    const unsubEngines = window.deck.engines.onUpdate((engine) => {
-      console.log('[engines:updated]', engine?.id, '→ url=', engine?.url)
-      setEngines(window.deck.engines.list())
-      setEnginesVersion((v) => {
-        console.log('[engines:updated] bumping enginesVersion', v, '→', v + 1)
-        return v + 1
-      })
     })
     void window.deck.state.get<Record<string, string>>('workspaceThemes').then((m) => {
       if (m && typeof m === 'object') setWorkspaceThemes(m)
@@ -899,6 +792,29 @@ function App(): React.JSX.Element {
             workingAt: working ? t : (p?.workingAt ?? 0)
           }
         }
+      })
+    })
+
+    // claude entrou/saiu de foreground num terminal. Grava o estado na sessão (persistido no
+    // workspace.json) pra o próximo boot relançar `claude --resume <id>` por cima do shell.
+    // Atualiza nas DUAS listas (sessions = workspace atual; liveSessions = pool cross-workspace).
+    const unsubClaude = window.deck.pty.onClaude(({ id, running, sessionId }) => {
+      const patch = (s: Session): Session => {
+        if (s.id !== id) return s
+        // PIN: uma vez que a aba tem claudeSessionId, a captura do poll NÃO o sobrescreve. Uma
+        // conversa resumida (`claude --resume X`) é estável = X; deixar o poll reescrever causava o
+        // swap (uma aba ativa "roubava" a conversa de outra no mesmo cwd). Só seta quando ainda não há.
+        const nextSid = s.claudeSessionId ?? (running && sessionId ? sessionId : undefined)
+        if (s.claude === running && s.claudeSessionId === nextSid) return s
+        return { ...s, claude: running, claudeSessionId: nextSid }
+      }
+      setSessions((prev) => {
+        const next = prev.map(patch)
+        return next.some((s, i) => s !== prev[i]) ? next : prev
+      })
+      setLiveSessions((prev) => {
+        const next = prev.map(patch)
+        return next.some((s, i) => s !== prev[i]) ? next : prev
       })
     })
 
@@ -993,11 +909,7 @@ function App(): React.JSX.Element {
         if (source.type === 'markdown' && !source.path && ownerWs) {
           const html = wrapMarkdownAsHtml(source.content, source.title)
           void window.deck.cards.write(ownerWs, target!, html, '.html').then((filePath) => {
-            apply(
-              filePath
-                ? { type: 'html', path: filePath, title: source.title }
-                : source
-            )
+            apply(filePath ? { type: 'html', path: filePath, title: source.title } : source)
             ack(filePath ?? undefined)
           })
         } else if (source.type === 'html' && !source.path && source.content && ownerWs) {
@@ -1005,11 +917,7 @@ function App(): React.JSX.Element {
           // as a .html card. Path-backed html (preview_show on a .html) skips this branch.
           const html = wrapHtmlContent(source.content, source.title)
           void window.deck.cards.write(ownerWs, target!, html, '.html').then((filePath) => {
-            apply(
-              filePath
-                ? { type: 'html', path: filePath, title: source.title }
-                : source
-            )
+            apply(filePath ? { type: 'html', path: filePath, title: source.title } : source)
             ack(filePath ?? undefined)
           })
         } else {
@@ -1025,18 +933,25 @@ function App(): React.JSX.Element {
       // Open Folder semantics: just switch workspace — its state (~/.decky) loads (or resurrects).
       setWorkspace(cwd)
     })
-    const unsubConflict = window.deck.sessions.onUuidConflict(({ id }) => {
-      // Do NOT regenerate the UUID here — that would start a fresh empty claude and
-      // permanently lose the conversation. A conflict on restart is usually a stale lock
-      // from the just-killed claude; the session id stays stable so the conversation can
-      // resume once the lock clears (reopen the tab if it shows "[process exited]").
-      console.warn(`[decky] claude session ${id} reported a UUID conflict (lock not yet released)`)
+    // New EMPTY web tab (browser card) in the active session, labeled with `title` until it
+    // navigates (decky new-tab). Uses stateRef.current.activeId since this effect is mount-once;
+    // mirrors onWebOpen below. Empty url ⇒ "nova aba" (URL bar auto-focuses).
+    const unsubWebTab = window.deck.sessions.onWebTab(({ title }) => {
+      const aId = stateRef.current.activeId
+      if (!aId) return
+      const id = `web-${Date.now().toString(36)}`
+      setCardsBySession((p) => ({ ...p, [aId]: [...(p[aId] ?? []), id] }))
+      setPreviewsByCard((p) => ({
+        ...p,
+        [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url: '', ...(title ? { title } : {}) } }
+      }))
+      setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
     })
     const unsubNewSession = window.deck.app.onMenuNewSession(() => {
       const { workspace: ws, startupCwd: scwd } = stateRef.current
       const cwd = ws || scwd
       if (!cwd) return
-      const def = defaultCliSession(cwd, defaultCli ?? 'claude')
+      const def = defaultSession(cwd)
       setSessions((prev) => [...prev, def])
       setActiveId(def.id)
     })
@@ -1101,12 +1016,6 @@ function App(): React.JSX.Element {
       else wire = { type: 'editor', path: abs }
       const newCardId = `file-${Date.now().toString(36)}`
       if (detail.focus === false) noFocusIdsRef.current.add(newCardId)
-      // Workspace remoto: o preview-server roda no MAC e faz readFile do path. Pra paths
-      // remotos (ex: /home/pi/me/.decky/cards/foo.md), readFile dá ENOENT e o POST retorna
-      // 400. Pre-fetcha o content via file.readText (roteado pro engine remoto) e envia
-      // inline — preview-state.normalizePreviewSource já trata `content != null` skip-read.
-      // (markdown/diff/editor textuais; html/xlsx ficam pra outro PR — html usa card:// e
-      // xlsx é binário.)
       const goPost = (): Promise<unknown> =>
         fetch('http://127.0.0.1:6790/preview', {
           method: 'POST',
@@ -1117,24 +1026,7 @@ function App(): React.JSX.Element {
           },
           body: JSON.stringify(wire)
         }).catch((err) => console.warn('[decky:open-path] preview POST failed', err))
-      const isTextual = wire.type === 'markdown' || wire.type === 'diff' || wire.type === 'editor'
-      const { workspaces: wsList, workspaceEngine: wsEngine } = stateRef.current
-      const owningWs = wsList.find((w) => abs === w || abs.startsWith(w.endsWith('/') ? w : w + '/'))
-      const engineId = owningWs ? wsEngine[owningWs] : undefined
-      if (isTextual && engineId && engineId !== LOCAL_ENGINE_ID && owningWs) {
-        void window.deck.file
-          .readText(abs, owningWs)
-          .then((content) => {
-            if (content != null) wire.content = content
-            void goPost()
-          })
-          .catch((err) => {
-            console.warn('[decky:open-path] remote readText failed', err)
-            void goPost()
-          })
-      } else {
-        void goPost()
-      }
+      void goPost()
     }
     window.addEventListener('decky:open-path', onOpenPath)
     // Focus the card that currently shows a given path (own session or pinned). Used by
@@ -1179,14 +1071,6 @@ function App(): React.JSX.Element {
       const replacement = next[idx] ?? next[idx - 1] ?? next[0]
       setSessions(next)
       setActiveId(replacement?.id)
-    })
-    const unsubCliSettings = window.deck.app.onMenuOpenCliSettings(() => {
-      // Make sure the latest detection is in the modal even if PATH changed since boot.
-      void window.deck.cli.recheck().then(setDetectedClis)
-      setCliSettingsOpen(true)
-    })
-    const unsubAddServer = window.deck.app.onMenuAddServer(() => {
-      setRemoteServerModalOpen(true)
     })
     // The debounced save (400ms) loses the tail on quit — a session created moments before
     // closing never reaches disk. On quit, main blocks the actual exit until we flush the
@@ -1239,19 +1123,17 @@ function App(): React.JSX.Element {
     })
     return () => {
       unsubData()
+      unsubClaude()
       unsubPreview()
       unsubTitle()
       unsubAdd()
-      unsubConflict()
+      unsubWebTab()
       unsubNewSession()
-      unsubEngines()
       window.removeEventListener('decky:web-open', onWebOpen)
       window.removeEventListener('decky:open-path', onOpenPath)
       window.removeEventListener('decky:focus-path', onFocusPath)
       unsubOpenUrl()
       unsubCloseTab()
-      unsubCliSettings()
-      unsubAddServer()
       unsubFlush()
       unsubOpenTab()
     }
@@ -1281,31 +1163,6 @@ function App(): React.JSX.Element {
       document.removeEventListener('pointerdown', update, true)
     }
   }, [])
-
-  // Pull claude's auto-generated session title (aiTitle in the .jsonl) as the tab name.
-  // Persisted on disk → survives restarts, no dependency on the bot calling a tool.
-  useEffect(() => {
-    if (!wsLoaded) return
-    let cancelled = false
-    const fetchTitles = async (): Promise<void> => {
-      // Parallel (was sequential → slow to fill with many sessions, showing the random
-      // placeholder for a while on launch).
-      await Promise.all(
-        sessions.map(async (s) => {
-          if (s.kind !== 'claude' || !s.claudeSessionId) return
-          const t = await window.deck.claude.aiTitle(s.cwd, s.claudeSessionId)
-          if (cancelled || !t) return
-          setAiTitles((prev) => (prev[s.id] === t ? prev : { ...prev, [s.id]: t }))
-        })
-      )
-    }
-    void fetchTitles()
-    const iv = setInterval(fetchTitles, 12000)
-    return () => {
-      cancelled = true
-      clearInterval(iv)
-    }
-  }, [wsLoaded, sessions])
 
   // Adopt startup cwd ONLY after we've checked lastWorkspace and it was empty.
   // (Avoids a race where startupCwd loads first and flashes the wrong workspace.)
@@ -1363,7 +1220,7 @@ function App(): React.JSX.Element {
           initial = pendingActiveRef.current
         }
         if (pendingNewRef.current) {
-          const def = defaultCliSession(workspace, defaultCli ?? 'claude')
+          const def = defaultSession(workspace)
           sess = [...sess, def]
           initial = def.id
         }
@@ -1396,7 +1253,7 @@ function App(): React.JSX.Element {
         const stashRe = await rehydrateStash(data.stash, workspace)
         if (!cancelled) setStash(stashRe)
       } else {
-        const def = defaultCliSession(workspace, defaultCli ?? 'claude')
+        const def = defaultSession(workspace)
         pendingActiveRef.current = null
         pendingNewRef.current = false
         loadedWorkspaceRef.current = workspace
@@ -1656,57 +1513,25 @@ function App(): React.JSX.Element {
 
   // Read the session lists of ALL non-active workspaces (display-only labels) — also feeds
   // cross-workspace Cmd+Arrow navigation, so it can't be gated on expand state.
-  //
-  // `workspaceEngine` no deps: workspace.read é roteado por engineForWorkspace no preload, que
-  // olha o mapa populado por setRoutes (useEffect acima). Sem essa dep, no boot rodávamos
-  // antes do mapa estar lá → workspace remoto era lido do engine LOCAL → null → cache vazio.
   useEffect(() => {
-    console.log('[wsCache] effect fired — workspaces:', workspaces.length, 'enginesVersion:', enginesVersion)
     for (const ws of workspaces) {
       if (ws === workspace) continue // active workspace uses live `sessions`
-      console.log('[wsCache] reading', ws)
       void window.deck.workspace
         .read<WorkspaceState>(ws)
         .then(async (data) => {
           const sess = data?.sessions ?? []
-          console.log('[wsCache]', ws, '→ sessions=', sess.length)
-          // Label fallback chain matches the active workspace: session_set_title (persisted
-          // `titles`) → claude's aiTitle (read from the .jsonl) → the random placeholder. Sem
-          // a aiTitle step, sessões sem título explícito mostravam o placeholder aleatório até
-          // serem abertas (que dispara o aiTitle fetch).
-          const list: TreeSession[] = await Promise.all(
-            sess.map(async (s) => {
-              let label = data?.titles?.[s.id]
-              if (!label && s.kind === 'claude' && s.claudeSessionId) {
-                // aiTitle pode falhar (engine remoto antigo sem o handler 'claude:ai-title',
-                // .jsonl ainda não escrito, etc) — não derruba a sessão inteira: cai pro
-                // s.label (placeholder aleatório) e segue. Sem este try a Promise.all
-                // rejeitava e nada era populado no cache.
-                try {
-                  label =
-                    (await window.deck.claude.aiTitle(s.cwd ?? ws, s.claudeSessionId)) ?? undefined
-                } catch {
-                  // best-effort: silencia, usa fallback
-                }
-              }
-              return { id: s.id, label: label || s.label, kind: s.kind }
-            })
-          )
+          // Label: session_set_title persistido (titles) → fallback no random placeholder.
+          const list: TreeSession[] = sess.map((s) => ({
+            id: s.id,
+            label: data?.titles?.[s.id] || s.label
+          }))
           setWsSessionsCache((c) => {
             const prev = c[ws]
-            // Lista veio vazia E o cache anterior tinha conteúdo: provavelmente um erro
-            // transitório (engine remoto reconectando, workspace.json não escrito ainda).
-            // Mantém o cache bom — sem isso, voltar pra workspace local enquanto o engine
-            // remoto está reconectando apaga as sessões remotas da árvore.
-            if (list.length === 0 && prev && prev.length > 0) return c
             // Skip update if content didn't change — evita re-render desnecessário.
             if (
               prev &&
               prev.length === list.length &&
-              prev.every(
-                (p, i) =>
-                  p.id === list[i].id && p.label === list[i].label && p.kind === list[i].kind
-              )
+              prev.every((p, i) => p.id === list[i].id && p.label === list[i].label)
             ) {
               return c
             }
@@ -1714,12 +1539,11 @@ function App(): React.JSX.Element {
           })
         })
         .catch((err) => {
-          // Read falhou (engine remoto offline, WS timeout). NÃO toca no cache — preserva o
-          // que já estava lá. Loga pro DevTools pra debug em vez de comer silencioso.
+          // NÃO toca no cache — preserva o que já estava lá. Loga pro DevTools pra debug.
           console.warn(`[workspace.read] ${ws} failed:`, err)
         })
     }
-  }, [workspaces, workspace, workspaceEngine, enginesVersion])
+  }, [workspaces, workspace])
 
   // Promote the active session to most-recently-used; evict the LRU past the cap.
   useEffect(() => {
@@ -1831,7 +1655,7 @@ function App(): React.JSX.Element {
         const { workspace: ws, startupCwd: scwd } = stateRef.current
         const cwd = ws || scwd
         if (cwd) {
-          const def = defaultCliSession(cwd, defaultCli ?? 'claude')
+          const def = defaultSession(cwd)
           setSessions((prev) => [...prev, def])
           setActiveId(def.id)
         }
@@ -2021,9 +1845,9 @@ function App(): React.JSX.Element {
     void window.deck.cards.write(workspace, 'PINNED', lines.join('\n') + '\n')
   }, [pinned, workspace, wsLoaded])
 
-  // Tab name priority: explicit session_set_title > claude's aiTitle > default label.
+  // Tab name priority: explicit session_set_title > default label.
   const sessionsWithTitles = sessions.map((s) => {
-    const label = titles[s.id] || aiTitles[s.id] || s.label
+    const label = titles[s.id] || s.label
     return label !== s.label ? { ...s, label } : s
   })
 
@@ -2077,7 +1901,7 @@ function App(): React.JSX.Element {
           hasFocus: document.hasFocus()
         })
         if (!watching) {
-          const label = titles[id] || aiTitles[id] || 'sessão'
+          const label = titles[id] || 'sessão'
           void window.deck.notify
             .show({ id, title: `${label} pronta`, body: 'terminou de processar' })
             .then(() => console.log('[notify] IPC resolved for', id))
@@ -2086,7 +1910,7 @@ function App(): React.JSX.Element {
       }
       wasWorkingRef.current[id] = a.active
     }
-  }, [sessionActivity, activeId, titles, aiTitles])
+  }, [sessionActivity, activeId, titles])
 
   // Sessions shown in the tree: the active workspace from live state, others from the cache.
   // Only use live `sessions` once they belong to the current `workspace`. On switch, `workspace`
@@ -2097,8 +1921,7 @@ function App(): React.JSX.Element {
   if (workspace && loadedWorkspaceRef.current === workspace) {
     treeSessionsByWorkspace[workspace] = sessionsWithTitles.map((s) => ({
       id: s.id,
-      label: s.label,
-      kind: s.kind
+      label: s.label
     }))
   }
 
@@ -2147,15 +1970,12 @@ function App(): React.JSX.Element {
         entry = {
           id: `stash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
           savedAt: Date.now(),
-          title: aiTitles[id] || titles[id] || sess.label,
+          title: titles[id] || sess.label,
           session: {
             id: sess.id,
             label: sess.label,
             project: sess.project,
-            cwd: sess.cwd,
-            kind: sess.kind,
-            cliKind: sess.cliKind,
-            claudeSessionId: sess.claudeSessionId
+            cwd: sess.cwd
           },
           focusedCardId: focusedCardBySession[id] ?? undefined,
           cards: ownCardIds
@@ -2212,10 +2032,7 @@ function App(): React.JSX.Element {
                 id: closedSess.id,
                 label: closedSess.label,
                 project: closedSess.project,
-                cwd: closedSess.cwd,
-                kind: closedSess.kind,
-                cliKind: closedSess.cliKind,
-                claudeSessionId: closedSess.claudeSessionId
+                cwd: closedSess.cwd
               },
               focusedCardId: data.focusedCardBySession?.[id] ?? undefined,
               cards: ownCardIds
@@ -2274,10 +2091,10 @@ function App(): React.JSX.Element {
     })
   }
 
-  const newClaudeSession = (): void => {
+  const newSession = (): void => {
     const cwd = workspace || startupCwd
     if (!cwd) return
-    const def = defaultCliSession(cwd, defaultCli ?? 'claude')
+    const def = defaultSession(cwd)
     setSessions((prev) => [...prev, def])
     setActiveId(def.id)
   }
@@ -2285,7 +2102,7 @@ function App(): React.JSX.Element {
   // Restore a "save for later" entry as a session.
   // - revive=true (click default): reuse entry.session as-is so claude --session-id resumes
   //   the original transcript. If the same id is somehow already live, fall back to a fresh id.
-  // - revive=false (Shift+click): mint a fresh sessionId/claudeSessionId, cards still come back.
+  // - revive=false (Shift+click): mint a fresh sessionId, cards still come back.
   // - keep=true (Cmd/Ctrl+click): leave the entry in the stash; otherwise consume it.
   const restoreFromStash = (entryId: string, opts: { revive: boolean; keep: boolean }): void => {
     const entry = stash.find((e) => e.id === entryId)
@@ -2299,15 +2116,9 @@ function App(): React.JSX.Element {
           id: entry.session.id,
           label: entry.session.label,
           project: entry.session.project,
-          cwd: entry.session.cwd,
-          kind: entry.session.kind,
-          cliKind: entry.session.cliKind,
-          claudeSessionId: entry.session.claudeSessionId
+          cwd: entry.session.cwd
         }
-      : defaultCliSession(
-          entry.session.cwd,
-          entry.session.cliKind ?? defaultCli ?? 'claude'
-        )
+      : defaultSession(entry.session.cwd)
     const targetId = baseSess.id
     const cardMap: Record<string, PreviewSource> = {}
     for (const c of entry.cards) cardMap[c.cardId] = c.source as PreviewSource
@@ -2328,126 +2139,18 @@ function App(): React.JSX.Element {
     setStash((prev) => prev.filter((e) => e.id !== entryId))
   }
 
-  // Add folder agora respeita multi-engine. Quando há mais de uma engine (local + servers),
-  // abre primeiro o EnginePicker pra o user escolher onde a pasta vive. Local segue pro dialog
-  // nativo; remoto abre o RemoteFolderModal (input path com probe SSH + criar pasta).
-  const [enginePickerOpen, setEnginePickerOpen] = useState(false)
-  const [remoteFolderEngine, setRemoteFolderEngine] = useState<Engine | null>(null)
-
-  // Adiciona o path à lista de workspaces (no state-store), mapeia pro engineId (se remoto) e
-  // foca nele. Idempotente — se o path já está registrado, só seta o workspace.
-  const addWorkspaceForEngine = (engineId: string, path: string): void => {
+  // Add folder: dialog nativo → registra o path na lista de workspaces (state-store) e foca nele.
+  // Idempotente — se o path já está registrado, só seta o workspace.
+  const addFolder = async (): Promise<void> => {
+    const path = await window.deck.app.pickFolder()
+    if (!path) return
     setWorkspaces((prev) => {
       if (prev.includes(path)) return prev
       const next = [...prev, path]
       void window.deck.state.set('workspaces', next)
       return next
     })
-    if (engineId !== LOCAL_ENGINE_ID) {
-      setWorkspaceEngine((prev) => {
-        const next = { ...prev, [path]: engineId }
-        void window.deck.state.set('workspaceEngines', next)
-        return next
-      })
-    }
     setWorkspace(path)
-  }
-
-  const addFolder = (): void => {
-    // Com só o engine local (caso default), pula o picker e vai direto pro dialog nativo.
-    if (engines.length <= 1) {
-      void pickLocalFolder()
-      return
-    }
-    setEnginePickerOpen(true)
-  }
-
-  const pickLocalFolder = async (): Promise<void> => {
-    const p = await window.deck.app.pickFolder()
-    if (p) addWorkspaceForEngine(LOCAL_ENGINE_ID, p)
-  }
-
-  const onEnginePicked = (engineId: string): void => {
-    setEnginePickerOpen(false)
-    if (engineId === LOCAL_ENGINE_ID) {
-      void pickLocalFolder()
-      return
-    }
-    const eng = engines.find((e) => e.id === engineId)
-    if (!eng) return
-    setRemoteFolderEngine(eng)
-  }
-
-  const onRemoteFolderConfirmed = (path: string): void => {
-    if (!remoteFolderEngine) return
-    addWorkspaceForEngine(remoteFolderEngine.id, path)
-    setRemoteFolderEngine(null)
-  }
-
-  // SSH remote — modal aberto via menu File → "Connect to Server…" (Cmd+Shift+O). Listener
-  // registrado no useEffect de boot. Sem botão na sidebar, só pelo menu.
-  const [remoteServerModalOpen, setRemoteServerModalOpen] = useState(false)
-
-  // Modal "Add server" terminou: registra o engine novo na lista (sem workspace ainda — o
-  // user adiciona pastas depois via "Add folder", que pergunta qual engine + path). Additivo
-  // — local segue intacto, e o server fica visível mesmo sem pastas.
-  const onServerAdded = (_engineId: string): void => {
-    setEngines(window.deck.engines.list())
-  }
-
-  // Remover engine: pede confirmação porque arrasta os workspaces remotos junto. Os dados no
-  // host remoto FICAM intactos — só desconecta + tira da árvore. O usuário pode re-adicionar
-  // depois (mesmo host = engine reaproveitada por dedup no main).
-  const [engineToRemove, setEngineToRemove] = useState<Engine | null>(null)
-
-  const requestRemoveEngine = (engineId: string): void => {
-    const eng = engines.find((e) => e.id === engineId)
-    if (!eng || eng.kind !== 'server') return
-    setEngineToRemove(eng)
-  }
-
-  const confirmRemoveEngine = async (): Promise<void> => {
-    const eng = engineToRemove
-    if (!eng) return
-    // Workspaces que pertencem a esse engine (path → engineId no map).
-    const affected = Object.entries(workspaceEngine)
-      .filter(([, id]) => id === eng.id)
-      .map(([path]) => path)
-
-    await window.deck.engines.remove(eng.id)
-
-    // Limpa workspaces ligados ao engine + atualiza state-store.
-    setWorkspaces((prev) => {
-      const next = prev.filter((w) => !affected.includes(w))
-      void window.deck.state.set('workspaces', next)
-      return next
-    })
-    setWorkspaceEngine((prev) => {
-      const next = { ...prev }
-      for (const p of affected) delete next[p]
-      void window.deck.state.set('workspaceEngines', next)
-      return next
-    })
-    setExpandedWorkspaces((e) => e.filter((w) => !affected.includes(w)))
-    setWsSessionsCache((c) => {
-      const n = { ...c }
-      for (const p of affected) delete n[p]
-      return n
-    })
-    // Se o workspace ativo era um dos removidos, troca pra outro (ou null).
-    if (workspace && affected.includes(workspace)) {
-      const remaining = workspaces.filter((w) => !affected.includes(w))
-      if (remaining.length) setWorkspace(remaining[0])
-      else {
-        loadedWorkspaceRef.current = null
-        setWorkspace(null)
-        setSessions([])
-        setActiveId(undefined)
-      }
-    }
-
-    setEngines(window.deck.engines.list())
-    setEngineToRemove(null)
   }
 
   // Open a browser card in the active session, focused. Empty url = "nova aba" (URL bar
@@ -2455,7 +2158,7 @@ function App(): React.JSX.Element {
   // If a tab already shows the same URL in the active session, focus it instead of opening
   // a duplicate. Empty url ("nova aba") always creates a fresh card — every blank web tab is
   // its own thing, not a duplicate.
-  const openWebTab = (url: string = ''): void => {
+  const openWebTab = (url: string = '', title?: string): void => {
     if (!activeId) return
     const aId = activeId
     if (url) {
@@ -2473,7 +2176,7 @@ function App(): React.JSX.Element {
     setCardsBySession((p) => ({ ...p, [aId]: [...(p[aId] ?? []), id] }))
     setPreviewsByCard((p) => ({
       ...p,
-      [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url } }
+      [aId]: { ...(p[aId] ?? {}), [id]: { type: 'web', url, ...(title ? { title } : {}) } }
     }))
     setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
   }
@@ -2527,7 +2230,7 @@ function App(): React.JSX.Element {
 
   const newSessionIn = (ws: string): void => {
     if (ws === workspace) {
-      newClaudeSession()
+      newSession()
       return
     }
     pendingNewRef.current = true
@@ -2556,20 +2259,6 @@ function App(): React.JSX.Element {
         setActiveId(undefined)
       }
     }
-  }
-
-  const commandFor = (s: Session): string[] | undefined => {
-    if (s.kind !== 'claude') return undefined
-    const cliKind: CliKind = s.cliKind ?? 'claude'
-    const detected = detectedClis?.find((c) => c.kind === cliKind)
-    if (!detected) return undefined
-    return [
-      detected.bin,
-      ...buildArgs(cliKind, {
-        sessionId: s.claudeSessionId,
-        systemPrompt: DECKY_SESSION_PROMPT
-      })
-    ]
   }
 
   const openPanel = (pid: PanelId): void => {
@@ -2904,8 +2593,7 @@ function App(): React.JSX.Element {
           })
         }
       }
-      const webFavicon =
-        source.type === 'web' ? (source.favicon ?? null) : undefined
+      const webFavicon = source.type === 'web' ? (source.favicon ?? null) : undefined
       return {
         id,
         title: cardTitle(source, isPinned ? 'pinned' : `card ${i + 1}`),
@@ -2944,32 +2632,6 @@ function App(): React.JSX.Element {
   const sortedWorkspaces = [...workspaces].sort((a, b) =>
     projectFromCwd(a).localeCompare(projectFromCwd(b), undefined, { sensitivity: 'base' })
   )
-
-  // Agrupa os workspaces por engine pra árvore KIND ▸ WS ▸ SESSION. Engines sem workspace ainda
-  // aparecem (ex: server recém-adicionado, vazio). Workspace cujo engine sumiu cai no local.
-  const engineList: Engine[] = engines.length
-    ? engines
-    : [{ id: LOCAL_ENGINE_ID, kind: 'local', label: 'local', url: '' }]
-  const knownEngineIds = new Set(engineList.map((e) => e.id))
-  const engineOf = (ws: string): string => {
-    const id = workspaceEngine[ws]
-    return id && knownEngineIds.has(id) ? id : LOCAL_ENGINE_ID
-  }
-  const engineGroups = engineList.map((e) => ({
-    id: e.id,
-    kind: e.kind,
-    label: e.label,
-    status: (e.kind === 'server' ? (e.url ? 'online' : 'offline') : undefined) as
-      | 'online'
-      | 'connecting'
-      | 'offline'
-      | undefined,
-    workspaces: sortedWorkspaces.filter((ws) => engineOf(ws) === e.id)
-  }))
-  const toggleEngine = (engineId: string): void =>
-    setCollapsedEngines((prev) =>
-      prev.includes(engineId) ? prev.filter((x) => x !== engineId) : [...prev, engineId]
-    )
 
   // Flat session list across all workspaces, in tree order (workspace registry × sessions).
   const navSessions: { ws: string; id: string }[] = []
@@ -3030,302 +2692,228 @@ function App(): React.JSX.Element {
     // dev:rebuild lives in the right-click menu on the top "decky" panel header now.
   ]
 
-  const handleCliSave = async (kind: CliKind): Promise<void> => {
-    await window.deck.cli.setDefault(kind)
-    await window.deck.cli.markFirstRunDone()
-    setDefaultCli(kind)
-    setFirstRunPending(false)
-    setCliSettingsOpen(false)
-  }
-
-  const handleCliSkip = async (): Promise<void> => {
-    await window.deck.cli.markFirstRunDone()
-    setFirstRunPending(false)
-    setCliSettingsOpen(false)
-  }
-
-  const handleCliRecheck = async (): Promise<DetectedCli[]> => {
-    const fresh = await window.deck.cli.recheck()
-    setDetectedClis(fresh)
-    return fresh
-  }
-
   // Overlays that cover the canvas area force every web card's native overlay to hide
   // (a WebContentsView paints above the React shell, so without this it would obscure the
-  // command palette, FirstRunModal, etc.). Keep this short and additive — anything truly
-  // overlay-shaped goes in here.
-  const overlayActive =
-    paletteOpen ||
-    cardSearchOpen ||
-    remoteServerModalOpen ||
-    enginePickerOpen ||
-    remoteFolderEngine !== null ||
-    engineToRemove !== null ||
-    ((firstRunPending || cliSettingsOpen) && detectedClis !== null)
+  // command palette). Keep this short and additive — anything truly overlay-shaped goes here.
+  const overlayActive = paletteOpen || cardSearchOpen
 
   return (
     <OverlayActiveProvider active={overlayActive}>
-    <div className="deck">
-      {(firstRunPending || cliSettingsOpen) && detectedClis !== null && (
-        <FirstRunModal
-          detectedClis={detectedClis}
-          currentDefault={defaultCli}
-          onSave={handleCliSave}
-          onSkip={handleCliSkip}
-          onRecheck={handleCliRecheck}
-          showSkip={!firstRunPending}
-          heading={cliSettingsOpen && !firstRunPending ? t('cli.headingSettings') : undefined}
-        />
-      )}
-      {remoteServerModalOpen && (
-        <AddServerModal
-          onDismiss={() => setRemoteServerModalOpen(false)}
-          onAdded={onServerAdded}
-        />
-      )}
-      {enginePickerOpen && (
-        <EnginePickerModal
-          engines={engines}
-          onDismiss={() => setEnginePickerOpen(false)}
-          onPick={onEnginePicked}
-        />
-      )}
-      {remoteFolderEngine && (
-        <RemoteFolderModal
-          engine={remoteFolderEngine}
-          onDismiss={() => setRemoteFolderEngine(null)}
-          onConfirm={onRemoteFolderConfirmed}
-        />
-      )}
-      {engineToRemove && (
-        <ConfirmEngineRemoveModal
-          engine={engineToRemove}
-          affectedWorkspaces={Object.entries(workspaceEngine)
-            .filter(([, id]) => id === engineToRemove.id)
-            .map(([path]) => path)}
-          onCancel={() => setEngineToRemove(null)}
-          onConfirm={() => void confirmRemoveEngine()}
-        />
-      )}
-      <main className="deck-main">
-        <ResizableSplit
-          defaultSizes={[30, 70]}
-          minSizes={[15, 25]}
-          storageKey="deck-layout-2col-v0"
-        >
-          <section className="panel panel-sessions">
-            <div className="panel-header">
-              <span>decky</span>
-            </div>
-            <ResizableSplit
-              direction="vertical"
-              defaultSizes={[65, 35]}
-              minSizes={[20, 10]}
-              storageKey="deck-layout-sessions-v0"
-            >
-              <div
-                className="panel-body panel-body-flush panel-focusable"
-                data-panel="terminal"
-                data-focused={focusedPanel === 'terminal'}
-              >
-                {(() => {
-                  const focId = activeId ? focusedCardBySession[activeId] : null
-                  const isPanel = focId?.startsWith(PANEL_PREFIX)
-                  const cards = activeId ? (deckCardsBySession[activeId] ?? []) : []
-                  const focCard = focId && !isPanel ? cards.find((c) => c.id === focId) : null
-                  return (
-                    <div className="session-ctx-bar" data-empty={focCard ? 'false' : 'true'}>
-                      <span className="session-ctx-label">CONTEXTO</span>
-                      {focCard ? (
-                        <span className="session-ctx-title" title={focCard.id}>
-                          {focCard.title ?? focCard.id}
-                        </span>
-                      ) : (
-                        <span className="session-ctx-empty">
-                          nenhum card focado — clique numa tab pra dar contexto
-                        </span>
-                      )}
-                    </div>
-                  )
-                })()}
-                <TerminalHost
-                  sessions={hostSessions}
-                  activeId={activeId}
-                  detectionLoaded={detectedClis !== null}
-                  commandFor={commandFor}
-                  mode={mode}
-                  themeFor={themeFor}
-                  onUserInput={(id) => {
-                    userInputAtRef.current[id] = Date.now()
-                  }}
-                />
+      <div className="deck">
+        <main className="deck-main">
+          <ResizableSplit
+            defaultSizes={[30, 70]}
+            minSizes={[15, 25]}
+            storageKey="deck-layout-2col-v0"
+          >
+            <section className="panel panel-sessions">
+              <div className="panel-header">
+                <span>decky</span>
               </div>
-              <WorkspaceTree
-                isFocused={focusedPanel === 'tree'}
-                engines={engineGroups}
-                collapsedEngines={collapsedEngines}
-                activeWorkspace={workspace}
-                activeSessionId={activeId}
-                previewedSession={previewedNav}
-                expanded={expandedWorkspaces}
-                sessionsByWorkspace={treeSessionsByWorkspace}
-                activity={sessionActivity}
-                mode={mode}
-                themeFor={themeFor}
-                nameOf={projectFromCwd}
-                ownCardCount={(sid) =>
-                  (cardsBySession[sid] ?? []).filter((cid) => !pinned[cid]).length
-                }
-                stash={stash}
-                onToggleEngine={toggleEngine}
-                onToggleExpand={toggleExpand}
-                onSelectSession={selectSession}
-                onNewSession={newSessionIn}
-                onCloseSession={handleClose}
-                onCloseWorkspace={closeWorkspace}
-                onAddFolder={() => addFolder()}
-                onRemoveEngine={requestRemoveEngine}
-                onRestoreStash={restoreFromStash}
-                onDiscardStash={discardStash}
-              />
-            </ResizableSplit>
-          </section>
-
-          <section className="panel panel-preview">
-            <div className="panel-header">
-              <span>{workspace ? projectFromCwd(workspace) : 'decky'}</span>
-              {gitStats && (
-                <span className="panel-header-git">
-                  <GitStats
-                    additions={gitStats.additions}
-                    deletions={gitStats.deletions}
-                    onClick={openGitDiff}
-                  />
-                  {gitStats.branch && (
-                    <span className="git-branch" title={`branch ${gitStats.branch}`}>
-                      <span className="git-branch-icon" aria-hidden="true">
-                        ⎇
-                      </span>
-                      {gitStats.branch}
-                    </span>
-                  )}
-                </span>
-              )}
-            </div>
-            <div
-              className="panel-body panel-body-flush panel-focusable"
-              data-panel="preview"
-              data-focused={focusedPanel === 'preview'}
-            >
-              {DECKY_LAYOUT === 'tabs' ? (
-                // One DeckTabs per LIVE session (LRU pool, cross-workspace) — not só do workspace
-                // ativo. Active one is visible, others are visibility:hidden. Keeping inactive
-                // panes mounted preserves React state (scroll, JSON expandido) + WebContentsView
-                // pra sessions de OUTROS workspaces — trocar workspace e voltar é idempotente.
-                <div className="session-pane-stack">
-                  {hostSessions.map((s) => {
-                    const isActive = s.id === activeId
+              <ResizableSplit
+                direction="vertical"
+                defaultSizes={[65, 35]}
+                minSizes={[20, 10]}
+                storageKey="deck-layout-sessions-v0"
+              >
+                <div
+                  className="panel-body panel-body-flush panel-focusable"
+                  data-panel="terminal"
+                  data-focused={focusedPanel === 'terminal'}
+                >
+                  {(() => {
+                    const focId = activeId ? focusedCardBySession[activeId] : null
+                    const isPanel = focId?.startsWith(PANEL_PREFIX)
+                    const cards = activeId ? (deckCardsBySession[activeId] ?? []) : []
+                    const focCard = focId && !isPanel ? cards.find((c) => c.id === focId) : null
                     return (
-                      <div
-                        key={s.id}
-                        className={`session-pane ${isActive ? 'session-pane-active' : 'session-pane-inactive'}`}
-                      >
-                        {/* SessionVisible drives WebContentsView paint for every web card under
-                            this session. visibility:hidden keeps the React tree mounted; the
-                            native overlay's "hide" runs through this context, not CSS. */}
-                        <SessionVisibleProvider visible={isActive}>
-                          <DeckTabs
-                            focusedId={focusedCardBySession[s.id] ?? null}
-                            onFocusChange={(id) =>
-                              setFocusedCardBySession((prev) => ({ ...prev, [s.id]: id }))
-                            }
-                            onClose={closeCard}
-                            onTogglePin={togglePin}
-                            onReorder={reorderCards}
-                            onNewTab={() => openWebTab()}
-                            cards={deckCardsBySession[s.id] ?? []}
-                          />
-                        </SessionVisibleProvider>
+                      <div className="session-ctx-bar" data-empty={focCard ? 'false' : 'true'}>
+                        <span className="session-ctx-label">CONTEXTO</span>
+                        {focCard ? (
+                          <span className="session-ctx-title" title={focCard.id}>
+                            {focCard.title ?? focCard.id}
+                          </span>
+                        ) : (
+                          <span className="session-ctx-empty">
+                            nenhum card focado — clique numa tab pra dar contexto
+                          </span>
+                        )}
                       </div>
                     )
-                  })}
+                  })()}
+                  <TerminalHost
+                    sessions={hostSessions}
+                    activeId={activeId}
+                    mode={mode}
+                    themeFor={themeFor}
+                    onUserInput={(id) => {
+                      userInputAtRef.current[id] = Date.now()
+                    }}
+                  />
                 </div>
-              ) : (
-                <DeckGrid
-                  focusedId={focusedCardId}
-                  onFocusChange={setFocusedCard}
-                  onTogglePin={togglePin}
-                  cards={deckCards}
+                <WorkspaceTree
+                  isFocused={focusedPanel === 'tree'}
+                  workspaces={sortedWorkspaces}
+                  activeWorkspace={workspace}
+                  activeSessionId={activeId}
+                  previewedSession={previewedNav}
+                  expanded={expandedWorkspaces}
+                  sessionsByWorkspace={treeSessionsByWorkspace}
+                  activity={sessionActivity}
+                  mode={mode}
+                  themeFor={themeFor}
+                  nameOf={projectFromCwd}
+                  ownCardCount={(sid) =>
+                    (cardsBySession[sid] ?? []).filter((cid) => !pinned[cid]).length
+                  }
+                  stash={stash}
+                  onToggleExpand={toggleExpand}
+                  onSelectSession={selectSession}
+                  onNewSession={newSessionIn}
+                  onCloseSession={handleClose}
+                  onCloseWorkspace={closeWorkspace}
+                  onAddFolder={() => addFolder()}
+                  onRestoreStash={restoreFromStash}
+                  onDiscardStash={discardStash}
                 />
+              </ResizableSplit>
+            </section>
+
+            <section className="panel panel-preview">
+              <div className="panel-header">
+                <span>{workspace ? projectFromCwd(workspace) : 'decky'}</span>
+                {gitStats && (
+                  <span className="panel-header-git">
+                    <GitStats
+                      additions={gitStats.additions}
+                      deletions={gitStats.deletions}
+                      onClick={openGitDiff}
+                    />
+                    {gitStats.branch && (
+                      <span className="git-branch" title={`branch ${gitStats.branch}`}>
+                        <span className="git-branch-icon" aria-hidden="true">
+                          ⎇
+                        </span>
+                        {gitStats.branch}
+                      </span>
+                    )}
+                  </span>
+                )}
+              </div>
+              <div
+                className="panel-body panel-body-flush panel-focusable"
+                data-panel="preview"
+                data-focused={focusedPanel === 'preview'}
+              >
+                {DECKY_LAYOUT === 'tabs' ? (
+                  // One DeckTabs per LIVE session (LRU pool, cross-workspace) — not só do workspace
+                  // ativo. Active one is visible, others are visibility:hidden. Keeping inactive
+                  // panes mounted preserves React state (scroll, JSON expandido) + WebContentsView
+                  // pra sessions de OUTROS workspaces — trocar workspace e voltar é idempotente.
+                  <div className="session-pane-stack">
+                    {hostSessions.map((s) => {
+                      const isActive = s.id === activeId
+                      return (
+                        <div
+                          key={s.id}
+                          className={`session-pane ${isActive ? 'session-pane-active' : 'session-pane-inactive'}`}
+                        >
+                          {/* SessionVisible drives WebContentsView paint for every web card under
+                            this session. visibility:hidden keeps the React tree mounted; the
+                            native overlay's "hide" runs through this context, not CSS. */}
+                          <SessionVisibleProvider visible={isActive}>
+                            <DeckTabs
+                              focusedId={focusedCardBySession[s.id] ?? null}
+                              onFocusChange={(id) =>
+                                setFocusedCardBySession((prev) => ({ ...prev, [s.id]: id }))
+                              }
+                              onClose={closeCard}
+                              onTogglePin={togglePin}
+                              onReorder={reorderCards}
+                              onNewTab={() => openWebTab()}
+                              cards={deckCardsBySession[s.id] ?? []}
+                            />
+                          </SessionVisibleProvider>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <DeckGrid
+                    focusedId={focusedCardId}
+                    onFocusChange={setFocusedCard}
+                    onTogglePin={togglePin}
+                    cards={deckCards}
+                  />
+                )}
+              </div>
+            </section>
+          </ResizableSplit>
+        </main>
+        {paletteOpen && (
+          <CommandPalette
+            commands={paletteCommands}
+            onWebSearch={openGoogleSearch}
+            onClose={() => setPaletteOpen(false)}
+          />
+        )}
+        {cardSearchOpen && workspace && (
+          <CardSearch
+            workspace={workspace}
+            onPick={(hit) => {
+              const aId = stateRef.current.activeId
+              if (!aId) return
+              window.dispatchEvent(
+                new CustomEvent('decky:open-path', {
+                  detail: { path: hit.path, sessionId: aId }
+                })
+              )
+            }}
+            onClose={() => setCardSearchOpen(false)}
+          />
+        )}
+        {devInfo.enabled && rebuildState !== 'idle' && (
+          <div
+            className={`dev-rebuild-status dev-rebuild-${rebuildState}`}
+            onClick={() => {
+              if (rebuildState === 'ready' || rebuildState === 'error') void doRebuild()
+            }}
+            role={rebuildState === 'ready' || rebuildState === 'error' ? 'button' : undefined}
+            title={
+              rebuildState === 'ready'
+                ? t('rebuild.readyTooltip')
+                : rebuildState === 'error'
+                  ? t('rebuild.errorTooltip')
+                  : undefined
+            }
+          >
+            <span>
+              {rebuildState === 'running' && <span className="dev-rebuild-spinner" aria-hidden />}
+              {rebuildState === 'running' ? (
+                <>
+                  {t('rebuild.running')}
+                  <span className="dev-rebuild-elapsed">{rebuildElapsedSec}s</span>
+                </>
+              ) : rebuildState === 'ready' ? (
+                <>
+                  {t('rebuild.readyPrefix')}
+                  <span className="dev-rebuild-elapsed">{rebuildElapsedSec}s</span>
+                  {t('rebuild.readySuffix')}
+                </>
+              ) : (
+                <>
+                  {t('rebuild.errorPrefix')}
+                  <span className="dev-rebuild-elapsed">{rebuildElapsedSec}s</span>
+                  {t('rebuild.errorSuffix')}
+                </>
               )}
-            </div>
-          </section>
-        </ResizableSplit>
-      </main>
-      {paletteOpen && (
-        <CommandPalette
-          commands={paletteCommands}
-          onWebSearch={openGoogleSearch}
-          onClose={() => setPaletteOpen(false)}
-        />
-      )}
-      {cardSearchOpen && workspace && (
-        <CardSearch
-          workspace={workspace}
-          onPick={(hit) => {
-            const aId = stateRef.current.activeId
-            if (!aId) return
-            window.dispatchEvent(
-              new CustomEvent('decky:open-path', {
-                detail: { path: hit.path, sessionId: aId }
-              })
-            )
-          }}
-          onClose={() => setCardSearchOpen(false)}
-        />
-      )}
-      {devInfo.enabled && rebuildState !== 'idle' && (
-        <div
-          className={`dev-rebuild-status dev-rebuild-${rebuildState}`}
-          onClick={() => {
-            if (rebuildState === 'ready' || rebuildState === 'error') void doRebuild()
-          }}
-          role={rebuildState === 'ready' || rebuildState === 'error' ? 'button' : undefined}
-          title={
-            rebuildState === 'ready'
-              ? t('rebuild.readyTooltip')
-              : rebuildState === 'error'
-                ? t('rebuild.errorTooltip')
-                : undefined
-          }
-        >
-          <span>
-            {rebuildState === 'running' && <span className="dev-rebuild-spinner" aria-hidden />}
-            {rebuildState === 'running' ? (
-              <>
-                {t('rebuild.running')}
-                <span className="dev-rebuild-elapsed">{rebuildElapsedSec}s</span>
-              </>
-            ) : rebuildState === 'ready' ? (
-              <>
-                {t('rebuild.readyPrefix')}
-                <span className="dev-rebuild-elapsed">{rebuildElapsedSec}s</span>
-                {t('rebuild.readySuffix')}
-              </>
-            ) : (
-              <>
-                {t('rebuild.errorPrefix')}
-                <span className="dev-rebuild-elapsed">{rebuildElapsedSec}s</span>
-                {t('rebuild.errorSuffix')}
-              </>
+            </span>
+            {rebuildState === 'error' && rebuildLog && (
+              <pre className="dev-rebuild-log">{rebuildLog}</pre>
             )}
-          </span>
-          {rebuildState === 'error' && rebuildLog && (
-            <pre className="dev-rebuild-log">{rebuildLog}</pre>
-          )}
-        </div>
-      )}
-    </div>
+          </div>
+        )}
+      </div>
     </OverlayActiveProvider>
   )
 }

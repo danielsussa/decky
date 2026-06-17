@@ -1,7 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { serverDir } from './server-config'
+import { homedir } from 'node:os'
+
+// Diretório de persistência (devices.json). $DECKY_SERVER_DIR override, default ~/.decky-server.
+function serverDir(): string {
+  return process.env.DECKY_SERVER_DIR || join(homedir(), '.decky-server')
+}
 
 // Device-based auth: cada device tem cookie persistente, aprovado por um device JÁ autorizado.
 // Substitui o token compartilhado do flow inicial — o admin-token continua existindo, mas só
@@ -211,10 +216,7 @@ export async function listAll(): Promise<DevicesStore> {
 }
 
 /** Bootstrap: cria approved direto sem passar por pending. Usado quando vem com admin-token. */
-export async function bootstrapApprove(info: {
-  ip: string
-  userAgent: string
-}): Promise<Device> {
+export async function bootstrapApprove(info: { ip: string; userAgent: string }): Promise<Device> {
   const store = await load()
   const device: Device = {
     id: generateDeviceId(),

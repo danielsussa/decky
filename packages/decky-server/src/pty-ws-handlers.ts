@@ -24,9 +24,6 @@ export function registerPtyWsHandlers(ws: DeckyWsServer): void {
     },
     onExit(id, code) {
       ws.broadcast('pty:exit', { id, code })
-    },
-    onUuidConflict(id) {
-      ws.broadcast('session:uuid-conflict', { id })
     }
   })
 

@@ -2,15 +2,8 @@
   "name": "@decky/server",
   "version": "0.0.1",
   "private": true,
-  "description": "Headless engine do decky — PTY, cards, MCP, browser-manager, WS protocol. Embedável no Electron (loopback) ou standalone num servidor.",
+  "description": "Headless engine do decky — PTY, cards, MCP, browser-manager, WS protocol. Embedável no Electron (loopback).",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "type": "commonjs",
-  "bin": {
-    "decky-server": "./bin/decky-server.ts"
-  },
-  "scripts": {
-    "start": "tsx bin/decky-server.ts",
-    "build": "node build.mjs"
-  }
+  "type": "commonjs"
 }

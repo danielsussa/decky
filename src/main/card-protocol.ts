@@ -1,16 +1,13 @@
 import { protocol, session, type Session } from 'electron'
 import { resolveCardRequest } from '@decky/server'
-import { resolveRemoteCardRequest } from './remote-card-fetcher'
 
 // Substitui o velho http://127.0.0.1 (html-server) por scheme custom card://. Os arquivos
 // continuam em <workspace>/.decky[-dev]/cards/; URLs viram card://ws-<8hex>/relative/path.html
 // e SÓ Electron WebContents nesta app resolvem — nada em localhost vê nem hita.
 //
-// Toda a resolução LOCAL (paths, MIME, CSS default, widgets, marked rewrite, deletion) vive em
-// @decky/server/card-protocol. Este shim:
-//   - registra o scheme em duas sessions (default + persist:deckweb pra web cards);
-//   - INTERCEPTA hosts remotos (resolveRemoteCardRequest) ANTES do resolver local, lendo o
-//     arquivo via WS no engine remoto — sem isso, cards de workspaces remotos batiam ENOENT.
+// Toda a resolução (paths, MIME, CSS default, widgets, marked rewrite, deletion) vive em
+// @decky/server/card-protocol. Este shim só registra o scheme em duas sessions (default +
+// persist:deckweb pra web cards).
 
 export { cardUrlFor, cardUrlToAbsPath } from '@decky/server'
 
@@ -35,18 +32,6 @@ export function registerCardScheme(): void {
 }
 
 const cardHandler = async (req: GlobalRequest): Promise<GlobalResponse> => {
-  // Host remoto? Lê via WS no engine dono. Retorna null se host é local — flui pro resolver
-  // local. GET-only por enquanto (POST delete continua roteado pra @decky/server local; a
-  // listagem do cards remoto vem por outro caminho).
-  if (req.method === 'GET') {
-    const remote = await resolveRemoteCardRequest({ url: req.url, method: req.method })
-    if (remote) {
-      return new Response((remote.body ?? null) as BodyInit | null, {
-        status: remote.status,
-        headers: remote.headers
-      })
-    }
-  }
   // POST /__decky/cards/delete usa body JSON; só faz parse se for esse caso.
   let json: unknown = undefined
   if (req.method === 'POST') {

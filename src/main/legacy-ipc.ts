@@ -4,17 +4,6 @@ import {
   getState,
   setState,
   loadAllState,
-  // cli
-  cliGetDefault,
-  cliSetDefault,
-  cliIsFirstRun,
-  cliMarkFirstRunDone,
-  cliSetPath,
-  cliValidatePath,
-  detectAvailableClis,
-  getAllCustomPaths,
-  getInstallHints,
-  invalidateCliCache,
   // git
   diffStats,
   diffText,
@@ -29,7 +18,6 @@ import {
   // widget
   applyWidgetReply
 } from '@decky/server'
-import type { CliKind } from '@decky/shared'
 
 // IPCs legados do renderer Electron. Quando o preload já fala WS pra todos os domínios, este
 // arquivo vira opcional — esses handlers respondem caso o renderer caia pra IPC, mas o caminho
@@ -42,21 +30,6 @@ export function registerLegacyIpcBridges(): void {
     return true
   })
   ipcMain.handle('state:get-all', () => loadAllState())
-
-  // cli:*
-  ipcMain.handle('cli:list', () => detectAvailableClis())
-  ipcMain.handle('cli:recheck', () => {
-    invalidateCliCache()
-    return detectAvailableClis()
-  })
-  ipcMain.handle('cli:install-hints', () => getInstallHints())
-  ipcMain.handle('cli:get-default', () => cliGetDefault())
-  ipcMain.handle('cli:set-default', (_e, kind: CliKind) => cliSetDefault(kind))
-  ipcMain.handle('cli:is-first-run', () => cliIsFirstRun())
-  ipcMain.handle('cli:mark-first-run-done', () => cliMarkFirstRunDone())
-  ipcMain.handle('cli:get-paths', () => getAllCustomPaths())
-  ipcMain.handle('cli:set-path', (_e, kind: CliKind, path: string | null) => cliSetPath(kind, path))
-  ipcMain.handle('cli:validate-path', (_e, path: string) => cliValidatePath(path))
 
   // git:*
   ipcMain.handle('git:diff-stats', (_e, cwd: string) => diffStats(cwd))

@@ -1,14 +1,10 @@
-import type { CliKind } from '@decky/shared'
-
 export interface Session {
   id: string
   label: string
   project?: string
   cwd: string
-  /** 'claude' here historically means "AI session" (any CLI). Which CLI is `cliKind`. */
-  kind: 'claude' | 'shell'
-  /** Which AI CLI to spawn for kind='claude'. Defaults to 'claude' on legacy sessions. */
-  cliKind?: CliKind
-  /** UUID passed to `claude --session-id` — persists conversation across restarts. Claude only. */
+  /** O claude era o foreground process do terminal no último save → relançar no próximo boot. */
+  claude?: boolean
+  /** Id da conversa do claude pra `claude --resume <id>` (cada terminal tem a sua). */
   claudeSessionId?: string
 }

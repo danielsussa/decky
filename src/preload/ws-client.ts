@@ -6,10 +6,9 @@ import {
   type Engine
 } from '@decky/shared'
 
-// WS client multi-engine: o decky fala com N engines ao mesmo tempo (o `local` embarcado +
-// cada `server` remoto). Cada conexão é lazy, compartilhada entre chamadas, e reabre no próximo
-// invoke/on após um drop. Roteamento por `engineId` — quem chama escolhe o engine (workspace →
-// engine no preload). Antes era socket único global (local OU remoto), o que escondia o local.
+// WS client: o decky fala com o engine `local` (o server embarcado, loopback). A conexão é
+// lazy, compartilhada entre chamadas, e reabre no próximo invoke/on após um drop. A API ainda
+// recebe `engineId` (sempre 'local' hoje) porque é a chave do registro de conexões.
 //
 // Por conexão, um listener único roteia o tráfego entrante:
 //  - { kind: 'reply', reqId } → resolve a Promise registrada por wsInvoke naquele engine
@@ -42,7 +41,6 @@ interface IncomingBroadcast {
 // handlers); wsPromise/pending são resetados no close.
 interface ConnState {
   url: string
-  token?: string
   wsPromise: Promise<WebSocket> | null
   pending: Map<string, PendingInvoke>
   broadcast: Map<string, Set<(args: unknown) => void>>
@@ -74,19 +72,12 @@ function loadEnginesFromArgv(): void {
 }
 loadEnginesFromArgv()
 
-function withTokenQuery(url: string, token?: string): string {
-  if (!token) return url
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}token=${encodeURIComponent(token)}`
-}
-
 function getConn(engineId: string): ConnState {
   let c = conns.get(engineId)
   if (!c) {
     const e = engines.get(engineId)
     c = {
       url: e?.url ?? '',
-      token: e?.token,
       wsPromise: null,
       pending: new Map(),
       broadcast: new Map()
@@ -102,7 +93,7 @@ function getWs(engineId: string): Promise<WebSocket> {
   if (!conn.url) {
     return Promise.reject(new Error(`engine '${engineId}': no WS URL`))
   }
-  const fullUrl = withTokenQuery(conn.url, conn.token)
+  const fullUrl = conn.url
   conn.wsPromise = new Promise<WebSocket>((resolve, reject) => {
     let ws: WebSocket
     try {
@@ -224,66 +215,5 @@ export function wsOn<T = unknown>(
   })
   return () => {
     conn.broadcast.get(kind)?.delete(handler as (args: unknown) => void)
-  }
-}
-
-/** Lista de engines conhecidos (do argv). */
-export function listEngines(): Engine[] {
-  return Array.from(engines.values())
-}
-
-/** Útil pra UI mostrar "WS desconectado". Não bloqueia — só reflete se há URL pro engine. */
-export function hasEngine(engineId: string): boolean {
-  return !!engines.get(engineId)?.url
-}
-
-/**
- * Registra/atualiza um engine em runtime (ex: "Add server" sem relaunch). Se a URL mudou,
- * derruba a conexão antiga pra reabrir na nova.
- */
-export function upsertEngine(engine: Engine): void {
-  const prev = engines.get(engine.id)
-  engines.set(engine.id, engine)
-  const conn = conns.get(engine.id)
-  if (conn && prev?.url !== engine.url) {
-    conn.url = engine.url
-    conn.token = engine.token
-    conn.wsPromise = null // próximo invoke/on reabre na URL nova
-  } else if (conn) {
-    conn.token = engine.token
-  }
-}
-
-/**
- * Remove um engine em runtime (ex: "Remove server" no modal de confirmação). Fecha a conexão
- * WS aberta (se houver) e descarta listeners de broadcast. Engine local ('local') não pode
- * ser removido — é o embarcado e some só com app.quit.
- */
-export function removeEngine(engineId: string): void {
-  if (engineId === LOCAL_ENGINE_ID) return
-  engines.delete(engineId)
-  const conn = conns.get(engineId)
-  if (conn) {
-    // Rejeita invokes pendentes E fecha o socket (close handler do dispatcher também já limpa).
-    for (const p of conn.pending.values()) {
-      clearTimeout(p.timer)
-      p.reject(new Error('engine removed'))
-    }
-    conn.pending.clear()
-    conn.broadcast.clear()
-    if (conn.wsPromise) {
-      void conn.wsPromise
-        .then((ws) => {
-          try {
-            ws.close()
-          } catch {
-            // ignore
-          }
-        })
-        .catch(() => {
-          // não tinha conexão aberta
-        })
-    }
-    conns.delete(engineId)
   }
 }

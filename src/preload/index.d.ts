@@ -1,12 +1,12 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { PreviewSource } from '@decky/shared'
-import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
 import type { Locale, Engine } from '@decky/shared'
 
-export type { PreviewSource, CliKind, DetectedCli, CliInstallHint, Locale, Engine }
+export type { PreviewSource, Locale, Engine }
 
 export type PtyDataMsg = { id: string; data: string }
 export type PtyExitMsg = { id: string; code: number }
+export type PtyClaudeMsg = { id: string; running: boolean; sessionId?: string }
 
 export interface DeckAPI {
   pty: {
@@ -19,6 +19,7 @@ export interface DeckAPI {
     kill: (id: string) => void
     onData: (callback: (msg: PtyDataMsg) => void) => () => void
     onExit: (callback: (msg: PtyExitMsg) => void) => () => void
+    onClaude: (callback: (msg: PtyClaudeMsg) => void) => () => void
   }
   preview: {
     getAll: () => Promise<Record<string, PreviewSource>>
@@ -96,33 +97,17 @@ export interface DeckAPI {
     writeBinaryBase64: (path: string, base64: string, workspace?: string) => Promise<boolean>
     onChanged: (callback: (msg: { path: string }) => void) => () => void
   }
-  claude: {
-    getBin: () => Promise<string>
-    aiTitle: (cwd: string, uuid: string) => Promise<string | null>
-  }
   git: {
     diffStats: (
       cwd: string
     ) => Promise<{ isRepo: boolean; additions: number; deletions: number; branch?: string }>
     diffText: (cwd: string) => Promise<string>
   }
-  cli: {
-    list: () => Promise<DetectedCli[]>
-    recheck: () => Promise<DetectedCli[]>
-    installHints: () => Promise<CliInstallHint[]>
-    getDefault: () => Promise<CliKind | null>
-    setDefault: (kind: CliKind) => Promise<boolean>
-    isFirstRun: () => Promise<boolean>
-    markFirstRunDone: () => Promise<boolean>
-    getPaths: () => Promise<Partial<Record<CliKind, string>>>
-    setPath: (kind: CliKind, path: string | null) => Promise<DetectedCli[]>
-    validatePath: (path: string) => Promise<{ ok: boolean; error?: string; version?: string }>
-  }
   sessions: {
     getTitles: () => Promise<Record<string, string>>
     onTitleChange: (callback: (msg: { id: string; title: string }) => void) => () => void
-    onAdd: (callback: (msg: { cwd: string; kind: 'claude' | 'shell' }) => void) => () => void
-    onUuidConflict: (callback: (msg: { id: string }) => void) => () => void
+    onAdd: (callback: (msg: { cwd: string }) => void) => () => void
+    onWebTab: (callback: (msg: { title?: string }) => void) => () => void
   }
   app: {
     locale: Locale
@@ -133,8 +118,6 @@ export interface DeckAPI {
     onMenuCloseTab: (callback: () => void) => () => void
     onMenuTogglePalette: (callback: () => void) => () => void
     onMenuToggleFind: (callback: () => void) => () => void
-    onMenuOpenCliSettings: (callback: () => void) => () => void
-    onMenuAddServer: (callback: () => void) => () => void
     onMenuDevRebuild: (callback: () => void) => () => void
     onFlush: (callback: () => void) => () => void
     flushDone: () => void
@@ -240,56 +223,6 @@ export interface DeckAPI {
     getControlling: (cardId: string) => Promise<boolean>
     onControlling: (callback: (msg: { cardId: string; controlling: boolean }) => void) => () => void
     onOpenTab: (callback: (msg: { url: string }) => void) => () => void
-  }
-  ssh: {
-    exec: (args: {
-      host: string
-      command: string
-      identity?: string
-      timeoutMs?: number
-    }) => Promise<{
-      ok: boolean
-      exitCode: number | null
-      stdout: string
-      stderr: string
-      error?: string
-    }>
-    installDeckyServer: (args: {
-      host: string
-      identity?: string
-    }) => Promise<{ ok: boolean; error?: string }>
-    openRemote: (args: {
-      host: string
-      identity?: string
-    }) => Promise<{ ok: boolean; localUrl?: string; token?: string; error?: string }>
-    onInstallProgress: (
-      cb: (
-        ev:
-          | {
-              kind: 'step'
-              step: { id: string; state: 'pending' | 'running' | 'ok' | 'error'; detail?: string }
-            }
-          | { kind: 'log'; line: string }
-          | { kind: 'done'; ok: boolean; error?: string }
-      ) => void
-    ) => () => void
-  }
-  engines: {
-    list: () => Engine[]
-    add: (cfg: {
-      label: string
-      url: string
-      token?: string
-      sshHost?: string
-      sshIdentity?: string
-    }) => Promise<Engine>
-    remove: (engineId: string) => Promise<boolean>
-    setRoutes: (routes: {
-      workspaces?: Record<string, string>
-      sessions?: Record<string, string>
-    }) => void
-    onUpdate: (callback: (engine: Engine) => void) => () => void
-    engineForSession: (id: string) => string
   }
   widget: {
     onCall: (

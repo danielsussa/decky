@@ -102,11 +102,7 @@ function run(cmd: string, args: string[]): Promise<void> {
   })
 }
 
-function runBuild(
-  repo: string,
-  target: string,
-  send: (line: string) => void
-): Promise<number> {
+function runBuild(repo: string, target: string, send: (line: string) => void): Promise<number> {
   return new Promise<number>((resolve) => {
     const child = spawn('bash', ['build.sh', target], {
       cwd: repo,
@@ -174,12 +170,7 @@ const FAST_SWAP_NATIVE_DEPS = [
   // SQLite (history)
   'better-sqlite3',
   'bindings',
-  'file-uri-to-path',
-  // SSH (ssh-bridge) — ssh2 tem sshcrypto.node, asn1/bcrypt-pbkdf/tweetnacl são suas deps puras.
-  'ssh2',
-  'asn1',
-  'bcrypt-pbkdf',
-  'tweetnacl'
+  'file-uri-to-path'
 ]
 
 // Fast-swap requires the install in the loose (asar-disabled) layout AND matching
@@ -190,7 +181,7 @@ function checkFastSwapEligibility(repo: string, install: string): FastSwapEligib
   if (existsSync(asarFile)) return { ok: false, reason: 'install is asar-packed' }
   if (!existsSync(looseAppDir)) return { ok: false, reason: 'install has no Resources/app/' }
   // Ignora as deps que o fastSwap sincroniza por baixo: pode ter sido adicionada uma agora
-  // (ex: ssh2 na PR atual) sem que isso quebre o swap, porque o sync abaixo copia ela.
+  // sem que isso quebre o swap, porque o sync abaixo copia ela.
   const repoSig = depsSignature(join(repo, 'package.json'), FAST_SWAP_NATIVE_DEPS)
   const installSig = depsSignature(join(looseAppDir, 'package.json'), FAST_SWAP_NATIVE_DEPS)
   if (!repoSig || !installSig) return { ok: false, reason: 'cannot read package.json' }
@@ -235,12 +226,10 @@ async function fastSwap(
       // its runtime closure (better-sqlite3 → bindings → file-uri-to-path) must land on disk in
       // the install's node_modules. The fast-swap clones the prior install's node_modules but a
       // NEWLY-added dep won't be there, so sync each explicitly. Add new native deps here.
-      ...FAST_SWAP_NATIVE_DEPS.map(
-        (m): [string, string] => [
-          join(repo, 'node_modules', m),
-          join(swapAppDir, 'node_modules', m)
-        ]
-      )
+      ...FAST_SWAP_NATIVE_DEPS.map((m): [string, string] => [
+        join(repo, 'node_modules', m),
+        join(swapAppDir, 'node_modules', m)
+      ])
     ]
     send(`→ syncing out/ + bin/ + resources/ + package.json + native deps\n`)
     for (const [src, dst] of syncs) {
@@ -300,9 +289,7 @@ export function setRebuildCompleteHook(hook: RebuildCompleteHook | null): void {
   onRebuildComplete = hook
 }
 
-async function doRebuild(
-  send: (line: string) => void
-): Promise<{ ok: boolean; error?: string }> {
+async function doRebuild(send: (line: string) => void): Promise<{ ok: boolean; error?: string }> {
   const info = getDevInfo()
   if (!info.enabled || !info.repo) return { ok: false, error: 'dev rebuild not enabled' }
   if (rebuilding) return { ok: false, error: 'already rebuilding' }
@@ -381,7 +368,6 @@ async function doRebuild(
     rebuilding = false
   }
 }
-
 
 function doRelaunch(): void {
   // LaunchServices (`open <bundle>`) em vez do exec default do app.relaunch — sobrevive ao

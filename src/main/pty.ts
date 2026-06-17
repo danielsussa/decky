@@ -24,7 +24,7 @@ export { loginShellPath, killAllPtys }
 
 export function registerPtyHandlers(
   getWindow: () => BrowserWindow | null,
-  getWsServer: () => DeckyWsServer | null
+  _getWsServer: () => DeckyWsServer | null
 ): void {
   setPtyManagerEvents({
     onData(id, data) {
@@ -35,10 +35,9 @@ export function registerPtyHandlers(
       const win = getWindow()
       if (win && !win.isDestroyed()) win.webContents.send('pty:exit', { id, code })
     },
-    onUuidConflict(id) {
+    onClaude(id, info) {
       const win = getWindow()
-      if (win && !win.isDestroyed()) win.webContents.send('session:uuid-conflict', { id })
-      getWsServer()?.broadcast('session:uuid-conflict', { id })
+      if (win && !win.isDestroyed()) win.webContents.send('pty:claude', { id, ...info })
     },
     onHandoffStart(id) {
       if (process.env.DECKY_NO_HANDOFF) return

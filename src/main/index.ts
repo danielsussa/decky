@@ -16,12 +16,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { buildMenu } from './menu'
 import { LOCALE_ARG_PREFIX, normalizeLocale, WS_URL_PREFIX } from '@decky/shared'
-import {
-  LOCAL_ENGINE_ID,
-  serializeEngines,
-  type Engine,
-  type ServerEngineConfig
-} from '@decky/shared'
+import { LOCAL_ENGINE_ID, serializeEngines, type Engine } from '@decky/shared'
 import { registerPtyHandlers, killAllPtys } from './pty'
 import {
   startPreviewServer,
@@ -31,11 +26,6 @@ import {
   rehydratePreviews
 } from './preview-server'
 import { registerLegacyIpcBridges } from './legacy-ipc'
-import {
-  openRemoteSilent,
-  registerSshHandlers,
-  syncServerBundlesToRemote
-} from './ssh-bridge'
 import { registerCardsHandlers } from './cards-store'
 import { registerTagsIndexHandlers } from './tags-index-watcher'
 import { searchCards } from '@decky/server'
@@ -46,27 +36,23 @@ import { registerWidgetBridge, setCardBridgeWsUrl } from '@decky/server'
 import { migrateGlobalState } from '@decky/server'
 import { registerFileWatchHandlers } from './file-watcher'
 import { ensureDeckMcpRegistered } from '@decky/server'
-import { ensureDeckInstruction } from '@decky/server'
+import { removeDeckInstruction } from '@decky/server'
 import { ensureDeckyHooks } from '@decky/server'
-import { resolveClaudeBin, readAiTitle } from '@decky/server'
-import { initCliPaths } from '@decky/server'
-import { registerStateWsHandlers, getState, setState } from '@decky/server'
-import { registerCliWsHandlers } from '@decky/server'
+import { registerStateWsHandlers, getState } from '@decky/server'
 import { registerGitWsHandlers } from '@decky/server'
 import { registerWorkspaceWsHandlers } from '@decky/server'
 import { registerTagsIndexWsHandlers } from '@decky/server'
 import { registerHistoryWsHandlers } from '@decky/server'
-import { registerCardsExtraWsHandlers, registerClaudeWsHandlers } from '@decky/server'
+import { registerCardsExtraWsHandlers } from '@decky/server'
 import { startWsServer, type DeckyWsServer } from '@decky/server'
-import { registerDevRebuildHandlers, setRebuildCompleteHook } from './dev-rebuild'
+import { registerDevRebuildHandlers } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
 import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
 import { registerCardScheme, setupCardProtocol, cardUrlToAbsPath } from './card-protocol'
 import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
 import { setupWebViews } from './web-views'
 import { setupHistory } from './history'
-import { setupHtmlServer, setHtmlRemoteEngineProvider } from './html-server'
-import { setRemoteCardEngineLookup } from './remote-card-fetcher'
+import { setupHtmlServer } from './html-server'
 
 // Privileged scheme registration must happen before app is ready.
 registerAssetScheme()
@@ -81,208 +67,25 @@ registerCardScheme()
 // "Continue with Google" button does NOTHING. Disabling FedCM makes the API return
 // NotSupportedError immediately, GSI falls back to popup, and setWindowOpenHandler in
 // web-session.ts routes the OAuth window correctly.
-app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAuthz,FedCmIdpSigninStatusEnabled,FedCmAutoSelectedFlag')
+app.commandLine.appendSwitch(
+  'disable-features',
+  'FedCm,FedCmAuthz,FedCmIdpSigninStatusEnabled,FedCmAutoSelectedFlag'
+)
 
 let mainWindow: BrowserWindow | null = null
 let wsServer: DeckyWsServer | null = null
-// Multi-engine: o local embarcado SEMPRE sobe; servers remotos são additivos. Esta lista
-// (local + servers) é resolvida no boot e passada pro preload via --decky-engines argv. Antes,
-// um remoto setado SUPRIMIA o local — era o que escondia as sessões locais ao "add server".
+// Só existe o engine `local` — o server embarcado (loopback WS), montado no boot e passado pro
+// preload via --decky-engines argv. (O modo standalone/remoto via SSH foi removido.)
 let rendererEngines: Engine[] = []
 
-function hostLabelFromUrl(url: string): string {
-  try {
-    return new URL(url).host || url
-  } catch {
-    return url
-  }
-}
-
-// Migra o modelo single-engine antigo (remoteEngineUrl/Token no state) pro novo engines[].
-// Crucial: limpa as chaves legadas pra que o boot pare de suprimir o local — é o que faz as
-// sessões locais reaparecerem. O server migrado entra offline (o túnel do boot anterior morreu);
-// reconecta pelo modal "Add server".
-async function migrateLegacyRemote(): Promise<void> {
-  const legacyUrl = await getState<string>('remoteEngineUrl')
-  if (!legacyUrl) return
-  const legacyToken = await getState<string>('remoteEngineToken')
-  const servers = (await getState<ServerEngineConfig[]>('engines')) ?? []
-  if (!servers.some((s) => s.url === legacyUrl)) {
-    servers.push({
-      id: `srv-${crypto.randomUUID().slice(0, 8)}`,
-      kind: 'server',
-      label: hostLabelFromUrl(legacyUrl),
-      url: legacyUrl,
-      token: legacyToken || undefined
-    })
-    await setState('engines', servers)
-  }
-  await setState('remoteEngineUrl', '')
-  await setState('remoteEngineToken', '')
-}
-
-async function loadServerConfigs(): Promise<ServerEngineConfig[]> {
-  return (await getState<ServerEngineConfig[]>('engines')) ?? []
-}
-
-function serverConfigToEngine(cfg: ServerEngineConfig): Engine {
-  return {
-    id: cfg.id,
-    kind: 'server',
-    label: cfg.label,
-    url: cfg.url ?? '',
-    token: cfg.token,
-    sshHost: cfg.sshHost,
-    sshIdentity: cfg.sshIdentity
-  }
-}
-
-// Monta a lista completa: local (sempre) + servers persistidos + override de env (DECKY_REMOTE_WS_URL,
-// ephemeral — não persiste). Chamada no boot e após engines:add/remove.
-async function buildEngineList(): Promise<Engine[]> {
-  await migrateLegacyRemote()
+function buildEngineList(): Engine[] {
   const local: Engine = {
     id: LOCAL_ENGINE_ID,
     kind: 'local',
     label: 'local',
     url: wsServer?.url ?? ''
   }
-  const servers = (await loadServerConfigs()).map(serverConfigToEngine)
-  const envUrl = process.env.DECKY_REMOTE_WS_URL
-  if (envUrl && !servers.some((s) => s.url === envUrl)) {
-    servers.push({
-      id: 'env-remote',
-      kind: 'server',
-      label: hostLabelFromUrl(envUrl),
-      url: envUrl,
-      token: process.env.DECKY_REMOTE_WS_TOKEN || undefined
-    })
-  }
-  return [local, ...servers]
-}
-
-async function addServerEngine(cfg: ServerEngineConfig & { url: string }): Promise<Engine> {
-  const servers = await loadServerConfigs()
-  // Dedup por sshHost — é o que identifica unicamente a engine (a url muda toda vez porque
-  // a porta do tunnel SSH é livre/ephemeral, então deduplicar por url criava entry nova a
-  // cada conexão). Fallback pra id explícito (relink após perda de state) e por último pra
-  // url (caso o config tenha vindo sem sshHost — env override DECKY_REMOTE_WS_URL, etc).
-  const existing = servers.find((s) =>
-    cfg.sshHost && s.sshHost
-      ? s.sshHost === cfg.sshHost
-      : cfg.id && s.id === cfg.id
-        ? true
-        : s.url === cfg.url
-  )
-  const engine: ServerEngineConfig = {
-    id: existing?.id ?? cfg.id ?? `srv-${crypto.randomUUID().slice(0, 8)}`,
-    kind: 'server',
-    label: cfg.label || hostLabelFromUrl(cfg.url),
-    url: cfg.url,
-    token: cfg.token,
-    sshHost: cfg.sshHost ?? existing?.sshHost,
-    sshIdentity: cfg.sshIdentity ?? existing?.sshIdentity
-  }
-  const next = existing
-    ? servers.map((s) => (s.id === engine.id ? engine : s))
-    : [...servers, engine]
-  await setState('engines', next)
-  return serverConfigToEngine(engine)
-}
-
-async function reconnectAllRemoteEngines(opts: { syncFirst?: boolean } = {}): Promise<void> {
-  const servers = await loadServerConfigs()
-  await Promise.allSettled(
-    servers.map(async (s) => {
-      if (!s.sshHost) return
-      try {
-        // Safety net: ao reconectar, sincroniza bundles locais → remoto antes de reabrir o
-        // tunnel. Pega o caso "rebuildei mas o sync original falhou (rede caiu)" e "fechei o
-        // decky, atualizei, abri de novo — engine remoto ficou stale". Idempotente — só sobe
-        // o que mudou de hash.
-        if (opts.syncFirst) {
-          const sync = await syncServerBundlesToRemote(s.sshHost, s.sshIdentity)
-          if (sync.uploaded.length > 0) {
-            diag(`[engines] sync ${s.id}: uploaded ${sync.uploaded.join(', ')}`)
-          } else if (sync.ok) {
-            diag(`[engines] sync ${s.id}: all bundles up-to-date`)
-          } else {
-            diag(`[engines] sync ${s.id} failed: ${sync.error}`)
-          }
-        }
-        const r = await openRemoteSilent(s.sshHost, s.sshIdentity)
-        if (!r.ok || !r.localUrl || !r.token) {
-          diag(`[engines] reconnect ${s.id} failed: ${r.error ?? 'no result'}`)
-          return
-        }
-        // Atualiza state com nova url+token.
-        const cfgs = await loadServerConfigs()
-        const i = cfgs.findIndex((c) => c.id === s.id)
-        if (i >= 0) {
-          cfgs[i] = { ...cfgs[i], url: r.localUrl, token: r.token }
-          await setState('engines', cfgs)
-        }
-        // Atualiza rendererEngines pra que listEngines() do preload pegue dali em diante.
-        rendererEngines = await buildEngineList()
-        // Push pro preload trocar a conexão WS pra url nova.
-        const engine = rendererEngines.find((e) => e.id === s.id)
-        if (engine) wsServer?.broadcast('engines:updated', engine)
-        diag(`[engines] reconnect ${s.id} ok — ${r.localUrl}`)
-      } catch (err) {
-        diag(`[engines] reconnect ${s.id} threw: ${(err as Error).message}`)
-      }
-    })
-  )
-}
-
-// Hook A: depois do rebuild local, sincroniza bundles + restart pra cada engine remoto +
-// reabre tunnel SSH (nova porta dinâmica). Logs vão pro painel do rebuild via `send`.
-async function syncAllRemoteEnginesAfterRebuild(send: (line: string) => void): Promise<void> {
-  const servers = await loadServerConfigs()
-  const remotes = servers.filter((s) => !!s.sshHost)
-  if (remotes.length === 0) {
-    send('\n(no remote engines to sync)\n')
-    return
-  }
-  send(`\n→ syncing ${remotes.length} remote engine(s)…\n`)
-  await Promise.allSettled(
-    remotes.map(async (s) => {
-      const sync = await syncServerBundlesToRemote(s.sshHost!, s.sshIdentity)
-      if (!sync.ok) {
-        send(`  ✗ ${s.label}: ${sync.error}\n`)
-        return
-      }
-      if (sync.uploaded.length === 0) {
-        send(`  • ${s.label}: up-to-date\n`)
-        return
-      }
-      send(`  ✓ ${s.label}: uploaded ${sync.uploaded.join(', ')}\n`)
-      // Tunnel reabre — sync já reiniciou o server (porta dinâmica nova).
-      const r = await openRemoteSilent(s.sshHost!, s.sshIdentity)
-      if (r.ok && r.localUrl && r.token) {
-        const cfgs = await loadServerConfigs()
-        const i = cfgs.findIndex((c) => c.id === s.id)
-        if (i >= 0) {
-          cfgs[i] = { ...cfgs[i], url: r.localUrl, token: r.token }
-          await setState('engines', cfgs)
-        }
-        rendererEngines = await buildEngineList()
-        const eng = rendererEngines.find((e) => e.id === s.id)
-        if (eng) wsServer?.broadcast('engines:updated', eng)
-        send(`    tunnel reaberto → ${r.localUrl}\n`)
-      } else {
-        send(`    ⚠ tunnel reopen failed: ${r.error}\n`)
-      }
-    })
-  )
-}
-
-async function removeServerEngine(engineId: string): Promise<boolean> {
-  if (!engineId) return false
-  const servers = await loadServerConfigs()
-  const next = servers.filter((s) => s.id !== engineId)
-  await setState('engines', next)
-  return next.length !== servers.length
+  return [local]
 }
 
 // DECKY_DEV runs a fully isolated dev instance alongside the installed app: its own name +
@@ -314,8 +117,8 @@ function routeFolderToWindow(dir: string | null): void {
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.focus()
   if (dir) {
-    mainWindow.webContents.send('session:add', { cwd: dir, kind: 'claude' })
-    wsServer?.broadcast('session:add', { cwd: dir, kind: 'claude' })
+    mainWindow.webContents.send('session:add', { cwd: dir })
+    wsServer?.broadcast('session:add', { cwd: dir })
   }
 }
 
@@ -352,8 +155,8 @@ function createWindow(): void {
       webviewTag: true,
       // Surfaced sync to the renderer via preload (window.deck.app.locale) — no IPC round-trip,
       // no boot flicker. Resolved from app.getLocale() and normalized to a supported language.
-      // --decky-engines: lista de engines (local embarcado + servers remotos). O preload abre
-      // uma conexão WS por engine. Mantém --decky-ws-url=<local> por compat (back-compat no
+      // --decky-engines: o engine `local` (loopback WS do server embarcado). O preload abre a
+      // conexão WS a partir dela. Mantém --decky-ws-url=<local> por compat (back-compat no
       // ws-client se a lista vier vazia).
       additionalArguments: [
         `${LOCALE_ARG_PREFIX}${normalizeLocale(app.getLocale())}`,
@@ -430,10 +233,6 @@ app
     await migrateGlobalState()
     diag('migrateGlobalState done')
 
-    // Hydrate custom CLI paths before any cli:list call can race the renderer mount.
-    await initCliPaths()
-    diag('initCliPaths done')
-
     // Set app user model id for windows
     electronApp.setAppUserModelId('com.electron')
 
@@ -449,25 +248,23 @@ app
 
     Menu.setApplicationMenu(buildMenu(() => mainWindow))
 
-    registerPtyHandlers(() => mainWindow, () => wsServer)
+    registerPtyHandlers(
+      () => mainWindow,
+      () => wsServer
+    )
     registerLegacyIpcBridges()
 
-    // Engine local — SEMPRE sobe. Servers remotos são additivos (montados em rendererEngines
-    // logo abaixo, antes de createWindow). O preload abre uma conexão WS por engine.
+    // Engine local — o server embarcado (loopback WS). O preload abre a conexão WS a partir dele.
     {
       try {
         wsServer = await startWsServer()
         diag(`[ws-server] listening on ${wsServer.url}`)
         setCardBridgeWsUrl(wsServer.url)
-        registerCliWsHandlers(wsServer)
         registerStateWsHandlers(wsServer)
         registerGitWsHandlers(wsServer)
         registerWorkspaceWsHandlers(wsServer)
         registerTagsIndexWsHandlers(wsServer)
-        // claude:* (get-bin, ai-title) e cards:* extras (search/resolve-wikilink/backlinks):
-        // movidos pra @decky/server pra serem reaproveitados pelo decky-server standalone —
-        // sem isso, engines remotos quebravam quando o renderer chamava esses kinds.
-        registerClaudeWsHandlers(wsServer)
+        // cards:* extras (search/resolve-wikilink/backlinks) vivem em @decky/server.
         registerCardsExtraWsHandlers(wsServer)
         registerHistoryWsHandlers(wsServer)
         // theme:set-mode — Electron nativeTheme.themeSource só existe aqui.
@@ -479,22 +276,6 @@ app
         wsServer.handle<void, Record<string, string>>('sessions:get-titles', () =>
           getSessionTitles()
         )
-        // ssh:* — SSH client no main, expõe ssh:exec pra UX do "Add server" rodar comandos no remote.
-        registerSshHandlers(() => wsServer)
-        // engines:add — recebe url+token+ssh do modal "Add server" (após install + open-remote).
-        // Additivo: persiste o server na lista `engines` do state e devolve o Engine pro renderer
-        // inserir na árvore SEM relaunch e SEM esconder o local. (Substitui o antigo
-        // app:reopen-with-remote, que relançava apontando 100% pro remoto.)
-        wsServer.handle<ServerEngineConfig & { url: string }, Engine>('engines:add', async (cfg) => {
-          const engine = await addServerEngine(cfg)
-          rendererEngines = await buildEngineList()
-          return engine
-        })
-        wsServer.handle<{ engineId: string }, boolean>('engines:remove', async (args) => {
-          const ok = await removeServerEngine(args?.engineId ?? '')
-          rendererEngines = await buildEngineList()
-          return ok
-        })
         // preview:get-all/rehydrate — funções puras no server.
         wsServer.handle<void, Record<string, import('@decky/shared').PreviewSource>>(
           'preview:get-all',
@@ -511,19 +292,24 @@ app
         console.error('[ws-server] failed to start:', err)
       }
     }
-    // Resolve a lista de engines (local + servers persistidos + env override) ANTES de
-    // createWindow — o argv --decky-engines é montado a partir dela.
-    rendererEngines = await buildEngineList()
+    // Resolve o engine local ANTES de createWindow — o argv --decky-engines sai daqui.
+    rendererEngines = buildEngineList()
     diag(`[engines] ${rendererEngines.map((e) => `${e.id}(${e.kind})`).join(', ')}`)
     registerCardsHandlers(() => wsServer)
     registerTagsIndexHandlers()
-    registerCardMirrorHandlers(() => mainWindow, () => wsServer)
+    registerCardMirrorHandlers(
+      () => mainWindow,
+      () => wsServer
+    )
     registerWidgetBridge(() => wsServer)
-    registerFileWatchHandlers(() => mainWindow, () => wsServer)
-    registerDevRebuildHandlers(() => mainWindow, () => wsServer)
-    // Hook A: rebuild local conclui → sync pra cada engine remoto (uploaded bundles + restart
-    // server + reabre tunnel). Logs aparecem no painel do rebuild via `send`.
-    setRebuildCompleteHook(syncAllRemoteEnginesAfterRebuild)
+    registerFileWatchHandlers(
+      () => mainWindow,
+      () => wsServer
+    )
+    registerDevRebuildHandlers(
+      () => mainWindow,
+      () => wsServer
+    )
     setupAssetProtocol()
     setupCardProtocol()
     // Global default UA: strip the Electron/app token so any web surface that falls back to it
@@ -549,29 +335,11 @@ app
     setupHistory()
     setupWebViews(() => mainWindow)
     setupHtmlServer(() => wsServer)
-    // Provider que diz qual Engine (se algum) possui um path absoluto. Usado pelo card://
-    // resolver pra interceptar paths remotos e ler via WS no engine dono. Bate prefixo no
-    // state.workspaceEngines (lido a cada chamada — html:resolve só dispara uma vez por
-    // abertura de card, latency é trivial e o state pode ter mudado entre chamadas).
-    setHtmlRemoteEngineProvider(async (absPath) => {
-      const map = (await getState<Record<string, string>>('workspaceEngines')) ?? {}
-      let bestMatch: string | null = null
-      for (const ws of Object.keys(map)) {
-        if (absPath === ws || absPath.startsWith(ws.endsWith('/') ? ws : ws + '/')) {
-          if (!bestMatch || ws.length > bestMatch.length) bestMatch = ws
-        }
-      }
-      if (!bestMatch) return null
-      const engineId = map[bestMatch]
-      if (!engineId || engineId === LOCAL_ENGINE_ID) return null
-      return rendererEngines.find((e) => e.id === engineId) ?? null
-    })
-    // Lookup pra hostToEngineId no remote-card-fetcher: SEMPRE retorna a versão fresca do
-    // engine (URL/token atual após reconnect). Sem isso, fetchs same-origin via card:// pra
-    // workspace remoto davam ECONNREFUSED → 502 — engine cacheado ficava com URL morta.
-    setRemoteCardEngineLookup((id) => rendererEngines.find((e) => e.id === id))
     diag('handlers registered, starting preview server')
-    startPreviewServer(() => mainWindow, () => wsServer)
+    startPreviewServer(
+      () => mainWindow,
+      () => wsServer
+    )
     // O backend do handoff agora sobe POR SESSÃO em pty.ts (start no spawn / stop no exit),
     // bound em /tmp/handoff-decky-<sessionId>.sock e escopado em cards da própria sessão.
     // O HANDOFF_SOCKET do pty aponta clientes pra esse socket isolado. Sem chamada global aqui.
@@ -630,9 +398,8 @@ app
     ipcMain.handle('notify:show', (_e, payload: { id: string; title: string; body?: string }) =>
       showNotification(payload)
     )
-    wsServer?.handle<{ id: string; title: string; body?: string }, void>(
-      'notify:show',
-      (payload) => showNotification(payload ?? { id: '', title: '' })
+    wsServer?.handle<{ id: string; title: string; body?: string }, void>('notify:show', (payload) =>
+      showNotification(payload ?? { id: '', title: '' })
     )
 
     // Full-text search the workspace's card library (recursive over <workspace>/.decky/cards/).
@@ -662,8 +429,6 @@ app
     ipcMain.handle('preview:rehydrate', (_e, byCard, workspace?: string) =>
       rehydratePreviews(byCard, workspace)
     )
-    ipcMain.handle('claude:get-bin', () => resolveClaudeBin())
-    ipcMain.handle('claude:ai-title', (_e, cwd: string, uuid: string) => readAiTitle(cwd, uuid))
     ipcMain.handle('sessions:get-titles', () => getSessionTitles())
     ipcMain.handle('app:get-startup-cwd', () => process.cwd())
     // Explicit "open in the OS browser" affordance — used by the external-link button on the
@@ -678,11 +443,16 @@ app
       ? app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked')
       : app.getAppPath()
     const dkMcpPath = join(appBase, 'bin', 'dky-mcp')
+    // Expõe o dir de bins (dky/dky-mcp/decky) pro pty-manager prefixar no PATH SÓ das sessões —
+    // assim o `decky` só existe dentro dos terminais do decky, nunca no PATH global do sistema.
+    process.env.DECKY_BIN_DIR = join(appBase, 'bin')
     void ensureDeckMcpRegistered(dkMcpPath).catch((err) => {
       console.warn('[mcp-installer] failed to register:', err)
     })
-    void ensureDeckInstruction().catch((err) => {
-      console.warn('[claude-md-installer] failed to write CLAUDE.md:', err)
+    // A instrução decky migrou pro hook de SessionStart (decky claude-context). Aqui só limpamos
+    // qualquer bloco antigo deixado no ~/.claude/CLAUDE.md global por versões anteriores.
+    void removeDeckInstruction().catch((err) => {
+      console.warn('[claude-md-installer] failed to clean CLAUDE.md:', err)
     })
     void ensureDeckyHooks().catch((err) => {
       console.warn('[hooks-installer] failed to write settings.json:', err)
@@ -695,15 +465,6 @@ app
     diag('creating window')
     createWindow()
     diag('createWindow returned')
-
-    // Reconexão automática de tunnels SSH em background: pra cada engine server persistido
-    // com sshHost, dispara doOpenRemote silencioso. Quando o tunnel volta vivo, broadcasta
-    // engines:updated pro preload trocar a url morta pela nova. NÃO bloqueia o boot — engine
-    // fica com url stale por alguns segundos, depois reconecta. Falhas silenciosas (host
-    // offline) deixam a engine com url velha — user vai ver erro real ao tentar usar.
-    // syncFirst: ANTES de reabrir o tunnel, sincroniza bundles locais com o remoto (safety
-    // net pra rebuilds que tinha falhado o sync, ou pra sync de versão nova ao boot do decky).
-    void reconnectAllRemoteEngines({ syncFirst: true })
 
     app.on('activate', function () {
       // On macOS it's common to re-create a window in the app when the

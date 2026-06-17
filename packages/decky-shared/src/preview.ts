@@ -1,5 +1,3 @@
-import type { CliKind } from '@decky/shared'
-
 export type FormFieldType =
   | 'text'
   | 'textarea'
@@ -58,16 +56,13 @@ export type PreviewSourceWire =
   | { type: 'form'; spec: FormSpec }
 
 // "Save for later" snapshot of a closed session — the session object is preserved
-// whole so revive can spawn the same pty (claudeSessionId → claude resumes the
-// transcript) and the cards rehydrate via the existing pinned/previews pipeline.
+// whole so revive can spawn the same pty and the cards rehydrate via the existing
+// pinned/previews pipeline.
 export type StashSessionMeta = {
   id: string
   label: string
   project?: string
   cwd: string
-  kind: 'claude' | 'shell'
-  cliKind?: CliKind
-  claudeSessionId?: string
 }
 
 export type StashEntry = {

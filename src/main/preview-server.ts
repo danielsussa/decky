@@ -617,6 +617,28 @@ async function handleRequest(
     return
   }
 
+  // POST /sessions/web-tab { title?: string } — open a new EMPTY web tab (a browser card) in the
+  // active session, focused, labeled with `title` until it navigates. It lives inside the current
+  // session, so there's no session id to mint. The caller is `decky new-tab`.
+  if (req.method === 'POST' && url === '/sessions/web-tab') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as { title?: unknown }
+      const title =
+        typeof body.title === 'string' && body.title.length > 0 ? body.title.slice(0, 80) : ''
+      const win = getWindow()
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('webtab:new', { title })
+        win.focus()
+      }
+      getWsServer()?.broadcast('webtab:new', { title })
+      sendJson(res, 200, { ok: true, title })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
+    return
+  }
+
   // POST /workspace { cwd: string, kind?: 'claude' | 'shell' }
   // Tells the renderer to add a new session in the given cwd and focus it.
   if (req.method === 'POST' && url === '/workspace') {

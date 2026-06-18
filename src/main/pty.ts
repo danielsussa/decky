@@ -12,7 +12,7 @@ import {
   type DeckyWsServer
 } from '@decky/server'
 import { startSessionHandoffBackend, stopSessionHandoffBackend } from './handoff-backend'
-import { broadcastSessionTitle } from './preview-server'
+import { broadcastSessionTitle, broadcastSessionRunning } from './preview-server'
 
 // Re-exports usados por outros módulos do main (dev-rebuild, index.ts).
 export { loginShellPath, killAllPtys }
@@ -46,6 +46,11 @@ export function registerPtyHandlers(
     onTitle(id, title) {
       setSessionTitle(id, title)
       broadcastSessionTitle(getWindow, getWsServer, id, title)
+    },
+    // Comando em foreground (npm run dev…) → sufixo da aba. Estado transitório (não persiste em
+    // sessionTitles): some quando o processo termina. Broadcast win + ws (web também renderiza abas).
+    onRunning(id, cmd) {
+      broadcastSessionRunning(getWindow, getWsServer, id, cmd)
     },
     onHandoffStart(id) {
       if (process.env.DECKY_NO_HANDOFF) return

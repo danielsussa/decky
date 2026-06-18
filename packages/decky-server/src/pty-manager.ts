@@ -1,6 +1,6 @@
 import * as pty from 'node-pty'
 import os from 'os'
-import { execSync } from 'node:child_process'
+import { execSync, execFile } from 'node:child_process'
 import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { workspaceCardsDir } from '@decky/shared/node'
@@ -114,6 +114,12 @@ export interface PtyManagerEvents {
    * sessão (a aba). É a fonte ÚNICA de nome de sessão; ver syncAiTitle/readLatestAiTitle.
    */
   onTitle?(id: string, title: string): void
+  /**
+   * Um processo "interessante" (npm/vite/node/pytest…) entrou ou saiu de foreground nesta aba. O
+   * `cmd` é a linha de comando do LÍDER do foreground group (ex 'npm run dev') — '' quando volta pro
+   * prompt. Vira um sufixo no nome da aba: `toucan-happy (npm run dev)`. NÃO sobrescreve o título.
+   */
+  onRunning?(id: string, cmd: string): void
 }
 
 let events: PtyManagerEvents = {}
@@ -167,6 +173,8 @@ const claudeStartAt = new Map<string, number>() // id -> instante em que algo (c
 const cwdById = new Map<string, string>() // id -> cwd (pra achar o .jsonl do claude)
 const lastTitleMtime = new Map<string, number>() // id -> mtime do .jsonl já lido (gate de re-parse)
 const lastTitle = new Map<string, string>() // id -> último aiTitle empurrado (dedup de evento)
+const claudeOn = new Set<string>() // ids cujo foreground é claude (suprime anotação de comando)
+const lastRunning = new Map<string, string>() // id -> último cmd anotado na aba (dedup + clear)
 
 // Basename do processo: tira o `-` de login-shell e qualquer path ("/usr/bin/node" -> "node").
 function procBase(p: string): string {
@@ -187,6 +195,58 @@ function isShellProc(base: string): boolean {
 function looksLikeClaude(base: string): boolean {
   return base === 'claude' || /^\d+\.\d+\.\d+/.test(base)
 }
+
+// Comandos "interessantes" pra anotar no nome da aba (dev servers, build, runtimes, pkg managers,
+// testes). Foreground não-shell fora desta lista (git, ls, vim, less, man, ssh…) NÃO polui a aba —
+// é ruído de uso normal do terminal, não um processo de longa duração que valha rotular.
+const RUN_ALLOW = new Set([
+  'npm', 'pnpm', 'yarn', 'bun', 'npx', 'node', 'deno', 'tsx', 'ts-node', 'nodemon',
+  'vite', 'next', 'webpack', 'rollup', 'esbuild', 'turbo', 'nx', 'parcel', 'remix', 'astro',
+  'jest', 'vitest', 'mocha', 'playwright', 'cypress', 'pytest',
+  'python', 'python3', 'flask', 'uvicorn', 'gunicorn', 'celery',
+  'ruby', 'rails', 'rake', 'go', 'cargo', 'rustc', 'make', 'gradle', 'mvn',
+  'docker', 'docker-compose', 'kubectl', 'serve', 'http-server', 'electron'
+])
+
+// Encolhe a linha de comando do líder pra um rótulo curto: paths absolutos viram basename
+// ('node /Users/x/p/server.js' -> 'node server.js'), e trunca em ~36 chars. 'npm run dev' já é curto.
+function prettyRunCmd(command: string): string {
+  const toks = command.trim().split(/\s+/).map((t) => (isAbsolute(t) ? basename(t) : t))
+  const s = toks.join(' ')
+  return s.length > 36 ? s.slice(0, 35) + '…' : s
+}
+
+// Resolve o comando em foreground via o LÍDER do foreground process group (tpgid) do tty da aba.
+// Por que o líder e não o `term.process`: durante `npm run dev` o foreground flickera npm→node, mas
+// o líder do grupo é estável ('npm run dev'); e durante um tool-call do claude o líder continua
+// sendo o claude (a ferramenta herda o pgid dele), então isso NÃO rotula tool-calls como comando.
+// Assíncrono (não trava o poll): emite onRunning quando o ps resolve. shellPid = term.pid.
+function resolveRunningCmd(id: string, shellPid: number): void {
+  const emit = (cmd: string): void => {
+    if (lastRunning.get(id) === cmd) return
+    lastRunning.set(id, cmd)
+    events.onRunning?.(id, cmd)
+  }
+  // tpgid = pgid em foreground no tty de controle do shell; pgid = grupo do próprio shell. Iguais =
+  // prompt (nada rodando) → limpa. tpgid<=0 = sem tty de controle → limpa.
+  execFile('ps', ['-o', 'tpgid=,pgid=', '-p', String(shellPid)], (err, out) => {
+    if (err) return
+    const [tpgidStr, pgidStr] = out.trim().split(/\s+/)
+    const tpgid = Number(tpgidStr)
+    const pgid = Number(pgidStr)
+    if (!Number.isFinite(tpgid) || tpgid <= 0 || tpgid === pgid) return emit('')
+    // Líder do grupo: pid == pgid == tpgid. `ps -p <tpgid> -o command=` dá a linha que o usuário rodou.
+    execFile('ps', ['-o', 'command=', '-p', String(tpgid)], (err2, out2) => {
+      if (err2) return
+      const command = out2.trim()
+      if (!command) return emit('')
+      const base0 = procBase(command.split(/\s+/)[0] ?? '')
+      if (!RUN_ALLOW.has(base0)) return emit('') // comando fora da allowlist = sem rótulo
+      emit(prettyRunCmd(command))
+    })
+  })
+}
+
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // Encoding do dir de projeto do claude: `/` e `.` viram `-` (ex.
@@ -277,7 +337,10 @@ function pollProcesses(): void {
       if (!isShellProc(base) && isShellProc(procBase(prev))) claudeStartAt.set(id, Date.now())
       // claude em foreground (nome 'claude' ou a versão X.Y.Z) → flip imediato (responsivo p/ a
       // animação de borda).
-      if (looksLikeClaude(base)) events.onClaude?.(id, { running: true })
+      if (looksLikeClaude(base)) {
+        claudeOn.add(id)
+        events.onClaude?.(id, { running: true })
+      }
       // Claude → SHELL = realmente voltou pro prompt → running:false + solta o vínculo da conversa.
       // CRÍTICO: exige isShellProc(base). Sem isso, um tool call do claude (foreground vira 'node'/
       // 'git'/… por um instante) era lido como "claude saiu", limpava o sidById e o bloco abaixo
@@ -286,11 +349,24 @@ function pollProcesses(): void {
       // mexem no vínculo; ele só solta no retorno ao shell. O claudeSessionId persiste sticky no
       // renderer, então o resume do próximo boot NÃO depende deste flag instantâneo.
       else if (looksLikeClaude(procBase(prev)) && isShellProc(base)) {
+        claudeOn.delete(id)
         events.onClaude?.(id, { running: false })
         sidById.delete(id) // a próxima invocação de claude nesta aba re-resolve a conversa
         claudeStartAt.delete(id)
         lastTitleMtime.delete(id) // próxima conversa (.jsonl novo) re-sincroniza do zero
         lastTitle.delete(id)
+      }
+
+      // Anotação do comando em foreground (sufixo da aba). Enquanto o claude é o foreground ele já
+      // tem a borda animada — não rotulamos (e os tool-calls dele não viram "comando rodando"). Fora
+      // do claude, reavalia a cada troca de foreground: resolveRunningCmd emite '' no prompt/ruído.
+      if (claudeOn.has(id)) {
+        if (lastRunning.get(id)) {
+          lastRunning.set(id, '')
+          events.onRunning?.(id, '')
+        }
+      } else {
+        resolveRunningCmd(id, term.pid)
       }
     }
 
@@ -425,6 +501,8 @@ function spawnPty(args: CreatePtyArgs): void {
   cwdById.set(args.id, args.cwd ?? os.homedir())
   lastProc.delete(args.id)
   claudeStartAt.delete(args.id)
+  claudeOn.delete(args.id)
+  lastRunning.delete(args.id)
   // SEED: se a aba vai resumir uma conversa conhecida, semeia o tracker com ela → a aba não tenta
   // capturar nenhuma conversa (já sabe a sua) e não rouba a de outra aba. Limpo no exit do claude
   // (volta pro shell), então um claude NOVO depois (re-associação) volta a capturar normalmente.
@@ -444,6 +522,8 @@ function spawnPty(args: CreatePtyArgs): void {
     lastProc.delete(args.id)
     sidById.delete(args.id)
     claudeStartAt.delete(args.id)
+    claudeOn.delete(args.id)
+    lastRunning.delete(args.id)
     // Derruba o backend handoff dessa sessão (libera socket).
     events.onHandoffStop?.(args.id)
     events.onExit?.(args.id, exitCode)

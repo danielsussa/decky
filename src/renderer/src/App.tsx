@@ -604,6 +604,9 @@ function App(): React.JSX.Element {
   // claudeSessionId -> aiTitle (título auto-gerado pelo claude), lido dos .jsonl do workspace.
   // Dá nome real às abas (prioridade: título explícito > aiTitle > placeholder). Não persiste.
   const [aiTitleBySid, setAiTitleBySid] = useState<Record<string, string>>({})
+  // id-da-aba -> comando em foreground (npm run dev…), vira sufixo no nome da aba. Transitório (não
+  // persiste): empurrado pelo pty-manager, '' quando o processo termina / volta pro prompt.
+  const [runningById, setRunningById] = useState<Record<string, string>>({})
   // Lista completa das conversas do claude do workspace ativo (do disco) — fonte do picker
   // "sessões anteriores". Recarregada por workspace junto do aiTitleBySid.
   const [claudeSessions, setClaudeSessions] = useState<
@@ -971,6 +974,15 @@ function App(): React.JSX.Element {
     const unsubTitle = window.deck.sessions.onTitleChange(({ id, title }) => {
       setTitles((prev) => ({ ...prev, [id]: title }))
     })
+    const unsubRunning = window.deck.sessions.onRunningChange(({ id, cmd }) => {
+      setRunningById((prev) => {
+        if ((prev[id] ?? '') === cmd) return prev
+        const next = { ...prev }
+        if (cmd) next[id] = cmd
+        else delete next[id]
+        return next
+      })
+    })
     const unsubAdd = window.deck.sessions.onAdd(({ cwd }) => {
       // Open Folder semantics: just switch workspace — its state (~/.decky) loads (or resurrects).
       setWorkspace(cwd)
@@ -1168,6 +1180,7 @@ function App(): React.JSX.Element {
       unsubClaude()
       unsubPreview()
       unsubTitle()
+      unsubRunning()
       unsubAdd()
       unsubWebTab()
       unsubNewSession()
@@ -1951,10 +1964,13 @@ function App(): React.JSX.Element {
     }
   }, [wsLoaded, workspace])
 
-  // Tab name priority: explicit session_set_title > claude aiTitle > default placeholder.
+  // Tab name priority: explicit session_set_title > claude aiTitle > default placeholder. Quando há
+  // um comando rodando em foreground (npm run dev…), some como sufixo: `toucan-happy (npm run dev)`.
   const sessionsWithTitles = sessions.map((s) => {
     const ai = s.claudeSessionId ? aiTitleBySid[s.claudeSessionId] : undefined
-    const label = titles[s.id] || ai || s.label
+    const base = titles[s.id] || ai || s.label
+    const run = runningById[s.id]
+    const label = run ? `${base} (${run})` : base
     return label !== s.label ? { ...s, label } : s
   })
 

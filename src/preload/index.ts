@@ -220,6 +220,8 @@ const deckApi = {
     getTitles: (): Promise<Record<string, string>> => wsInvoke(L, 'sessions:get-titles'),
     onTitleChange: (callback: (msg: { id: string; title: string }) => void): (() => void) =>
       wsOn<{ id: string; title: string }>(L, 'session:title-changed', callback),
+    onRunningChange: (callback: (msg: { id: string; cmd: string }) => void): (() => void) =>
+      wsOn<{ id: string; cmd: string }>(L, 'session:running-changed', callback),
     onAdd: (callback: (msg: { cwd: string }) => void): (() => void) =>
       wsOn<{ cwd: string }>(L, 'session:add', callback),
     onWebTab: (callback: (msg: { title?: string }) => void): (() => void) =>

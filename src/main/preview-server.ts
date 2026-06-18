@@ -81,6 +81,19 @@ export function broadcastSessionTitle(
   getWsServer()?.broadcast('session:title-changed', { id, title })
 }
 
+export function broadcastSessionRunning(
+  getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null,
+  id: string,
+  cmd: string
+): void {
+  const win = getWindow()
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('session:running-changed', { id, cmd })
+  }
+  getWsServer()?.broadcast('session:running-changed', { id, cmd })
+}
+
 function cardIdFrom(req: IncomingMessage): string | null {
   const raw = req.headers['x-deck-card-id']
   const id = Array.isArray(raw) ? raw[0] : raw

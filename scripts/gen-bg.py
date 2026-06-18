@@ -110,22 +110,24 @@ SCENES: dict[str, list[str]] = {
         "Erupting volcano in the background with a glowing orange lava river winding "
         "toward the viewer through dark polygonal terrain. Smoke plume rising. Dramatic "
         "red-orange and obsidian black palette.",
-        # 1 — lago de lava dentro de cratera
-        "Looking down into a volcanic crater holding a glowing lava lake. Dark faceted "
-        "crater rim surrounding the pool. Vertical orange-vs-black contrast, intense "
-        "glow as focal point.",
-        # 2 — planície piroclástica
-        "Vast pyroclastic ash plain after eruption, distant smoldering vent on the "
-        "horizon. Mostly gray and black faceted ground with red glowing embers "
-        "scattered. Desolate atmospheric mood.",
+        # 1 — vulcão diurno, paleta clara (reescrito: era escuro demais)
+        "Daytime volcanic landscape: a gently smoking volcano under a wide pale sky, soft "
+        "warm ash slopes in dusty rose and light gray, a thin glowing amber lava trickle "
+        "as a small accent. Bright and airy, pale sky dominant, generous negative space, "
+        "high-key light palette, minimal dark areas.",
+        # 2 — campo vulcânico ensolarado, claro (reescrito)
+        "Sunlit volcanic field of pale pumice and warm beige ash dunes, a distant low "
+        "cone on the horizon under a bright hazy sky. Soft coral, sand and cream tones "
+        "with faint ember accents. High-key luminous palette, airy and minimal, lots of "
+        "negative space.",
         # 3 — tubo de lava (caverna)
         "Lava tube cave interior with a glowing magma channel running through. Faceted "
         "stalactites hanging from the roof. Enclosed scene, intense orange light "
         "against black rock.",
-        # 4 — basalto resfriado com fendas
-        "Cooled black basalt landscape seen from a high angle, with red-orange glowing "
-        "cracks running between the faceted hexagonal rocks below. Top-down composition, "
-        "graphic contrast.",
+        # 4 — terraços vulcânicos em luz quente, claro (reescrito: era basalto preto)
+        "Weathered volcanic terraces seen from a high angle in warm daylight, terracotta "
+        "and ochre faceted rock with thin soft-glowing amber seams between them. Bright "
+        "dusty palette, pale sky along the top, generous negative space, minimal black.",
     ],
     "geleira": [
         # 0 — aprovado v1: icebergs em água espelho
@@ -135,10 +137,10 @@ SCENES: dict[str, list[str]] = {
         "Glacier cliff calving into the sea, a large ice slab mid-fall with geometric "
         "spray particles. Faceted blue ice wall behind. Dramatic motion in still "
         "composition.",
-        # 2 — caverna de gelo por dentro
-        "Inside an ice cave, faceted blue and turquoise walls with refracted light "
-        "filtering through. Enclosed intimate scene, deep cyan tones, glowing exit "
-        "in the distance.",
+        # 2 — geleira clara e luminosa (reescrito: era caverna deep cyan, escura)
+        "Bright glacier scene: pale faceted ice formations under a soft white-blue sky, "
+        "gentle pastel highlights of mint and powder blue, lots of luminous white and "
+        "negative space. High-key, airy, light icy palette.",
         # 3 — cordilheira nevada sob aurora
         "Snowy mountain ridge under an aurora borealis, green and purple geometric "
         "sky ribbons above white faceted peaks. Cool night palette with vibrant "
@@ -185,6 +187,20 @@ def main() -> None:
         i = args.index("--count")
         count = int(args[i + 1])
         args = args[:i] + args[i + 2:]
+    # Targeting por slot: tokens "tema:idx" regeneram SÓ aqueles (sempre force — o intent de
+    # mirar um slot existente é refazê-lo). Ex: gen-bg.py lava:1 lava:2 geleira:2
+    targets = [a for a in args if ":" in a]
+    if targets:
+        for tok in targets:
+            th, _, ixs = tok.partition(":")
+            if th not in SCENES:
+                sys.exit(f"Tema desconhecido: {th}. Opções: {', '.join(SCENES)}")
+            ix = int(ixs)
+            if ix < 0 or ix >= len(SCENES[th]):
+                sys.exit(f"idx fora do range pra {th}: {tok}")
+            gen_one(th, ix, True)
+        return
+
     only = args[0] if args else None
     if only and only not in SCENES:
         sys.exit(f"Tema desconhecido: {only}. Opções: {', '.join(SCENES)}")

@@ -1,7 +1,6 @@
 import Terminal from './Terminal'
 import type { Session } from '../types'
 import type { Mode, Theme } from '@decky/shared'
-import { CLI_SPECS } from '@decky/shared'
 import { t } from '../lib/i18n'
 
 interface TerminalHostProps {
@@ -10,9 +9,6 @@ interface TerminalHostProps {
   // so the session you leave isn't stopped.
   sessions: Session[]
   activeId?: string
-  /** null = still fetching CLI list; [] = fetched, none installed. */
-  detectionLoaded: boolean
-  commandFor: (s: Session) => string[] | undefined
   mode: Mode
   // Resolves a session's cwd to its workspace's theme (uses the persisted assignment table).
   themeFor: (path: string | null | undefined) => Theme
@@ -22,8 +18,6 @@ interface TerminalHostProps {
 export default function TerminalHost({
   sessions,
   activeId,
-  detectionLoaded,
-  commandFor,
   mode,
   themeFor,
   onUserInput
@@ -32,30 +26,27 @@ export default function TerminalHost({
     <div className="termhost">
       {sessions.map((s) => {
         const isActive = s.id === activeId
-        const cmd = commandFor(s)
-        const showPlaceholder = s.kind === 'claude' && !cmd
-        const displayName = s.cliKind ? CLI_SPECS[s.cliKind].displayName : 'Claude Code'
+        // `claudeSessionId` é sticky (capturado uma vez, não some quando o claude sai de foreground)
+        // → é ELE, não o flag instantâneo `claude`, que decide o resume: se a aba já teve uma
+        // conversa, relança nela com `--resume <id>`. `claude` sem id (rodou mas não capturamos a
+        // conversa) cai no `claude` limpo. Terminal lê isto só no mount, flips em runtime não re-injetam.
+        const autorun = s.claudeSessionId
+          ? `claude --resume ${s.claudeSessionId}`
+          : s.claude
+            ? 'claude'
+            : undefined
         return (
           <div key={s.id} className={`termhost-body ${isActive ? 'termhost-body-active' : ''}`}>
-            {showPlaceholder ? (
-              <div className="panel-placeholder">
-                <p className="muted">
-                  {detectionLoaded
-                    ? `${displayName}${t('term.notInstalledSuffix')}`
-                    : `${t('term.resolvingPrefix')}${displayName.toLowerCase()}…`}
-                </p>
-              </div>
-            ) : (
-              <Terminal
-                id={s.id}
-                cwd={s.cwd}
-                command={cmd}
-                visible={isActive}
-                mode={mode}
-                theme={themeFor(s.cwd)}
-                onUserInput={() => onUserInput(s.id)}
-              />
-            )}
+            <Terminal
+              id={s.id}
+              cwd={s.cwd}
+              autorun={autorun}
+              claudeSessionId={s.claudeSessionId}
+              visible={isActive}
+              mode={mode}
+              theme={themeFor(s.cwd)}
+              onUserInput={() => onUserInput(s.id)}
+            />
           </div>
         )
       })}

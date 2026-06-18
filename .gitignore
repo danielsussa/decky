@@ -14,3 +14,7 @@ build/decky-signing.p12
 packages/decky-server/dist/
 .venv/
 scripts/out/
+
+# secrets / local-only
+.env
+build/icon-backup-pre-4c/

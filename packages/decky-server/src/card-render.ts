@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { KNOWN_WIDGET_TYPES, type CardManifest } from '@decky/shared'
 
 // Conteúdo estático de renderização de cards (CSS default, marked bundlado, widgets vanilla,
 // MIME table, wrap markdown→HTML). Compartilhado entre o protocol card:// e o http-server
@@ -88,7 +89,9 @@ const DEFAULT_CARD_CSS = `
 *::-webkit-scrollbar-thumb:hover { background: var(--text-3); background-clip: padding-box; }
 html, body { margin: 0; padding: 0; }
 body {
-  background: var(--bg-0);
+  /* Transparente de propósito: o card (WebContentsView) deixa o fundo da app aparecer atrás —
+     o overlay de paisagem do tema (body::after) + o bg-0 do shell. Pra "apreciar o fundo". */
+  background: transparent;
   color: var(--text-1);
   font-family: var(--sans);
   font-size: 14px;
@@ -298,6 +301,65 @@ export function wrapMarkdownAsHtml(content: string): string {
 `
 }
 
+const WIDGET_TYPE_SET: ReadonlySet<string> = new Set(KNOWN_WIDGET_TYPES)
+
+function escHtmlText(s: string): string {
+  return s.replace(/[<>&]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'))
+}
+function escAttr(s: string): string {
+  return s.replace(
+    /[<>&"]/g,
+    (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] ?? c
+  )
+}
+
+// Renderiza um card-manifesto ({ widgets: [...] }) num mini-app HTML standalone. Cada widget vira
+// o mesmo bloco `<div data-decky-<type>>{spec}</div>` que o runtime vanilla já lê hoje — então os
+// módulos de widget montam sem alteração; só a fonte (o manifesto JSON) é nova. As tags
+// `<script src="/__decky/widgets/<type>.js">` (+ bridge) são emitidas AQUI porque o caminho do
+// protocol card:// não roda o injectWidgetScripts (que vive no renderer, só pro preview_html).
+// O id do widget é mesclado no spec → o widget vanilla se registra sob o id do manifesto (ops).
+// mermaid é o caso especial: lê o textContent como código cru, não como JSON spec.
+export function renderManifest(manifest: CardManifest): string {
+  const widgets = Array.isArray(manifest.widgets) ? manifest.widgets : []
+  const title = escAttr((manifest.title || 'Card').trim() || 'Card')
+  const used = new Set<string>()
+  const blocks: string[] = []
+  for (const w of widgets) {
+    const type = String(w?.type || '')
+    if (WIDGET_TYPE_SET.has(type)) used.add(type)
+    const spec = (w?.spec ?? {}) as Record<string, unknown>
+    const inner =
+      type === 'mermaid'
+        ? escHtmlText(String(spec.src ?? spec.code ?? ''))
+        : escHtmlText(JSON.stringify({ id: w?.id, ...spec }))
+    blocks.push(
+      `<div data-decky-${escAttr(type)} data-decky-wid="${escAttr(String(w?.id ?? ''))}">${inner}</div>`
+    )
+  }
+  const scripts = ['<script src="/__decky/widgets/bridge.js"></script>']
+  for (const name of used) scripts.push(`<script src="/__decky/widgets/${name}.js"></script>`)
+  return `<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8" />
+<title>${title}</title>
+<link rel="stylesheet" href="${DEFAULT_CSS_PATH}">
+<style>
+  body { padding: 24px; margin: 0; }
+  .dk-card-widgets { display: flex; flex-direction: column; gap: 16px; }
+</style>
+</head>
+<body>
+<div class="dk-card-widgets">
+${blocks.join('\n')}
+</div>
+${scripts.join('\n')}
+</body>
+</html>
+`
+}
+
 // === Widget runtime servido sob /__decky/widgets/* — vanilla JS, auto-init no DOMContentLoaded.
 // Cada widget procura seu seletor data-decky-* no DOM, lê o JSON spec do textContent,
 // renderiza in-place. Sem framework, sem dependências (mermaid via CDN).
@@ -326,6 +388,185 @@ window.__deckyHelpers = window.__deckyHelpers || (() => {
       }
     },
   };
+})();
+`
+
+// title — heading simples, editável inline. spec: { id, text, level?: 1|2|3, readonly? }.
+// Edita-se clicando (contenteditable); persiste em localStorage por id. Expõe op setText e getter
+// text pro bridge (AI driving). Primeiro widget desenhado já no modelo de card-manifesto.
+const TITLE_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  const CSS = \`
+    .dk-title { margin: 0.1em 0 0.5em; color: var(--text-0, var(--text-1));
+      font-weight: 650; line-height: 1.2; letter-spacing: -0.01em; outline: none; }
+    .dk-title.dk-lvl1 { font-size: 28px; }
+    .dk-title.dk-lvl2 { font-size: 22px; }
+    .dk-title.dk-lvl3 { font-size: 18px; }
+    .dk-title[contenteditable="true"] { cursor: text; padding: 2px 6px; margin-left: -6px;
+      border-radius: 5px; transition: background 80ms, box-shadow 80ms; }
+    .dk-title[contenteditable="true"]:hover { background: var(--bg-1); }
+    .dk-title[contenteditable="true"]:focus { background: var(--bg-1);
+      box-shadow: 0 0 0 1px var(--border); }
+    .dk-title:empty::before { content: attr(data-placeholder); color: var(--text-3);
+      font-weight: 500; }
+  \`;
+  h.injectOnce('title', CSS);
+
+  function clampLevel(n) {
+    n = Number(n);
+    return n === 2 ? 2 : n === 3 ? 3 : 1;
+  }
+
+  function render(el, spec) {
+    const level = clampLevel(spec.level);
+    const key = spec.id ? 'dk-title:' + spec.id : null;
+    const readonly = spec.readonly === true;
+    let text = typeof spec.text === 'string' ? spec.text : '';
+    if (key) {
+      try {
+        const saved = localStorage.getItem(key);
+        if (saved !== null) text = saved;
+      } catch (e) { /* ignore */ }
+    }
+
+    const node = document.createElement('div');
+    node.className = 'dk-title dk-lvl' + level;
+    node.setAttribute('role', 'heading');
+    node.setAttribute('aria-level', String(level));
+    node.setAttribute('data-placeholder', 'Sem título…');
+    node.textContent = text;
+    if (!readonly) node.setAttribute('contenteditable', 'true');
+    el.replaceWith(node);
+
+    function persist() {
+      if (!key) return;
+      try { localStorage.setItem(key, node.textContent || ''); } catch (e) { /* ignore */ }
+    }
+    if (!readonly) {
+      node.addEventListener('input', persist);
+      // Enter confirma (blur) em vez de inserir quebra de linha — é um título, uma linha só.
+      node.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); node.blur(); }
+      });
+    }
+
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'title',
+        ops: {
+          setText: (args) => {
+            const a = args || {};
+            if (typeof a.text !== 'string') throw new Error('setText: text required');
+            node.textContent = a.text;
+            persist();
+            return { ok: true, text: a.text };
+          }
+        },
+        getters: {
+          text: () => node.textContent || ''
+        }
+      });
+    }
+  }
+
+  function initAll() {
+    document.querySelectorAll('[data-decky-title]').forEach((el) => {
+      if (el.dataset.deckyInit) return;
+      el.dataset.deckyInit = '1';
+      const spec = h.parseSpec(el);
+      render(el, spec);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAll);
+  } else {
+    initAll();
+  }
+})();
+`
+
+// text — bloco de prosa em markdown. spec: { id, md }. Renderiza via o marked bundlado. Regra de
+// composição (validada no `decky`): cada bloco começa com UM h1 (título da seção) e não tem outro
+// h1 — força o agente a abrir um novo widget pra cada seção. Op setMd / getter md pro bridge.
+const TEXT_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('text', \`
+    .dk-text { margin: 0.5em 0; color: var(--text-1); line-height: 1.6; }
+    .dk-text > :first-child { margin-top: 0; }
+    .dk-text > :last-child { margin-bottom: 0; }
+    .dk-text h1 { font-size: 23px; font-weight: 650; margin: 0 0 0.5em;
+      color: var(--text-0, var(--text-1)); letter-spacing: -0.01em; }
+    .dk-text h2 { font-size: 18px; font-weight: 600; margin: 1.2em 0 0.4em; }
+    .dk-text h3 { font-size: 15px; font-weight: 600; margin: 1em 0 0.3em; }
+    .dk-text p { margin: 0.5em 0; }
+    .dk-text ul, .dk-text ol { margin: 0.5em 0; padding-left: 1.4em; }
+    .dk-text li { margin: 2px 0; }
+    .dk-text code { font: 12.5px var(--mono); background: var(--bg-1);
+      padding: 1px 4px; border-radius: 3px; }
+    .dk-text pre { background: var(--bg-1); padding: 10px 12px; border-radius: 6px; overflow: auto; }
+    .dk-text pre code { background: none; padding: 0; }
+    .dk-text blockquote { margin: 0.6em 0; padding: 2px 12px;
+      border-left: 3px solid var(--border); color: var(--text-2); }
+    .dk-text table { border-collapse: collapse; margin: 0.6em 0; }
+    .dk-text th, .dk-text td { border: 1px solid var(--border); padding: 4px 8px; }
+    .dk-text a { color: var(--accent); }
+  \`);
+
+  let markedP = null;
+  function loadMarked() {
+    if (!markedP) markedP = import('${MARKED_URL}').then((m) => m.marked);
+    return markedP;
+  }
+
+  function render(el, spec) {
+    const wrap = document.createElement('div');
+    wrap.className = 'dk-text';
+    let md = typeof spec.md === 'string' ? spec.md : (typeof spec.text === 'string' ? spec.text : '');
+    async function paint(src) {
+      try {
+        const marked = await loadMarked();
+        wrap.innerHTML = marked.parse(src || '', { gfm: true, breaks: false });
+      } catch (e) {
+        wrap.textContent = src || '';
+      }
+    }
+    void paint(md);
+    el.replaceWith(wrap);
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'text',
+        ops: {
+          setMd: async (args) => {
+            const a = args || {};
+            if (typeof a.md !== 'string') throw new Error('setMd: md required');
+            md = a.md;
+            await paint(md);
+            return { ok: true };
+          }
+        },
+        getters: { md: () => md }
+      });
+    }
+  }
+
+  function initAll() {
+    document.querySelectorAll('[data-decky-text]').forEach((el) => {
+      if (el.dataset.deckyInit) return;
+      el.dataset.deckyInit = '1';
+      render(el, h.parseSpec(el));
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAll);
+  } else {
+    initAll();
+  }
 })();
 `
 
@@ -1383,6 +1624,427 @@ const MERMAID_JS =
 })();
 `
 
+// toc — sumário (table of contents) auto-gerado. Varre a página por headings (.dk-title e os
+// h1/h2/h3 dos blocos .dk-text), monta uma nav clicável com scroll suave, ancora os headings que
+// não têm id (slug do texto) e destaca a seção ativa via IntersectionObserver (scroll-spy). Como
+// os blocos de text renderizam markdown async e o agente pode adicionar seções depois, um
+// MutationObserver re-varre e reconstrói quando a lista de headings muda. spec:
+// { id, title?, levels?: [1,2,3], sticky?, items?: [{text, level, target}] }. Em modo `items`
+// explícito, usa a lista dada (targets = ids já existentes) e não auto-ancora nada.
+const TOC_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  const CSS = \`
+    .dk-toc { margin: 1em 0; padding: 12px 14px; background: var(--bg-1);
+      border: 1px solid var(--border); border-radius: 8px; font: 13px var(--sans); }
+    .dk-toc.dk-sticky { position: sticky; top: 12px; align-self: flex-start; }
+    .dk-toc .dk-toc-head { font: 600 10.5px var(--mono); letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+    .dk-toc ul { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--border); }
+    .dk-toc li { margin: 0; }
+    .dk-toc a { display: block; padding: 3px 10px; color: var(--text-2); text-decoration: none;
+      line-height: 1.4; border-left: 2px solid transparent; margin-left: -2px;
+      transition: color 120ms, border-color 120ms, background 120ms;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dk-toc a:hover { color: var(--text-0, var(--text-1)); background: var(--bg-0); }
+    .dk-toc a.dk-lvl2 { padding-left: 22px; font-size: 12.5px; }
+    .dk-toc a.dk-lvl3 { padding-left: 34px; font-size: 12px; color: var(--text-3); }
+    .dk-toc a.dk-active { color: var(--accent); border-left-color: var(--accent);
+      background: rgba(138,92,246,0.08); font-weight: 600; }
+    .dk-toc .dk-toc-empty { color: var(--text-3); font: 11.5px var(--mono); }
+  \`;
+  h.injectOnce('toc', CSS);
+
+  function slugify(s) {
+    return (String(s || '').toLowerCase().trim()
+      .replace(/[^\\w\\s-]/g, '').replace(/\\s+/g, '-').slice(0, 60)) || 'sec';
+  }
+
+  function levelOf(node) {
+    if (node.classList && node.classList.contains('dk-title')) {
+      const a = parseInt(node.getAttribute('aria-level') || '1', 10);
+      return a >= 1 && a <= 3 ? a : 1;
+    }
+    const t = node.tagName;
+    return t === 'H2' ? 2 : t === 'H3' ? 3 : 1;
+  }
+
+  // Varre o DOM por headings, ancorando (id) os que não têm. Não conta os headings DENTRO de
+  // outro TOC (não há, mas o seletor é específico de títulos reais).
+  function collect(levels) {
+    const out = [];
+    const seen = new Set();
+    document.querySelectorAll('.dk-title, .dk-text h1, .dk-text h2, .dk-text h3').forEach((node) => {
+      const text = (node.textContent || '').trim();
+      if (!text) return;
+      const lvl = levelOf(node);
+      if (levels.indexOf(lvl) === -1) return;
+      if (!node.id) {
+        const base = slugify(text);
+        let id = base, n = 2;
+        while (document.getElementById(id) || seen.has(id)) id = base + '-' + (n++);
+        node.id = id;
+      }
+      seen.add(node.id);
+      node.style.scrollMarginTop = '14px';
+      out.push({ text, level: lvl, target: node.id });
+    });
+    return out;
+  }
+
+  function render(container, spec) {
+    const levels = Array.isArray(spec.levels) && spec.levels.length
+      ? spec.levels.map(Number).filter((n) => n >= 1 && n <= 3)
+      : [1, 2, 3];
+    const explicit = Array.isArray(spec.items) && spec.items.length > 0;
+    container.className = 'dk-toc' + (spec.sticky ? ' dk-sticky' : '');
+    const anchorByTarget = new Map();
+    let observer = null;
+
+    function items() {
+      if (explicit) {
+        return spec.items.map((it) => ({
+          text: String(it.text || ''),
+          level: Math.min(3, Math.max(1, Number(it.level) || 1)),
+          target: String(it.target || it.href || '').replace(/^#/, '')
+        }));
+      }
+      return collect(levels);
+    }
+
+    function build() {
+      const list = items();
+      container.innerHTML = '';
+      const head = document.createElement('div');
+      head.className = 'dk-toc-head';
+      head.textContent = typeof spec.title === 'string' ? spec.title : 'Conteúdo';
+      container.appendChild(head);
+      if (!list.length) {
+        const e = document.createElement('div');
+        e.className = 'dk-toc-empty';
+        e.textContent = 'sem seções ainda';
+        container.appendChild(e);
+        return list;
+      }
+      const ul = document.createElement('ul');
+      anchorByTarget.clear();
+      list.forEach((it) => {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.className = 'dk-lvl' + it.level;
+        a.textContent = it.text;
+        a.href = '#' + it.target;
+        a.addEventListener('click', (ev) => {
+          const tgt = it.target && document.getElementById(it.target);
+          if (tgt) {
+            ev.preventDefault();
+            tgt.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            try { history.replaceState(null, '', '#' + it.target); } catch (e) {}
+          }
+        });
+        anchorByTarget.set(it.target, a);
+        li.appendChild(a);
+        ul.appendChild(li);
+      });
+      container.appendChild(ul);
+      spy(list);
+      return list;
+    }
+
+    // Scroll-spy: marca como ativo o heading mais visível no topo do viewport.
+    function spy(list) {
+      if (observer) { observer.disconnect(); observer = null; }
+      if (!('IntersectionObserver' in window)) return;
+      const visible = new Map();
+      observer = new IntersectionObserver((entries) => {
+        entries.forEach((en) => {
+          if (en.isIntersecting) visible.set(en.target.id, en.intersectionRatio);
+          else visible.delete(en.target.id);
+        });
+        let bestId = null, best = -1;
+        visible.forEach((r, id) => { if (r > best) { best = r; bestId = id; } });
+        if (!bestId) return;
+        anchorByTarget.forEach((a) => a.classList.remove('dk-active'));
+        const a = anchorByTarget.get(bestId);
+        if (a) a.classList.add('dk-active');
+      }, { rootMargin: '0px 0px -65% 0px', threshold: [0, 1] });
+      list.forEach((it) => {
+        const el = it.target && document.getElementById(it.target);
+        if (el) observer.observe(el);
+      });
+    }
+
+    let current = build();
+
+    // Re-varre quando o DOM muda (blocos text renderizam md async; agente pode somar seções).
+    // Debounce + guard de igualdade ⇒ a própria reconstrução não dispara loop (na 2ª passada
+    // collect == current). Não observa attributes, então setar id/style nos headings não conta.
+    if (!explicit) {
+      let timer = null;
+      const mo = new MutationObserver(() => {
+        if (timer) return;
+        timer = setTimeout(() => {
+          timer = null;
+          const next = collect(levels);
+          const changed = next.length !== current.length ||
+            next.some((it, i) => !current[i] || current[i].text !== it.text || current[i].level !== it.level);
+          if (changed) current = build();
+        }, 140);
+      });
+      const root = container.closest('.dk-card-widgets') || document.body;
+      mo.observe(root, { childList: true, subtree: true, characterData: true });
+    }
+
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'toc',
+        ops: {
+          refresh: () => { current = build(); return { ok: true, count: current.length }; }
+        },
+        getters: {
+          items: () => current.map((it) => ({ text: it.text, level: it.level, target: it.target }))
+        }
+      });
+    }
+  }
+
+  function initAll() {
+    document.querySelectorAll('[data-decky-toc]').forEach((el) => {
+      if (el.dataset.deckyInit) return;
+      el.dataset.deckyInit = '1';
+      const spec = h.parseSpec(el);
+      const nav = document.createElement('nav');
+      el.replaceWith(nav);
+      render(nav, spec);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAll);
+  } else {
+    initAll();
+  }
+})();
+`
+
+// kpi — grid de indicadores. spec: { id, items: [{ value, label, delta? }] }. delta colorido por
+// sinal (começa com '-' ou '↓' = baixa/vermelho; senão alta/verde). Op setItems / getter items.
+const KPI_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('kpi', \`
+    .dk-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px; margin: 1em 0; }
+    .dk-kpi .cell { background: var(--bg-1); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px; }
+    .dk-kpi .num { font-size: 26px; font-weight: 800; color: var(--accent);
+      letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .dk-kpi .lab { font-size: 12px; color: var(--text-2); margin-top: 3px; }
+    .dk-kpi .delta { font-size: 12px; font-weight: 600; margin-top: 4px;
+      font-variant-numeric: tabular-nums; }
+    .dk-kpi .delta.up { color: #34d399; } .dk-kpi .delta.down { color: #fb7185; }
+  \`);
+  function render(el, spec) {
+    const items = Array.isArray(spec.items) ? spec.items : [];
+    const grid = document.createElement('div');
+    grid.className = 'dk-kpi';
+    for (const it of items) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      const num = document.createElement('div');
+      num.className = 'num';
+      num.textContent = it.value != null ? String(it.value) : '';
+      const lab = document.createElement('div');
+      lab.className = 'lab';
+      lab.textContent = it.label || '';
+      cell.appendChild(num); cell.appendChild(lab);
+      if (it.delta != null && it.delta !== '') {
+        const d = document.createElement('div');
+        const s = String(it.delta);
+        const down = /^[-↓]/.test(s.trim());
+        d.className = 'delta ' + (down ? 'down' : 'up');
+        d.textContent = s;
+        cell.appendChild(d);
+      }
+      grid.appendChild(cell);
+    }
+    el.replaceWith(grid);
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'kpi',
+        ops: { setItems: (a) => { spec.items = (a && a.items) || []; const n = grid.cloneNode(false);
+          grid.replaceWith(n); render(n, spec); return { ok: true }; } },
+        getters: { items: () => items }
+      });
+    }
+  }
+  function initAll() {
+    document.querySelectorAll('[data-decky-kpi]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      render(el, h.parseSpec(el));
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
+// callout — caixa de destaque. spec: { id, tone?: 'info'|'tip'|'warn'|'danger', title?, text }.
+const CALLOUT_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('callout', \`
+    .dk-callout { border-left: 3px solid var(--accent); background: var(--bg-1);
+      border-radius: 8px; padding: 12px 14px; margin: 1em 0; }
+    .dk-callout .ttl { font-weight: 650; margin-bottom: 4px; display: flex; gap: 7px; align-items: center; }
+    .dk-callout .ico { font-size: 14px; }
+    .dk-callout .body { color: var(--text-2); white-space: pre-wrap; }
+    .dk-callout.tip { border-left-color: #34d399; }
+    .dk-callout.warn { border-left-color: #fbbf24; }
+    .dk-callout.danger { border-left-color: #fb7185; }
+  \`);
+  const ICON = { info: 'ℹ️', tip: '💡', warn: '⚠️', danger: '🛑' };
+  function render(el, spec) {
+    const tone = ['info','tip','warn','danger'].includes(spec.tone) ? spec.tone : 'info';
+    const box = document.createElement('div');
+    box.className = 'dk-callout ' + tone;
+    if (spec.title) {
+      const t = document.createElement('div'); t.className = 'ttl';
+      const ic = document.createElement('span'); ic.className = 'ico'; ic.textContent = ICON[tone];
+      const tx = document.createElement('span'); tx.textContent = spec.title;
+      t.appendChild(ic); t.appendChild(tx); box.appendChild(t);
+    }
+    const body = document.createElement('div'); body.className = 'body';
+    body.textContent = spec.text || '';
+    box.appendChild(body);
+    el.replaceWith(box);
+  }
+  function initAll() {
+    document.querySelectorAll('[data-decky-callout]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      render(el, h.parseSpec(el));
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
+// table — tabela estilizada. spec: { id, headers: [string], rows: [[cell]], align?: ['left'|'right'] }.
+// Células que começam com '+' ficam verdes e '-' vermelhas (deltas). Op setRows / getter rows.
+const TABLE_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('table', \`
+    .dk-table { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 14px; }
+    .dk-table th, .dk-table td { text-align: left; padding: 9px 12px;
+      border-bottom: 1px solid var(--border); }
+    .dk-table th { color: var(--text-2); font-weight: 600; font-size: 12px;
+      text-transform: uppercase; letter-spacing: 0.06em; }
+    .dk-table td.r, .dk-table th.r { text-align: right; font-variant-numeric: tabular-nums; }
+    .dk-table tr:last-child td { border-bottom: none; }
+    .dk-table .pos { color: #34d399; } .dk-table .neg { color: #fb7185; }
+  \`);
+  function render(el, spec) {
+    const headers = Array.isArray(spec.headers) ? spec.headers : [];
+    const rows = Array.isArray(spec.rows) ? spec.rows : [];
+    const align = Array.isArray(spec.align) ? spec.align : [];
+    const cls = (i) => (align[i] === 'right' ? ' class="r"' : '');
+    const thead = headers.length
+      ? '<thead><tr>' + headers.map((hh, i) => '<th' + cls(i) + '>' + esc(hh) + '</th>').join('') + '</tr></thead>'
+      : '';
+    const tbody = '<tbody>' + rows.map((r) => '<tr>' + (Array.isArray(r) ? r : []).map((c, i) => {
+      const s = c == null ? '' : String(c);
+      const tone = /^\\+/.test(s.trim()) ? ' pos' : /^-/.test(s.trim()) ? ' neg' : '';
+      const a = align[i] === 'right' ? ' r' : '';
+      const klass = (tone || a) ? ' class="' + (a + tone).trim() + '"' : '';
+      return '<td' + klass + '>' + esc(s) + '</td>';
+    }).join('') + '</tr>').join('') + '</tbody>';
+    const tbl = document.createElement('table');
+    tbl.className = 'dk-table';
+    tbl.innerHTML = thead + tbody;
+    el.replaceWith(tbl);
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'table',
+        ops: { setRows: (a) => { spec.rows = (a && a.rows) || []; const n = document.createElement('table');
+          tbl.replaceWith(n); render(n, spec); return { ok: true }; } },
+        getters: { rows: () => rows }
+      });
+    }
+  }
+  function esc(s) { return String(s).replace(/[<>&]/g, (c) => c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'); }
+  function initAll() {
+    document.querySelectorAll('[data-decky-table]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      render(el, h.parseSpec(el));
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
+// columns — layout multi-coluna. spec: { id, cols: ["md", "md", ...] }. Cada coluna renderiza
+// markdown (via marked); empilha em telas estreitas.
+const COLUMNS_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('columns', \`
+    .dk-columns { display: grid; gap: 18px; margin: 1em 0;
+      grid-template-columns: repeat(var(--n, 2), 1fr); }
+    @media (max-width: 640px) { .dk-columns { grid-template-columns: 1fr; } }
+    .dk-columns > div > :first-child { margin-top: 0; }
+  \`);
+  let markedP = null;
+  function loadMarked() { if (!markedP) markedP = import('${MARKED_URL}').then((m) => m.marked); return markedP; }
+  function render(el, spec) {
+    const cols = Array.isArray(spec.cols) ? spec.cols : [];
+    const row = document.createElement('div');
+    row.className = 'dk-columns';
+    row.style.setProperty('--n', String(Math.max(1, cols.length)));
+    const cells = cols.map((md) => { const d = document.createElement('div'); d.textContent = md || ''; row.appendChild(d); return { d, md: md || '' }; });
+    el.replaceWith(row);
+    loadMarked().then((marked) => { for (const c of cells) { try { c.d.innerHTML = marked.parse(c.md, { gfm: true }); } catch (e) {} } }).catch(() => {});
+  }
+  function initAll() {
+    document.querySelectorAll('[data-decky-columns]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      render(el, h.parseSpec(el));
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
+// divider — separador. spec: {} (sem campos).
+const DIVIDER_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('divider', '.dk-divider { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }');
+  function initAll() {
+    document.querySelectorAll('[data-decky-divider]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      const hr = document.createElement('hr'); hr.className = 'dk-divider'; el.replaceWith(hr);
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
 // MCP widget bridge — opens a WS to the decky-server, listens for `widget:call` broadcasts,
 // dispatches to widgets registered via `window.__deckyRegisterWidget(widgetId, {type, ops, getters})`,
 // and sends back `widget:call-reply`. Only handles calls whose cardId matches THIS page's cardId
@@ -1506,6 +2168,14 @@ const BRIDGE_JS = `
 // Virtual routes — paths served from inline strings, not from disk.
 const VIRTUAL_ROUTES: Record<string, { body: string; mime: string }> = {
   '/__decky/widgets/bridge.js': { body: BRIDGE_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/title.js': { body: TITLE_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/text.js': { body: TEXT_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/kpi.js': { body: KPI_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/callout.js': { body: CALLOUT_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/table.js': { body: TABLE_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/columns.js': { body: COLUMNS_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/divider.js': { body: DIVIDER_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/toc.js': { body: TOC_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/flow.js': { body: FLOW_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/checklist.js': {
     body: CHECKLIST_JS,

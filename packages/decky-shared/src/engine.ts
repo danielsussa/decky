@@ -1,30 +1,18 @@
-// Engine model — o decky fala com N engines ao mesmo tempo: o `local` (server embarcado,
-// sempre presente) + cada `server` remoto adicionado via "Add server". Cada workspace/session
-// pertence a UM engine; a árvore agrupa por KIND(local|server) ▸ WS ▸ SESSION. Antes disso o
-// engine era global (local OU remoto) e adicionar um server escondia tudo do local.
+// Engine model — a camada de transporte do decky. Hoje existe um único engine, o `local`
+// (server embarcado no Electron, loopback WS, sempre presente). A abstração sobrevive porque é
+// o próprio transporte: o preload fala com o engine via WS e o main passa a URL do loopback
+// pelo argv. (O modo standalone/remoto via SSH foi removido.)
 
-export type EngineKind = 'local' | 'server'
+export type EngineKind = 'local'
 
 export interface Engine {
-  /** Estável e único. 'local' para o embarcado; derivado do host para servers. */
+  /** Estável e único. Sempre 'local' hoje. */
   id: string
   kind: EngineKind
-  /** Rótulo curto na árvore (ex: 'local', 'pi@raspberry'). */
+  /** Rótulo curto. */
   label: string
-  /** ws://… — loopback pro local, ws://127.0.0.1:<tunnelPort> pro server (túnel SSH). */
+  /** ws://… loopback do server embarcado. */
   url: string
-  /** Bearer token do server remoto. Ausente no local (loopback sem auth). */
-  token?: string
-  /** Server only: host SSH usado pra re-abrir o túnel no boot (URL muda a cada porta livre). */
-  sshHost?: string
-  sshIdentity?: string
-}
-
-/** Apenas os campos persistidos no state.json (`engines`). O `local` é runtime, não persiste. */
-export type ServerEngineConfig = Omit<Engine, 'kind' | 'url'> & {
-  kind: 'server'
-  /** URL pode mudar a cada boot (porta de túnel nova); persiste o que dá, re-resolve no boot. */
-  url?: string
 }
 
 export const LOCAL_ENGINE_ID = 'local'

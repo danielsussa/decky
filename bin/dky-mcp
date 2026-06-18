@@ -39,7 +39,7 @@ const TOOLS = [
   {
     name: 'preview_html',
     description:
-      'Render inline HTML content as a decky card. Pass EITHER a body fragment (will be wrapped in the default mini-app scaffold with /__decky/default.css applied) OR a full `<!doctype html>...</html>` document (used as-is). The card is materialized as a .html file under $DECKY_CARDS_DIR/<card>.html and live-reloads on edit. To embed an interactive widget, drop a `<div data-decky-<name>>{...JSON spec...}</div>` block — supported widgets: `matrix` (decision matrix), `roadmap` (timeline), `checklist`, `flow` (diagram), `mermaid`. The renderer auto-includes `<script src="/__decky/widgets/<name>.js">` for any widget tag it detects, so you do NOT need to add the script tags yourself.',
+      'Render inline HTML content as a decky card. Pass EITHER a body fragment (will be wrapped in the default mini-app scaffold with /__decky/default.css applied) OR a full `<!doctype html>...</html>` document (used as-is). The card is materialized as a .html file under $DECKY_CARDS_DIR/<card>.html and live-reloads on edit. To embed an interactive widget, drop a `<div data-decky-<name>>{...JSON spec...}</div>` block — supported widgets: `title` (editable heading), `matrix` (decision matrix), `roadmap` (timeline), `checklist`, `flow` (diagram), `mermaid`. The renderer auto-includes `<script src="/__decky/widgets/<name>.js">` for any widget tag it detects, so you do NOT need to add the script tags yourself.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -260,18 +260,6 @@ const TOOLS = [
     }
   },
   {
-    name: 'session_set_title',
-    description:
-      'Label the current decky session tab so the user can tell tabs apart. Call this when starting a new task or when the current focus changes meaningfully (e.g. "fixing auth bug", "drafting PR description"). Keep it short (under 40 chars).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        title: { type: 'string', description: 'Short label for this session tab.' }
-      },
-      required: ['title']
-    }
-  },
-  {
     name: 'browser_navigate',
     description:
       'Open a web page in the decky panel and point the agent at it. If a web card is focused (or `card` is given) it navigates that card; otherwise it OPENS A NEW web card. Accepts a bare domain or a search term, like an address bar. Use this to start any browsing flow — then browser_snapshot/read/click/type drive the page.',
@@ -393,7 +381,18 @@ async function handleCall(name, args) {
     if (ext === 'json') {
       const fs = require('node:fs/promises')
       const text = await fs.readFile(a.path, 'utf-8')
-      const value = JSON.parse(text)
+      let value = null
+      try {
+        value = JSON.parse(text)
+      } catch {
+        value = null
+      }
+      // Card-manifesto ({ kind:'manifest', widgets:[...] }) → abre como card HTML: o servidor
+      // renderiza o .json pra HTML via o protocol card://. JSON comum → a árvore colapsável.
+      if (value && value.kind === 'manifest' && Array.isArray(value.widgets)) {
+        const r = await post('/preview', { type: 'html', path: a.path }, a.card)
+        return describeResolved(`card manifest rendered from ${a.path} as`, r)
+      }
       const r = await post('/preview', { type: 'json', value }, a.card)
       return describeResolved(`json rendered from ${a.path} as`, r)
     }
@@ -591,18 +590,6 @@ async function handleCall(name, args) {
     if (typeof a.key !== 'string' || !a.key) throw new Error('card_get: key required')
     const r = await post('/widget/get', { cardId: a.cardId, widgetId: a.widgetId, key: a.key })
     return JSON.stringify(r && 'result' in r ? r.result : null)
-  }
-
-  if (name === 'session_set_title') {
-    if (typeof a.title !== 'string') throw new Error('session_set_title: title required')
-    const sessionId = process.env.DECKY_SESSION_ID
-    if (!sessionId) {
-      throw new Error(
-        'DECKY_SESSION_ID not set — this MCP server is not running inside a deck session'
-      )
-    }
-    await post(`/sessions/${encodeURIComponent(sessionId)}/title`, { title: a.title })
-    return `session ${sessionId} titled "${a.title}"`
   }
 
   // Browser-control tools — drive the focused web card via POST /web/act. Each returns the raw

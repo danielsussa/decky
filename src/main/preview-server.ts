@@ -13,17 +13,31 @@ import {
   getCardsForSession,
   getPreviewSource,
   getPreviewSources,
-  getSessionTitles,
   isFormPending,
   normalizePreviewSource,
   parkPreviewAndAwait,
   searchCards,
-  setSessionTitle,
   submitFormOutcome,
   type DeckyWsServer
 } from '@decky/server'
 import { getWebViewsManager } from './web-views'
 import { trackActivityEnd, trackActivityStart } from './handoff-activity'
+import {
+  clickJs,
+  clickLabel,
+  READ_JS,
+  settle,
+  SNAPSHOT_JS,
+  typeJs,
+  waitRequest,
+  waitUntil
+} from './web/facilitators'
+import { navigateResilient } from './web/blockwall'
+import { waitForNotCaptcha } from './web/captcha'
+import { focusForIntervention } from './web/intervene'
+import { runDiag } from './web/diag'
+import { isStateChanging, nextEventId, readEvents, record, sanitizeArgs } from './web/replay'
+import { adapterToolsForUrl, findAdapterTool, makeWebContext } from './web/adapters/registry'
 
 // Toda a STATE (previews/titles/forms) e helpers puros vivem em @decky/server/preview-state.
 // Este arquivo hospeda o HTTP server na porta 6790 e a "browser-control layer" (que depende de
@@ -54,7 +68,7 @@ function broadcastPreview(
   getWsServer()?.broadcast('preview:source-changed', { sessionId, cardId, source, reqId })
 }
 
-function broadcastSessionTitle(
+export function broadcastSessionTitle(
   getWindow: () => BrowserWindow | null,
   getWsServer: () => DeckyWsServer | null,
   id: string,
@@ -65,6 +79,19 @@ function broadcastSessionTitle(
     win.webContents.send('session:title-changed', { id, title })
   }
   getWsServer()?.broadcast('session:title-changed', { id, title })
+}
+
+export function broadcastSessionRunning(
+  getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null,
+  id: string,
+  cmd: string
+): void {
+  const win = getWindow()
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('session:running-changed', { id, cmd })
+  }
+  getWsServer()?.broadcast('session:running-changed', { id, cmd })
 }
 
 function cardIdFrom(req: IncomingMessage): string | null {
@@ -94,65 +121,10 @@ async function readBody(req: IncomingMessage): Promise<string> {
 }
 
 // ── Browser-control layer (agent drives the focused web card) ────────────────
-// Same model as decky-browser's agent-mcp: snapshot tags visible interactive elements with a
-// stable `data-mcp-ref`; click/type address by that ref. dky-mcp's browser_* tools POST here.
-const SNAPSHOT_JS = `(() => {
-  const SEL = 'a[href],button,input,textarea,select,[role=button],[role=link],[role=textbox],[role=checkbox],[role=tab],[contenteditable=true],[onclick]';
-  for (const el of document.querySelectorAll('[data-mcp-ref]')) el.removeAttribute('data-mcp-ref');
-  const out = []; let i = 0;
-  for (const el of document.querySelectorAll(SEL)) {
-    const r = el.getBoundingClientRect();
-    if (r.width === 0 || r.height === 0) continue;
-    const s = getComputedStyle(el);
-    if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') continue;
-    const ref = 'e' + (++i);
-    el.setAttribute('data-mcp-ref', ref);
-    const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.value ||
-      (el.innerText || '').trim() || el.getAttribute('title') || el.getAttribute('name') || '').trim().slice(0, 80);
-    out.push({ ref, role: el.getAttribute('role') || el.tagName.toLowerCase(), name,
-      type: el.getAttribute('type') || undefined });
-  }
-  return { url: location.href, title: document.title, elements: out };
-})()`
-
-const READ_JS = `(() => ({
-  url: location.href, title: document.title,
-  text: (document.body ? document.body.innerText : '').replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, 8000)
-}))()`
-
-function clickJs(ref: string): string {
-  const refLit = JSON.stringify(ref)
-  return `(() => {
-    const el = document.querySelector('[data-mcp-ref=' + ${JSON.stringify(refLit)} + ']');
-    if (!el) return { ok: false, error: 'ref not found: ' + ${refLit} };
-    el.scrollIntoView({ block: 'center', inline: 'center' });
-    el.click();
-    return { ok: true };
-  })()`
-}
-
-function typeJs(ref: string, text: string): string {
-  const refLit = JSON.stringify(ref)
-  const textLit = JSON.stringify(text)
-  return `(() => {
-    const el = document.querySelector('[data-mcp-ref=' + ${JSON.stringify(refLit)} + ']');
-    if (!el) return { ok: false, error: 'ref not found: ' + ${refLit} };
-    el.focus();
-    const tag = el.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA') {
-      const proto = tag === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value');
-      if (setter && setter.set) setter.set.call(el, ${textLit}); else el.value = ${textLit};
-    } else if (el.isContentEditable) {
-      el.textContent = ${textLit};
-    } else {
-      return { ok: false, error: 'element is not typable' };
-    }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    return { ok: true };
-  })()`
-}
+// Snapshot tags visible interactive elements with a sequential `data-mcp-ref` + a stable
+// `data-mcp-sid`; click/type address by either. The injected JS + the navigation facilitators
+// (settle/wait-until/wait-request/click-label) live in ./web/facilitators. dky-mcp's browser_*
+// tools and `decky web …` both POST here.
 
 function normalizeWebUrl(raw: string): string {
   const s = (raw || '').trim()
@@ -209,6 +181,27 @@ interface WebActBody {
   ref?: string
   text?: string
   code?: string
+  // Facilitators (settle / wait-until / wait-request / click-label).
+  expression?: string
+  pattern?: string
+  method?: string
+  label?: string
+  strict?: boolean
+  index?: number
+  timeoutMs?: number
+  quietMs?: number
+  pollMs?: number
+  matchRecentMs?: number
+  // navigate: settle after the load (default true).
+  settle?: boolean
+  // resilient-navigate (blockwall).
+  warmUp?: string
+  retries?: number
+  backoffMs?: number
+  jitterMs?: number
+  readyExpr?: string
+  // captcha-wait.
+  cleanRequired?: number
 }
 
 // Open a new web card by broadcasting a `web` preview source — the same path POST /preview uses.
@@ -230,7 +223,66 @@ async function createWebCard(
   return resolved.cardId
 }
 
+// Wraps runWebActionInner with replay logging for state-changing actions (navigate/click/type/…).
+// Best-effort: a failed action still records ok:false + error, and replay errors never mask the
+// real result. urlBefore is captured pre-action when a card already exists.
 async function runWebAction(
+  getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null,
+  sessionId: string,
+  body: WebActBody
+): Promise<unknown> {
+  const action = body.action ?? ''
+  if (!isStateChanging(action)) {
+    return runWebActionInner(getWindow, getWsServer, sessionId, body)
+  }
+  const t0 = Date.now()
+  let cardId = body.cardId
+  let urlBefore: string | undefined
+  try {
+    const t = resolveWebCard(sessionId, body.cardId)
+    cardId = t.cardId
+    urlBefore = t.wc.getURL()
+  } catch {
+    // no card yet (navigate may create one) — record against the resolved id afterwards
+  }
+  try {
+    const result = (await runWebActionInner(getWindow, getWsServer, sessionId, body)) as {
+      cardId?: string
+      url?: string
+    }
+    const rid = result?.cardId || cardId
+    if (rid) {
+      record(rid, {
+        id: nextEventId(),
+        ts: Date.now(),
+        cmd: action,
+        args: sanitizeArgs(action, body as Record<string, unknown>),
+        durationMs: Date.now() - t0,
+        ok: true,
+        urlBefore,
+        urlAfter: result?.url
+      })
+    }
+    return result
+  } catch (err) {
+    if (cardId) {
+      record(cardId, {
+        id: nextEventId(),
+        ts: Date.now(),
+        cmd: action,
+        args: sanitizeArgs(action, body as Record<string, unknown>),
+        durationMs: Date.now() - t0,
+        ok: false,
+        error: (err as Error).message,
+        urlBefore
+      })
+    }
+    throw err
+  }
+}
+
+async function runWebActionInner(
   getWindow: () => BrowserWindow | null,
   getWsServer: () => DeckyWsServer | null,
   sessionId: string,
@@ -252,11 +304,15 @@ async function runWebAction(
       trackActivityStart(target.wc, 'mcp-http:navigate')
       try {
         await target.wc.loadURL(url).catch(() => {})
+        // settle por padrão (page-ready) — o agent quase sempre quer agir logo após navegar.
+        // Opt-out com settle:false (igual ao --no-wait do handoff).
+        const settleResult = body.settle === false ? null : await settle(target.wc)
         return {
           ok: true,
           cardId: target.cardId,
           url: target.wc.getURL(),
-          title: target.wc.getTitle()
+          title: target.wc.getTitle(),
+          settled: settleResult ? settleResult.settled : undefined
         }
       } finally {
         trackActivityEnd()
@@ -268,12 +324,55 @@ async function runWebAction(
     return { ok: true, created: true, cardId, url }
   }
 
+  // resilient-navigate: like navigate, but resists anti-bot walls (jitter + warm-up + backoff). Can
+  // open a fresh card too. On exhaustion, brings decky to the front so the human can intervene.
+  if (body.action === 'resilient-navigate') {
+    const url = normalizeWebUrl(String(body.url ?? ''))
+    let target: { cardId: string; wc: WebContents } | null = null
+    try {
+      target = resolveWebCard(sessionId, body.cardId)
+    } catch {
+      target = null
+    }
+    let created = false
+    if (!target) {
+      if (body.cardId) throw new Error(`no web card with id "${body.cardId}"`)
+      const newId = await createWebCard(getWindow, getWsServer, sessionId, url)
+      target = resolveWebCard(sessionId, newId)
+      created = true
+    }
+    trackActivityStart(target.wc, 'mcp-http:resilient-navigate')
+    try {
+      const result = await navigateResilient(target.wc, url, {
+        warmUp: body.warmUp,
+        retries: body.retries,
+        backoffMs: body.backoffMs,
+        jitterMs: body.jitterMs,
+        readyExpr: body.readyExpr,
+        readyTimeoutMs: body.timeoutMs
+      })
+      if (!result.ok) {
+        focusForIntervention(
+          getWindow,
+          `blocked (${result.blocked?.descriptor}) at ${result.url} after ${result.attempts} attempts`
+        )
+      }
+      return { ...result, cardId: target.cardId, created }
+    } finally {
+      trackActivityEnd()
+    }
+  }
+
   const { wc } = resolveWebCard(sessionId, body.cardId)
   // Ações ATIVAS (mutam página ou input) sinalizam atividade → label pulsa + input blocker.
   // PASSIVAS (snapshot/read) só lêem o DOM e não devem atrapalhar quem está digitando nem
   // acender o indicador — Claude frequentemente faz snapshot pra "ver" o estado sem que o
   // usuário tenha pedido pra agir.
-  const isActive = body.action === 'click' || body.action === 'type' || body.action === 'eval'
+  const isActive =
+    body.action === 'click' ||
+    body.action === 'type' ||
+    body.action === 'eval' ||
+    body.action === 'click-label'
   if (isActive) trackActivityStart(wc, `mcp-http:${body.action}`)
   try {
     switch (body.action) {
@@ -290,6 +389,36 @@ async function runWebAction(
         )
       case 'eval':
         return await wc.executeJavaScript(String(body.code ?? ''))
+      // ── Facilitators ──
+      case 'settle':
+      case 'wait':
+        return await settle(wc, { timeoutMs: body.timeoutMs, quietMs: body.quietMs })
+      case 'wait-until':
+        if (!body.expression) throw new Error('wait-until requires an expression')
+        return await waitUntil(wc, body.expression, {
+          timeoutMs: body.timeoutMs,
+          pollMs: body.pollMs
+        })
+      case 'wait-request':
+        if (!body.pattern) throw new Error('wait-request requires a pattern')
+        return await waitRequest(wc, body.pattern, {
+          method: body.method,
+          timeoutMs: body.timeoutMs,
+          matchRecentMs: body.matchRecentMs
+        })
+      case 'click-label':
+        if (!body.label) throw new Error('click-label requires a label pattern')
+        return await clickLabel(wc, body.label, { strict: body.strict, index: body.index })
+      case 'captcha-wait':
+        return await waitForNotCaptcha(wc, {
+          timeoutMs: body.timeoutMs,
+          pollMs: body.pollMs,
+          cleanRequired: body.cleanRequired,
+          onChallenge: (desc) =>
+            focusForIntervention(getWindow, `captcha detected (${desc}) — solve it in the web card`)
+        })
+      case 'diag':
+        return await runDiag(wc, { url: body.url, settleMs: body.timeoutMs })
       default:
         throw new Error(`unknown web action: ${body.action}`)
     }
@@ -446,6 +575,73 @@ async function handleRequest(
     return
   }
 
+  // GET /web/replay?last=N[&cardId=…] — the replay log for a card. cardId defaults to the session's
+  // focused web card (no live WebContents needed — the log persists past tab close).
+  if (req.method === 'GET' && url.startsWith('/web/replay')) {
+    const q = new URL(url, 'http://x').searchParams
+    let targetCard = q.get('cardId') || cardId || ''
+    if (!targetCard) {
+      const mirror = getCardsForSession(sessionId)
+      const focused = mirror.cards.find((c) => c.id === mirror.focused && c.type === 'web')
+      const sole = mirror.cards.filter((c) => c.type === 'web')
+      targetCard = focused?.id || (sole.length === 1 ? sole[0].id : '')
+    }
+    if (!targetCard) {
+      sendJson(res, 400, { error: 'no cardId given and no focused web card in this session' })
+      return
+    }
+    const last = q.get('last') ? Number(q.get('last')) : undefined
+    sendJson(res, 200, { cardId: targetCard, events: readEvents(targetCard, { last }) })
+    return
+  }
+
+  // GET /web/adapters — the adapter verbs that match the active card's URL (self-describing site).
+  if (req.method === 'GET' && url === '/web/adapters') {
+    let pageUrl = ''
+    try {
+      pageUrl = resolveWebCard(sessionId, cardId ?? undefined).wc.getURL()
+    } catch {
+      pageUrl = ''
+    }
+    sendJson(res, 200, { url: pageUrl, tools: pageUrl ? adapterToolsForUrl(pageUrl) : [] })
+    return
+  }
+
+  // POST /web/adapters/run { name, args?, cardId? } — run one adapter verb against the card.
+  if (req.method === 'POST' && url === '/web/adapters/run') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as { name?: unknown; args?: unknown; cardId?: unknown }
+      if (typeof body.name !== 'string' || !body.name) {
+        sendJson(res, 400, { error: 'name required' })
+        return
+      }
+      const tool = findAdapterTool(body.name)
+      if (!tool) {
+        sendJson(res, 404, { error: `no adapter tool named "${body.name}"` })
+        return
+      }
+      const { wc } = resolveWebCard(
+        sessionId,
+        typeof body.cardId === 'string' ? body.cardId : undefined
+      )
+      const args = (body.args && typeof body.args === 'object' ? body.args : {}) as Record<
+        string,
+        unknown
+      >
+      trackActivityStart(wc, `adapter:${body.name}`)
+      try {
+        const result = await tool.run(makeWebContext(wc), args)
+        sendJson(res, 200, { ok: true, result })
+      } finally {
+        trackActivityEnd()
+      }
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
+    return
+  }
+
   // Long-poll: MCP `prompt_form` blocks here until the user submits/cancels in the renderer.
   // Default timeout is 10min — agent prompts should resolve well before that.
   if (req.method === 'POST' && url === '/form/await') {
@@ -513,7 +709,8 @@ async function handleRequest(
   // GET /widgets/list — catalog of registered widget types + currently-mounted instances.
   // Used by MCP `list_widgets` so the AI can discover available widgets without hardcoded docs.
   if (req.method === 'GET' && url === '/widgets/list') {
-    const outcome = await awaitWidgetCall({
+    const outcome = await awaitWidgetCall(
+      {
         getWsServer,
         emitIpc: (payload) => {
           const win = getWindow()
@@ -523,7 +720,9 @@ async function handleRequest(
           const win = getWindow()
           return !!(win && !win.isDestroyed())
         }
-      }, { kind: 'list' })
+      },
+      { kind: 'list' }
+    )
     if (outcome.error) {
       sendJson(res, 502, { error: outcome.error })
       return
@@ -562,24 +761,27 @@ async function handleRequest(
         sendJson(res, 400, { error: 'key required for /widget/get' })
         return
       }
-      const outcome = await awaitWidgetCall({
-        getWsServer,
-        emitIpc: (payload) => {
-          const win = getWindow()
-          if (win && !win.isDestroyed()) win.webContents.send('widget:call', payload)
+      const outcome = await awaitWidgetCall(
+        {
+          getWsServer,
+          emitIpc: (payload) => {
+            const win = getWindow()
+            if (win && !win.isDestroyed()) win.webContents.send('widget:call', payload)
+          },
+          hasIpcConsumer: () => {
+            const win = getWindow()
+            return !!(win && !win.isDestroyed())
+          }
         },
-        hasIpcConsumer: () => {
-          const win = getWindow()
-          return !!(win && !win.isDestroyed())
+        {
+          kind: isInvoke ? 'invoke' : 'get',
+          cardId: body.cardId,
+          widgetId: body.widgetId,
+          op: isInvoke ? (body.op as string) : undefined,
+          args: isInvoke ? body.args : undefined,
+          key: isInvoke ? undefined : (body.key as string)
         }
-      }, {
-        kind: isInvoke ? 'invoke' : 'get',
-        cardId: body.cardId,
-        widgetId: body.widgetId,
-        op: isInvoke ? (body.op as string) : undefined,
-        args: isInvoke ? body.args : undefined,
-        key: isInvoke ? undefined : (body.key as string)
-      })
+      )
       if (outcome.error) {
         sendJson(res, 502, { error: outcome.error })
         return
@@ -591,29 +793,48 @@ async function handleRequest(
     return
   }
 
-  // POST /sessions/<id>/title  { title: string }
-  const titleMatch = req.method === 'POST' && /^\/sessions\/([^/]+)\/title\/?$/.exec(url)
-  if (titleMatch) {
+  // POST /sessions/web-tab { title?: string } — open a new EMPTY web tab (a browser card) in the
+  // active session, focused, labeled with `title` until it navigates. It lives inside the current
+  // session, so there's no session id to mint. The caller is `decky new-tab`.
+  if (req.method === 'POST' && url === '/sessions/web-tab') {
     try {
-      const id = decodeURIComponent(titleMatch[1])
       const raw = await readBody(req)
       const body = JSON.parse(raw) as { title?: unknown }
-      if (typeof body.title !== 'string' || body.title.length === 0) {
-        sendJson(res, 400, { error: 'title must be a non-empty string' })
-        return
+      const title =
+        typeof body.title === 'string' && body.title.length > 0 ? body.title.slice(0, 80) : ''
+      const win = getWindow()
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('webtab:new', { title })
+        win.focus()
       }
-      const title = body.title.slice(0, 80)
-      setSessionTitle(id, title)
-      broadcastSessionTitle(getWindow, getWsServer, id, title)
-      sendJson(res, 200, { ok: true, id, title })
+      getWsServer()?.broadcast('webtab:new', { title })
+      sendJson(res, 200, { ok: true, title })
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
     }
     return
   }
 
-  if (req.method === 'GET' && url === '/sessions/titles') {
-    sendJson(res, 200, getSessionTitles())
+  // POST /cards/reload { path } — push-based live reload: tells the renderer to re-render the
+  // open card(s) whose source file is `path`. Used after a card-manifesto is mutated on disk
+  // (decky add-widget/title) so the card updates deterministically, WITHOUT depending on the fs
+  // watcher firing — the mutation itself drives the reload.
+  if (req.method === 'POST' && url === '/cards/reload') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as { path?: unknown }
+      const path = typeof body.path === 'string' ? body.path : ''
+      if (!path) {
+        sendJson(res, 400, { error: 'path required' })
+        return
+      }
+      const win = getWindow()
+      if (win && !win.isDestroyed()) win.webContents.send('card:reload', { path })
+      getWsServer()?.broadcast('card:reload', { path })
+      sendJson(res, 200, { ok: true, path })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
     return
   }
 

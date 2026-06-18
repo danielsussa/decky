@@ -1,42 +1,25 @@
-import {
-  ChevronRight,
-  ChevronDown,
-  FolderPlus,
-  Plus,
-  X,
-  Bookmark,
-  Clock,
-  Server,
-  Monitor
-} from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import type { Mode, Theme, EngineKind } from '@decky/shared'
-import type { StashEntry } from '@decky/shared'
+import { ChevronRight, ChevronDown, Plus, X, History } from 'lucide-react'
+import { useState } from 'react'
+import type { Mode, Theme } from '@decky/shared'
 import { t } from '../lib/i18n'
 
 export interface TreeSession {
   id: string
   label: string
-  kind: 'claude' | 'shell'
 }
 
-// Um grupo KIND na árvore: o engine (local|server) + seus workspaces. A árvore é
-// KIND ▸ WS ▸ SESSION — adicionar um server cria um grupo irmão do local, sem nunca escondê-lo.
-export interface EngineGroup {
+// Uma conversa do claude guardada no disco (do workspace ativo) que NÃO está aberta como aba —
+// candidata a "carregar sessão anterior". Vem de listClaudeSessions (aiTitle/branch/mtime).
+export interface PrevClaudeSession {
   id: string
-  kind: EngineKind
-  label: string
-  /** Server only: estado da conexão pra pintar o indicador (online/conectando/offline). */
-  status?: 'online' | 'connecting' | 'offline'
-  workspaces: string[]
+  title: string | null
+  gitBranch: string | null
+  mtimeMs: number
 }
-
-export type CloseSessionMode = 'save' | 'discard'
 
 interface WorkspaceTreeProps {
   isFocused?: boolean
-  engines: EngineGroup[]
-  collapsedEngines: string[]
+  workspaces: string[]
   activeWorkspace: string | null
   activeSessionId?: string
   // Cmd+Arrow nav cursor parked in another workspace; renders as a "hover" highlight
@@ -49,31 +32,23 @@ interface WorkspaceTreeProps {
   // Resolves each workspace path to its assigned theme (drives the color-coded chip per row).
   themeFor: (path: string | null | undefined) => Theme
   nameOf: (path: string) => string
-  // # of "own" cards in each session (cards that would be saved by "stash"). 0 = no popover.
-  ownCardCount: (sessionId: string) => number
-  // Workspace-scoped stash entries for the ACTIVE workspace. Non-active workspaces don't
-  // surface their stash in the tree yet — would need a second IPC read.
-  stash: StashEntry[]
-  onToggleEngine: (engineId: string) => void
+  // Conversas do claude do workspace ATIVO que não estão abertas (picker "sessões anteriores").
+  claudePrev: PrevClaudeSession[]
+  onLoadClaudeSession: (sessionId: string) => void
+  // "x" do picker: apaga DEFINITIVAMENTE a conversa (some da lista + remove o .jsonl do disco).
+  onDeleteClaudeSession: (sessionId: string) => void
   onToggleExpand: (ws: string) => void
   onSelectSession: (ws: string, sessionId: string) => void
   onNewSession: (ws: string) => void
-  onCloseSession: (ws: string, sessionId: string, mode: CloseSessionMode) => void
+  onCloseSession: (ws: string, sessionId: string) => void
   onCloseWorkspace: (ws: string) => void
-  onAddFolder: () => void
-  /** Click no X de um engine server (visível só no hover do row). Local não chama (não tem X). */
-  onRemoveEngine: (engineId: string) => void
-  onRestoreStash: (entryId: string, opts: { revive: boolean; keep: boolean }) => void
-  onDiscardStash: (entryId: string) => void
 }
 
-// The left-panel navigation: KIND(local|server) ▸ WS ▸ SESSION. Each engine groups its
-// workspaces; each workspace expands to its sessions. Selecting a session switches workspace if
-// needed; the terminal renders in TerminalHost below.
+// The left-panel navigation: WS ▸ SESSION. Each workspace expands to its sessions. Selecting a
+// session switches workspace if needed; the terminal renders in TerminalHost below.
 export default function WorkspaceTree({
   isFocused,
-  engines,
-  collapsedEngines,
+  workspaces,
   activeWorkspace,
   activeSessionId,
   previewedSession,
@@ -83,25 +58,17 @@ export default function WorkspaceTree({
   mode,
   themeFor,
   nameOf,
-  onToggleEngine,
   onToggleExpand,
   onSelectSession,
   onNewSession,
   onCloseSession,
   onCloseWorkspace,
-  onAddFolder,
-  onRemoveEngine,
-  ownCardCount,
-  stash,
-  onRestoreStash,
-  onDiscardStash
+  claudePrev,
+  onLoadClaudeSession,
+  onDeleteClaudeSession
 }: WorkspaceTreeProps): React.JSX.Element {
-  // Tracks which session's X is showing its "save vs discard" popover. null = none open.
-  const [closeMenuFor, setCloseMenuFor] = useState<string | null>(null)
-  // Per-workspace toggle for the stash list — hidden by default; clicking the count chip
-  // in the workspace header expands it. Local state because it's pure UI affordance, no
-  // need to round-trip through workspace.json.
-  const [stashOpenFor, setStashOpenFor] = useState<Record<string, boolean>>({})
+  // Per-workspace toggle for the "sessões anteriores" list (claude conversations not open as tabs).
+  const [prevOpenFor, setPrevOpenFor] = useState<Record<string, boolean>>({})
   // Force-show children of the previewed workspace so the highlighted session is visible,
   // without mutating the user's persistent expanded state.
   const visualExpanded =
@@ -109,7 +76,6 @@ export default function WorkspaceTree({
       ? [...expanded, previewedSession.ws]
       : expanded
 
-  // Per-workspace subtree — idêntico ao layout antigo, só extraído pra ser mapeado por engine.
   const renderWorkspace = (ws: string): React.JSX.Element => {
     const isOpen = visualExpanded.includes(ws)
     const isActiveWs = ws === activeWorkspace
@@ -140,21 +106,6 @@ export default function WorkspaceTree({
           >
             {nameOf(ws)}
           </button>
-          {isActiveWs && stash.length > 0 && (
-            <button
-              type="button"
-              className="wstree-stash-chip"
-              title={t('ws.stashRestoreHint')}
-              onClick={(e) => {
-                e.stopPropagation()
-                setStashOpenFor((prev) => ({ ...prev, [ws]: !prev[ws] }))
-                // Force the workspace open so the user actually sees the list appear.
-                if (!isOpen) onToggleExpand(ws)
-              }}
-            >
-              {stash.length} {stash.length === 1 ? t('ws.stashChipOne') : t('ws.stashChipMany')}
-            </button>
-          )}
           <button
             type="button"
             className="wstree-x"
@@ -168,16 +119,11 @@ export default function WorkspaceTree({
           </button>
         </div>
         {isOpen && (
-          <div
-            className="wstree-children"
-            style={{ ['--ws-tint' as string]: wsAccent }}
-          >
+          <div className="wstree-children" style={{ ['--ws-tint' as string]: wsAccent }}>
             {sessions.map((s) => {
               const isActiveSession = isActiveWs && s.id === activeSessionId
               const isPreviewedSession =
-                !!previewedSession &&
-                previewedSession.ws === ws &&
-                previewedSession.id === s.id
+                !!previewedSession && previewedSession.ws === ws && previewedSession.id === s.id
               // Show activity for ANY session (the live pool keeps cross-workspace sessions
               // running), so a session working in another workspace still pulses.
               const act = activity[s.id]
@@ -203,45 +149,38 @@ export default function WorkspaceTree({
                     title={t('ws.closeSession')}
                     onClick={(e) => {
                       e.stopPropagation()
-                      // Shift-click OR sessions with no own cards bypass the popover —
-                      // nothing meaningful to save.
-                      if (e.shiftKey || ownCardCount(s.id) === 0) {
-                        setCloseMenuFor(null)
-                        onCloseSession(ws, s.id, 'discard')
-                        return
-                      }
-                      setCloseMenuFor((cur) => (cur === s.id ? null : s.id))
+                      // Fechar é sempre direto — nada se perde: o contexto da conversa fica em
+                      // cardsByClaudeSession e reabre pelo picker "sessões anteriores".
+                      onCloseSession(ws, s.id)
                     }}
                   >
                     <X size={11} />
                   </button>
-                  {closeMenuFor === s.id && (
-                    <CloseSessionMenu
-                      onSave={() => {
-                        setCloseMenuFor(null)
-                        onCloseSession(ws, s.id, 'save')
-                      }}
-                      onDiscard={() => {
-                        setCloseMenuFor(null)
-                        onCloseSession(ws, s.id, 'discard')
-                      }}
-                      onDismiss={() => setCloseMenuFor(null)}
-                    />
-                  )}
                 </div>
               )
             })}
-            {isActiveWs && stash.length > 0 && stashOpenFor[ws] && (
-              <StashSection
-                entries={stash}
-                onRestore={onRestoreStash}
-                onDiscard={onDiscardStash}
-              />
-            )}
             <button type="button" className="wstree-new" onClick={() => onNewSession(ws)}>
               <Plus size={12} />
               <span>{t('ws.newSession')}</span>
             </button>
+            {isActiveWs && claudePrev.length > 0 && (
+              <button
+                type="button"
+                className="wstree-new"
+                title="conversas anteriores do claude neste workspace"
+                onClick={() => setPrevOpenFor((prev) => ({ ...prev, [ws]: !prev[ws] }))}
+              >
+                <History size={12} />
+                <span>sessões anteriores ({claudePrev.length})</span>
+              </button>
+            )}
+            {isActiveWs && prevOpenFor[ws] && (
+              <PrevClaudeSessions
+                items={claudePrev}
+                onLoad={onLoadClaudeSession}
+                onDelete={onDeleteClaudeSession}
+              />
+            )}
           </div>
         )}
       </div>
@@ -249,121 +188,61 @@ export default function WorkspaceTree({
   }
 
   return (
-    <div
-      className="wstree panel-focusable"
-      data-panel="tree"
-      data-focused={isFocused}
-    >
+    <div className="wstree panel-focusable" data-panel="tree" data-focused={isFocused}>
       <div className="wstree-title">workspaces</div>
-      {engines.map((engine) => {
-        const engineOpen = !collapsedEngines.includes(engine.id)
-        const isServer = engine.kind === 'server'
-        return (
-          <div className="wstree-engine" key={engine.id} data-kind={engine.kind}>
-            <div className="wstree-engine-row">
-              <button
-                type="button"
-                className="wstree-caret"
-                onClick={() => onToggleEngine(engine.id)}
-                aria-label={engineOpen ? 'colapsar' : 'expandir'}
-              >
-                {engineOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-              </button>
-              {isServer ? <Server size={12} /> : <Monitor size={12} />}
-              <span className="wstree-engine-name" title={engine.label}>
-                {engine.label}
-              </span>
-              {isServer && (
-                <span
-                  className={`wstree-engine-status wstree-engine-status-${engine.status ?? 'offline'}`}
-                  title={engine.status ?? 'offline'}
-                />
-              )}
-              {isServer && (
-                <button
-                  type="button"
-                  className="wstree-engine-remove"
-                  onClick={(e) => {
-                    // Stop pra não disparar onToggleEngine do row pai (que tem caret separado,
-                    // mas qualquer click no row vira hover state e queremos prevenir mesmo).
-                    e.stopPropagation()
-                    onRemoveEngine(engine.id)
-                  }}
-                  title={t('engineRemove.btnTitle')}
-                  aria-label={t('engineRemove.btnTitle')}
-                >
-                  <X size={12} />
-                </button>
-              )}
-            </div>
-            {engineOpen && (
-              <div className="wstree-engine-children">
-                {engine.workspaces.map((ws) => renderWorkspace(ws))}
-              </div>
-            )}
-          </div>
-        )
-      })}
-      <button type="button" className="wstree-add" onClick={onAddFolder}>
-        <FolderPlus size={13} />
-        <span>{t('ws.addFolder')}</span>
-      </button>
+      {workspaces.map((ws) => renderWorkspace(ws))}
     </div>
   )
 }
 
-// Inline popover anchored next to the session row. Dismisses on Esc or click outside.
-// Enter activates save (primary); Shift+Enter activates discard.
-function CloseSessionMenu({
-  onSave,
-  onDiscard,
-  onDismiss
+// Lista das conversas do claude (do workspace ativo) que não estão abertas. 1 clique = abre como
+// aba e resume (`claude --resume <id>`). Reusa o visual do stash. Título = aiTitle (fallback id8).
+function PrevClaudeSessions({
+  items,
+  onLoad,
+  onDelete
 }: {
-  onSave: () => void
-  onDiscard: () => void
-  onDismiss: () => void
+  items: PrevClaudeSession[]
+  onLoad: (sessionId: string) => void
+  onDelete: (sessionId: string) => void
 }): React.JSX.Element {
-  const rootRef = useRef<HTMLDivElement | null>(null)
-  const saveBtnRef = useRef<HTMLButtonElement | null>(null)
-  useEffect(() => {
-    saveBtnRef.current?.focus()
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onDismiss()
-      }
-    }
-    const onDown = (e: MouseEvent): void => {
-      if (!rootRef.current?.contains(e.target as Node)) onDismiss()
-    }
-    document.addEventListener('keydown', onKey, true)
-    document.addEventListener('mousedown', onDown, true)
-    return () => {
-      document.removeEventListener('keydown', onKey, true)
-      document.removeEventListener('mousedown', onDown, true)
-    }
-  }, [onDismiss])
   return (
-    <div className="wstree-close-menu" ref={rootRef} onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        ref={saveBtnRef}
-        className="wstree-close-menu-save"
-        onClick={onSave}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && e.shiftKey) {
-            e.preventDefault()
-            onDiscard()
-          }
-        }}
-      >
-        <Bookmark size={12} />
-        <span>{t('ws.saveForLater')}</span>
-      </button>
-      <button type="button" className="wstree-close-menu-discard" onClick={onDiscard}>
-        <X size={12} />
-        <span>{t('ws.closeForReal')}</span>
-      </button>
+    <div className="wstree-stash">
+      <div className="wstree-stash-list">
+        {items.map((c) => (
+          <div className="wstree-stash-row" key={c.id}>
+            <button
+              type="button"
+              className="wstree-stash-btn"
+              title={`resume ${c.id}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                onLoad(c.id)
+              }}
+            >
+              <History size={10} className="wstree-stash-icon" />
+              <span className="wstree-stash-name">{c.title || c.id.slice(0, 8)}</span>
+              <span className="wstree-stash-meta">
+                {relativeTime(c.mtimeMs)}
+                {c.gitBranch ? ` · ${c.gitBranch}` : ''}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="wstree-x"
+              title="apagar conversa definitivamente"
+              onClick={(e) => {
+                e.stopPropagation()
+                if (confirm(`Apagar definitivamente "${c.title || c.id.slice(0, 8)}"?`)) {
+                  onDelete(c.id)
+                }
+              }}
+            >
+              <X size={10} />
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -379,49 +258,3 @@ function relativeTime(ts: number): string {
   return `${d}d`
 }
 
-function StashSection({
-  entries,
-  onRestore,
-  onDiscard
-}: {
-  entries: StashEntry[]
-  onRestore: (entryId: string, opts: { revive: boolean; keep: boolean }) => void
-  onDiscard: (entryId: string) => void
-}): React.JSX.Element {
-  return (
-    <div className="wstree-stash">
-      <div className="wstree-stash-list">
-        {entries.map((entry) => (
-          <div className="wstree-stash-row" key={entry.id}>
-            <button
-              type="button"
-              className="wstree-stash-btn"
-              title={t('ws.stashRestoreHint')}
-              onClick={(e) => {
-                e.stopPropagation()
-                onRestore(entry.id, { revive: !e.shiftKey, keep: e.metaKey || e.ctrlKey })
-              }}
-            >
-              <Clock size={10} className="wstree-stash-icon" />
-              <span className="wstree-stash-name">{entry.title}</span>
-              <span className="wstree-stash-meta">
-                {entry.cards.length} {t('ws.stashCardCount')} · {relativeTime(entry.savedAt)}
-              </span>
-            </button>
-            <button
-              type="button"
-              className="wstree-x"
-              title={t('ws.stashDiscard')}
-              onClick={(e) => {
-                e.stopPropagation()
-                onDiscard(entry.id)
-              }}
-            >
-              <X size={10} />
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}

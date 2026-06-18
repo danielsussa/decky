@@ -88,114 +88,6 @@ const messages = {
   'ws.closeWorkspace': { pt: 'fechar workspace', en: 'close workspace' },
   'ws.closeSession': { pt: 'fechar sessão', en: 'close session' },
   'ws.newSession': { pt: 'nova sessão', en: 'new session' },
-  'ws.addFolder': { pt: 'Adicionar pasta…', en: 'Add folder…' },
-  'server.title': { pt: 'Adicionar server remoto', en: 'Add remote server' },
-  'server.subtitle': {
-    pt: 'Conecta via SSH e instala o decky-server no host. Como o VS Code Remote-SSH.',
-    en: 'Connects via SSH and installs decky-server on the host. Like VS Code Remote-SSH.'
-  },
-  'server.hostLabel': { pt: 'Host', en: 'Host' },
-  'server.hostHelp': {
-    pt: 'user@hostname[:porta]. Usa SSH config (~/.ssh/config) se só passar o nome.',
-    en: 'user@hostname[:port]. Uses SSH config (~/.ssh/config) when only the name is given.'
-  },
-  'server.pathLabel': { pt: 'Caminho', en: 'Path' },
-  'server.pathHelp': {
-    pt: 'Pasta do projeto no host. Será o workspace inicial.',
-    en: 'Project folder on the host. Will be the initial workspace.'
-  },
-  'server.identityLabel': { pt: 'Identidade (opcional)', en: 'Identity (optional)' },
-  'server.identityHelp': {
-    pt: 'Path da chave privada. Vazio = usa as do agente / config.',
-    en: 'Path to private key. Empty = uses agent / config defaults.'
-  },
-  'server.cancel': { pt: 'Cancelar', en: 'Cancel' },
-  'server.connect': { pt: 'Conectar', en: 'Connect' },
-  'server.notImplemented': {
-    pt: 'SSH ainda não está implementado (próximas PRs). Conectaria em:',
-    en: 'SSH not implemented yet (next PRs). Would connect to:'
-  },
-  'server.statusConnecting': { pt: 'Conectando…', en: 'Connecting…' },
-  'server.statusOk': { pt: 'SSH OK — host respondeu:', en: 'SSH OK — host replied:' },
-  'server.probing': { pt: 'probando…', en: 'probing…' },
-  'server.pathHelpRemote': {
-    pt: '{n} pastas detectadas no host — sugestões reais nas opções abaixo.',
-    en: '{n} folders detected on host — real suggestions in the options below.'
-  },
-  'server.pathExists': { pt: 'existe', en: 'exists' },
-  'server.pathCreateAsk': { pt: 'não existe — criar?', en: "doesn't exist — create?" },
-  'server.pathCreating': { pt: 'criando…', en: 'creating…' },
-  'server.stepSsh': { pt: 'Conectando via SSH', en: 'Connecting via SSH' },
-  'server.stepDetect': { pt: 'Verificando decky-server no host', en: 'Checking decky-server on host' },
-  'server.errSsh': { pt: 'Falha no SSH', en: 'SSH failed' },
-  'server.errDetect': { pt: 'Falha ao verificar decky-server', en: 'Failed to check decky-server' },
-  'server.detectInstalled': { pt: 'decky-server instalado', en: 'decky-server installed' },
-  'server.detectMissing': {
-    pt: 'decky-server não instalado',
-    en: 'decky-server not installed'
-  },
-  'server.installNeeded': {
-    pt: 'Precisa instalar o decky-server no host. Clique pra iniciar.',
-    en: 'decky-server needs to be installed on the host. Click to start.'
-  },
-  'server.ready': {
-    pt: 'decky-server pronto. Vamos abrir o workspace.',
-    en: 'decky-server ready. Opening workspace.'
-  },
-  'server.btnInstall': { pt: 'Instalar decky-server', en: 'Install decky-server' },
-  'server.btnOpen': { pt: 'Abrir workspace', en: 'Open workspace' },
-  'server.btnAddServer': { pt: 'Adicionar server', en: 'Add server' },
-  'addFolder.engineTitle': { pt: 'Adicionar pasta', en: 'Add folder' },
-  'addFolder.engineSubtitle': {
-    pt: 'De qual máquina é a pasta?',
-    en: 'Which machine is the folder on?'
-  },
-  'addFolder.localDetail': { pt: 'Esta máquina', en: 'This machine' },
-  'addFolder.remoteTitle': { pt: 'Escolher pasta em {host}', en: 'Choose folder on {host}' },
-  'addFolder.remoteSubtitleList': {
-    pt: '{n} pastas detectadas em ~. Escolha uma, ou clique em "Outra pasta…".',
-    en: '{n} folders detected in ~. Pick one, or click "Other path…".'
-  },
-  'addFolder.remoteSubtitleCustom': {
-    pt: 'Digite o caminho. Pasta será verificada; se não existir, dá pra criar.',
-    en: 'Type the path. It will be checked; if missing, you can create it.'
-  },
-  'addFolder.otherPath': { pt: 'Outra pasta…', en: 'Other path…' },
-  'addFolder.backToList': { pt: 'voltar pra lista', en: 'back to list' },
-  'addFolder.noFoldersDetected': {
-    pt: 'Nenhuma pasta detectada em ~. Use "Outra pasta…" pra digitar o caminho.',
-    en: 'No folders detected in ~. Use "Other path…" to type the path.'
-  },
-  'addFolder.useThisFolder': { pt: 'Usar esta pasta', en: 'Use this folder' },
-  'engineRemove.title': { pt: 'Remover server', en: 'Remove server' },
-  'engineRemove.subtitle': {
-    pt: 'Você está prestes a remover {label} da lista.',
-    en: 'You are about to remove {label} from the list.'
-  },
-  'engineRemove.disclaimer': {
-    pt: 'Os dados no host remoto NÃO são apagados. Só fechamos a conexão e tiramos da árvore.',
-    en: 'Data on the remote host is NOT deleted. We only close the connection and remove it from the tree.'
-  },
-  'engineRemove.workspacesAffected': {
-    pt: '{n} workspaces vão sumir da sidebar:',
-    en: '{n} workspaces will disappear from the sidebar:'
-  },
-  'engineRemove.confirm': { pt: 'Remover', en: 'Remove' },
-  'engineRemove.btnTitle': { pt: 'Remover server', en: 'Remove server' },
-  'server.stepNodeCheck': { pt: 'Verificando Node.js no host', en: 'Checking Node.js on host' },
-  'server.stepMkdir': { pt: 'Criando ~/.decky-server', en: 'Creating ~/.decky-server' },
-  'server.stepUpload': { pt: 'Enviando bundle (~80 KB)', en: 'Uploading bundle (~80 KB)' },
-  'server.stepWritePkg': { pt: 'Escrevendo package.json', en: 'Writing package.json' },
-  'server.stepNpm': {
-    pt: 'npm install (pode demorar no RP4)',
-    en: 'npm install (can be slow on RP4)'
-  },
-  'server.errInstall': { pt: 'Falha ao instalar decky-server', en: 'Failed to install decky-server' },
-  'server.stepStart': { pt: 'Iniciando decky-server no host', en: 'Starting decky-server on host' },
-  'server.stepToken': { pt: 'Lendo token de auth', en: 'Reading auth token' },
-  'server.stepTunnel': { pt: 'Abrindo tunnel SSH', en: 'Opening SSH tunnel' },
-  'server.stepRelaunching': { pt: 'Reiniciando decky…', en: 'Restarting decky…' },
-  'server.errOpen': { pt: 'Falha ao abrir workspace remoto', en: 'Failed to open remote workspace' },
   'ws.saveForLater': { pt: 'salvar pra depois', en: 'save for later' },
   'ws.closeForReal': { pt: 'fechar mesmo', en: 'close anyway' },
   'ws.stashSection': { pt: 'Mais tarde', en: 'Stash' },
@@ -314,7 +206,10 @@ const messages = {
   'cmd.newWebTab': { pt: 'Nova aba de browser', en: 'New browser tab' },
   'cmd.webTabHint': { pt: 'abre um webview', en: 'opens a webview' },
   'cmd.googleSearch': { pt: 'Buscar no Google', en: 'Search Google' },
-  'cmd.googleSearchHint': { pt: 'abre nova aba com a busca', en: 'opens a new tab with the search' },
+  'cmd.googleSearchHint': {
+    pt: 'abre nova aba com a busca',
+    en: 'opens a new tab with the search'
+  },
   'cmd.googleSearchPrompt': {
     pt: 'digite a busca depois de //',
     en: 'type your query after //'

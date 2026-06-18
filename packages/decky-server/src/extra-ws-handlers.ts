@@ -7,9 +7,14 @@ import { searchCards } from './cards-search'
 import { approvePending, listAll, rejectPending, revokeDevice } from './devices'
 import { deleteCard, listCards, writeCard } from './cards-store'
 import { computeBacklinks, resolveWikilink } from './cards-wikilinks'
-import { readAiTitle, resolveClaudeBin } from './claude-bin'
-import { readBinaryFileBase64, readTextFile, writeBinaryFileBase64, writeTextFile } from './file-ops'
+import {
+  readBinaryFileBase64,
+  readTextFile,
+  writeBinaryFileBase64,
+  writeTextFile
+} from './file-ops'
 import { getSessionTitles } from './preview-state'
+import { listClaudeSessions, deleteClaudeSession, type ClaudeSessionInfo } from './claude-sessions'
 import type { DeckyWsServer } from './ws-server'
 
 // Handlers WS que antes viviam só em src/main (Electron). Migrados aqui pra que o decky-server
@@ -18,13 +23,6 @@ import type { DeckyWsServer } from './ws-server'
 //
 // Cada `register*` agrupa um domínio coerente. Tanto o standalone (bin/decky-server.ts) quanto
 // o shim Electron (src/main/index.ts) chamam as mesmas funções, garantindo paridade.
-
-export function registerClaudeWsHandlers(ws: DeckyWsServer): void {
-  ws.handle<void, string>('claude:get-bin', () => resolveClaudeBin())
-  ws.handle<{ cwd: string; uuid: string }, string | null>('claude:ai-title', (args) =>
-    readAiTitle(args?.cwd ?? '', args?.uuid ?? '')
-  )
-}
 
 export function registerCardsCoreWsHandlers(ws: DeckyWsServer): void {
   ws.handle<
@@ -42,15 +40,13 @@ export function registerCardsCoreWsHandlers(ws: DeckyWsServer): void {
 }
 
 export function registerCardsExtraWsHandlers(ws: DeckyWsServer): void {
-  ws.handle<{ workspace: string; query: string; limit?: number }, unknown>(
-    'cards:search',
-    (args) =>
-      searchCards(
-        workspaceCardsDir(args?.workspace ?? ''),
-        args?.query ?? '',
-        typeof args?.limit === 'number' ? args.limit : 20,
-        'html'
-      )
+  ws.handle<{ workspace: string; query: string; limit?: number }, unknown>('cards:search', (args) =>
+    searchCards(
+      workspaceCardsDir(args?.workspace ?? ''),
+      args?.query ?? '',
+      typeof args?.limit === 'number' ? args.limit : 20,
+      'html'
+    )
   )
   ws.handle<{ workspace: string; name: string }, string | null>('cards:resolve-wikilink', (args) =>
     resolveWikilink(workspaceCardsDir(args?.workspace ?? ''), args?.name ?? '')
@@ -72,6 +68,15 @@ export function registerCardMirrorWsHandlers(ws: DeckyWsServer): void {
 
 export function registerSessionsWsHandlers(ws: DeckyWsServer): void {
   ws.handle<void, Record<string, string>>('sessions:get-titles', () => getSessionTitles())
+  // Conversas do claude guardadas no disco pra este cwd — o renderer usa pra reconciliar o título
+  // das abas abertas (aiTitle) e pro picker de "sessões anteriores".
+  ws.handle<{ cwd: string }, ClaudeSessionInfo[]>('claudeSessions:list', (args) =>
+    listClaudeSessions(args?.cwd ?? '')
+  )
+  // Apaga DEFINITIVAMENTE o .jsonl da conversa (o "x" do picker de "sessões anteriores").
+  ws.handle<{ cwd: string; id: string }, void>('claudeSessions:delete', (args) =>
+    deleteClaudeSession(args?.cwd ?? '', args?.id ?? '')
+  )
 }
 
 // Info estático do host — usado pelo PWA pra mostrar contexto (que máquina, que home dir) e
@@ -152,8 +157,7 @@ export function registerFileWsHandlers(ws: DeckyWsServer): void {
   ws.handle<{ path: string; base64: string }, boolean>('file:write-binary-base64', (args) =>
     writeBinaryFileBase64(args?.path ?? '', args?.base64 ?? '')
   )
-  // Counterpart read. Assets binários (.png, .jpg, .woff) embutidos em cards de workspace
-  // remoto vêm por aqui — remote-card-fetcher detecta extensão binária e usa este handler.
+  // Counterpart read — assets binários (.png, .jpg, .woff) embutidos em cards via base64.
   ws.handle<{ path: string }, string | null>('file:read-binary-base64', (args) =>
     readBinaryFileBase64(args?.path ?? '')
   )

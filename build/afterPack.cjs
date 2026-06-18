@@ -65,4 +65,16 @@ exports.default = async function afterPack(context) {
   })
   chmodSync(out, 0o755)
   console.log(`[afterPack] bundled self-contained dky-mcp → ${out}`)
+
+  // decky e dky são zero-dep (só builtins + fetch global) — não precisam de bundle esbuild como
+  // o dky-mcp. Só precisam estar presentes e executáveis no bin/ unpacked, porque o shell da sessão
+  // os acha via PATH (DECKY_BIN_DIR). electron-builder costuma preservar o modo, mas cravar o bit de
+  // exec aqui é barato e evita um "permission denied" silencioso.
+  for (const name of ['decky', 'dky']) {
+    const p = path.join(baseDir, 'bin', name)
+    if (existsSync(p)) {
+      chmodSync(p, 0o755)
+      console.log(`[afterPack] chmod +x ${p}`)
+    }
+  }
 }

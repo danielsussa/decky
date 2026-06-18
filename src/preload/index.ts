@@ -2,63 +2,35 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 import type { PreviewSource } from '@decky/shared'
-import type { CliKind, DetectedCli, CliInstallHint } from '@decky/shared'
 import { DEFAULT_LOCALE, LOCALE_ARG_PREFIX, normalizeLocale, type Locale } from '@decky/shared'
-import { LOCAL_ENGINE_ID, type Engine } from '@decky/shared'
-import { wsInvoke, wsOn, wsSend, listEngines, upsertEngine, removeEngine } from './ws-client'
+import { LOCAL_ENGINE_ID } from '@decky/shared'
+import { wsInvoke, wsOn, wsSend } from './ws-client'
 
 const resolvedLocale: Locale = (() => {
   const arg = process.argv.find((a) => a.startsWith(LOCALE_ARG_PREFIX))
   return arg ? normalizeLocale(arg.slice(LOCALE_ARG_PREFIX.length)) : DEFAULT_LOCALE
 })()
 
-// Roteamento por engine. O renderer empurra os mapas (workspace cwd → engineId, session id →
-// engineId) via deck.engines.setRoutes sempre que a lista de workspaces/sessions muda. Tudo que
-// não estiver mapeado cai no 'local' (default seguro: legado e shell-global).
-const wsRoutes: Record<string, string> = {}
-const sessionRoutes: Record<string, string> = {}
-function engineForWorkspace(ws: string | null | undefined): string {
-  return (ws && wsRoutes[ws]) || LOCAL_ENGINE_ID
-}
-function engineForSession(id: string): string {
-  return sessionRoutes[id] || LOCAL_ENGINE_ID
-}
-// Atalho pros muitos handlers shell-global que vivem sempre no engine local.
+// Só existe o engine `local` — todas as chamadas (workspace, sessão, shell-global) roteiam pra
+// ele. As funções abaixo sobrevivem como identidade pra manter os call sites legíveis.
 const L = LOCAL_ENGINE_ID
+function engineForWorkspace(_ws?: string | null): string {
+  return L
+}
+function engineForSession(_id?: string): string {
+  return L
+}
 
-// --- pty fan-in (Bloco 2) ---------------------------------------------------------------------
-// pty.onData/onExit são registrados UMA vez (não por sessão), mas sessões remotas streamam o
-// terminal via broadcast WS do engine dono. Aqui agregamos: um Set de callbacks + assinatura
-// por engine remoto que faz dispatch (a msg já carrega o id da sessão; o renderer roteia por id).
-// O caminho local segue por ipcRenderer (webContents.send), inalterado.
 type PtyDataMsg = { id: string; data: string }
 type PtyExitMsg = { id: string; code: number }
-const ptyDataCbs = new Set<(m: PtyDataMsg) => void>()
-const ptyExitCbs = new Set<(m: PtyExitMsg) => void>()
-const ptySubscribedEngines = new Set<string>()
-function subscribeEnginePty(engineId: string): void {
-  if (engineId === L || ptySubscribedEngines.has(engineId)) return
-  ptySubscribedEngines.add(engineId)
-  wsOn<PtyDataMsg>(engineId, 'pty:data', (m) => ptyDataCbs.forEach((cb) => cb(m)))
-  wsOn<PtyExitMsg>(engineId, 'pty:exit', (m) => ptyExitCbs.forEach((cb) => cb(m)))
+type PtyClaudeMsg = { id: string; running: boolean; sessionId?: string }
+type ClaudeSessionInfo = {
+  id: string
+  title: string | null
+  gitBranch: string | null
+  lastPrompt: string | null
+  mtimeMs: number
 }
-// Assina os engines remotos já conhecidos no boot. Os adicionados em runtime são assinados em
-// deck.engines.add → subscribeEnginePty.
-for (const e of listEngines()) subscribeEnginePty(e.id)
-
-// preview:source-changed pode vir do preview-server de QUALQUER engine (local Electron OU
-// remoto standalone). reqIdToEngine lembra qual engine originou cada reqId pro ack
-// `preview:resolved` voltar pelo socket certo. Pequeno e expira na primeira ack.
-const reqIdToEngine = new Map<string, string>()
-
-// Reconexão automática: o main dispara doOpenRemote em background pra cada engine remoto no
-// boot e emite 'engines:updated' (no engine local) quando o tunnel volta vivo. Aqui escutamos
-// e fazemos upsertEngine, que troca a url+token cacheados e força reconexão da WS — sem isso,
-// o renderer continuaria tentando a porta morta de um tunnel anterior.
-wsOn<Engine>(L, 'engines:updated', (engine) => {
-  upsertEngine(engine)
-  subscribeEnginePty(engine.id)
-})
 
 const deckApi = {
   pty: {
@@ -67,7 +39,14 @@ const deckApi = {
     // por engineForSession(id); o renderer registra a rota da sessão ANTES do create.
     create: (
       id: string,
-      opts: { cwd?: string; cols: number; rows: number; shell?: string; command?: string[] }
+      opts: {
+        cwd?: string
+        cols: number
+        rows: number
+        shell?: string
+        command?: string[]
+        claudeSessionId?: string
+      }
     ): Promise<void> => {
       const eng = engineForSession(id)
       if (eng === L) return ipcRenderer.invoke('pty:create', { id, ...opts })
@@ -88,25 +67,22 @@ const deckApi = {
       if (eng === L) ipcRenderer.send('pty:kill', { id })
       else void wsSend(eng, 'pty:kill', { id })
     },
-    // Fan-in: local via ipcRenderer + cada engine remoto via subscribeEnginePty. O renderer
-    // roteia por id, então um único callback recebe data/exit de TODAS as sessões.
     onData: (callback: (msg: PtyDataMsg) => void): (() => void) => {
       const listener = (_: unknown, msg: PtyDataMsg): void => callback(msg)
       ipcRenderer.on('pty:data', listener)
-      ptyDataCbs.add(callback)
-      return () => {
-        ipcRenderer.removeListener('pty:data', listener)
-        ptyDataCbs.delete(callback)
-      }
+      return () => ipcRenderer.removeListener('pty:data', listener)
     },
     onExit: (callback: (msg: PtyExitMsg) => void): (() => void) => {
       const listener = (_: unknown, msg: PtyExitMsg): void => callback(msg)
       ipcRenderer.on('pty:exit', listener)
-      ptyExitCbs.add(callback)
-      return () => {
-        ipcRenderer.removeListener('pty:exit', listener)
-        ptyExitCbs.delete(callback)
-      }
+      return () => ipcRenderer.removeListener('pty:exit', listener)
+    },
+    // claude virou (ou saiu de) foreground do PTY. Usado pra persistir "essa sessão tava com
+    // claude" + o id da conversa pra `claude --resume` no próximo boot.
+    onClaude: (callback: (msg: PtyClaudeMsg) => void): (() => void) => {
+      const listener = (_: unknown, msg: PtyClaudeMsg): void => callback(msg)
+      ipcRenderer.on('pty:claude', listener)
+      return () => ipcRenderer.removeListener('pty:claude', listener)
     }
   },
   preview: {
@@ -123,45 +99,16 @@ const deckApi = {
         source: PreviewSource
         reqId?: string
       }) => void
-    ): (() => void) => {
-      // Fan-in: previews podem chegar de QUALQUER engine (local + cada remoto rodando
-      // preview-server próprio). Pra cada engine conhecido + futuros (engines:updated), assina
-      // o broadcast. Cada reqId é mapeado pro engine de origem pra o ack `preview:resolved`
-      // voltar pra quem disparou (essencial pro POST /preview no engine certo desbloquear).
-      const wrap = (engineId: string) =>
-        (m: {
-          sessionId: string
-          cardId: string | null
-          source: PreviewSource
-          reqId?: string
-        }): void => {
-          if (m?.reqId) reqIdToEngine.set(m.reqId, engineId)
-          callback(m)
-        }
-      const unsubs: Array<() => void> = []
-      const subscribed = new Set<string>()
-      const subscribeOne = (id: string): void => {
-        if (subscribed.has(id)) return
-        subscribed.add(id)
-        unsubs.push(wsOn(id, 'preview:source-changed', wrap(id)))
-      }
-      for (const e of listEngines()) subscribeOne(e.id)
-      // Cobre engines adicionados em runtime (Add server, reconect via engines:updated).
-      const unsubEnginesUpdated = wsOn<Engine>(L, 'engines:updated', (engine) => {
-        subscribeOne(engine.id)
-      })
-      return () => {
-        for (const u of unsubs) u()
-        unsubEnginesUpdated()
-      }
-    },
-    // Ack a preview:source-changed broadcast: roteado pelo engine que originou esse reqId
-    // (cacheado em reqIdToEngine quando o broadcast chegou). Sem o lookup, ack de preview do
-    // engine remoto ia pro local — POST /preview no PI ficaria pendurado pra sempre.
+    ): (() => void) =>
+      wsOn<{
+        sessionId: string
+        cardId: string | null
+        source: PreviewSource
+        reqId?: string
+      }>(L, 'preview:source-changed', callback),
+    // Ack a preview:source-changed broadcast — desbloqueia o POST /preview que originou o reqId.
     resolved: (payload: { reqId: string; cardId: string; path?: string; title?: string }): void => {
-      const engineId = reqIdToEngine.get(payload.reqId) ?? L
-      reqIdToEngine.delete(payload.reqId)
-      void wsSend(engineId, 'preview:resolved', payload)
+      void wsSend(L, 'preview:resolved', payload)
     }
   },
   workspace: {
@@ -261,11 +208,6 @@ const deckApi = {
     onChanged: (callback: (msg: { path: string }) => void): (() => void) =>
       wsOn<{ path: string }>(L, 'file:changed', callback)
   },
-  claude: {
-    getBin: (): Promise<string> => wsInvoke(L, 'claude:get-bin'),
-    aiTitle: (cwd: string, uuid: string): Promise<string | null> =>
-      wsInvoke(engineForWorkspace(cwd), 'claude:ai-title', { cwd, uuid })
-  },
   git: {
     diffStats: (
       cwd: string
@@ -274,31 +216,23 @@ const deckApi = {
     diffText: (cwd: string): Promise<string> =>
       wsInvoke(engineForWorkspace(cwd), 'git:diff-text', { cwd })
   },
-  // Fase 2 — 1º domínio migrado pro WS. Os 10 handlers `cli:*` vão via wsInvoke; renderer não
-  // muda (mesma forma de Promise). Os ipcMain.handle('cli:*') no main continuam registrados
-  // mas viram redundantes — saem quando todos os domínios migrarem.
-  cli: {
-    list: (): Promise<DetectedCli[]> => wsInvoke(L, 'cli:list'),
-    recheck: (): Promise<DetectedCli[]> => wsInvoke(L, 'cli:recheck'),
-    installHints: (): Promise<CliInstallHint[]> => wsInvoke(L, 'cli:install-hints'),
-    getDefault: (): Promise<CliKind | null> => wsInvoke(L, 'cli:get-default'),
-    setDefault: (kind: CliKind): Promise<boolean> => wsInvoke(L, 'cli:set-default', { kind }),
-    isFirstRun: (): Promise<boolean> => wsInvoke(L, 'cli:is-first-run'),
-    markFirstRunDone: (): Promise<boolean> => wsInvoke(L, 'cli:mark-first-run-done'),
-    getPaths: (): Promise<Partial<Record<CliKind, string>>> => wsInvoke(L, 'cli:get-paths'),
-    setPath: (kind: CliKind, path: string | null): Promise<DetectedCli[]> =>
-      wsInvoke(L, 'cli:set-path', { kind, path }),
-    validatePath: (path: string): Promise<{ ok: boolean; error?: string; version?: string }> =>
-      wsInvoke(L, 'cli:validate-path', { path })
-  },
   sessions: {
     getTitles: (): Promise<Record<string, string>> => wsInvoke(L, 'sessions:get-titles'),
     onTitleChange: (callback: (msg: { id: string; title: string }) => void): (() => void) =>
       wsOn<{ id: string; title: string }>(L, 'session:title-changed', callback),
-    onAdd: (callback: (msg: { cwd: string; kind: 'claude' | 'shell' }) => void): (() => void) =>
-      wsOn<{ cwd: string; kind: 'claude' | 'shell' }>(L, 'session:add', callback),
-    onUuidConflict: (callback: (msg: { id: string }) => void): (() => void) =>
-      wsOn<{ id: string }>(L, 'session:uuid-conflict', callback)
+    onRunningChange: (callback: (msg: { id: string; cmd: string }) => void): (() => void) =>
+      wsOn<{ id: string; cmd: string }>(L, 'session:running-changed', callback),
+    onAdd: (callback: (msg: { cwd: string }) => void): (() => void) =>
+      wsOn<{ cwd: string }>(L, 'session:add', callback),
+    onWebTab: (callback: (msg: { title?: string }) => void): (() => void) =>
+      wsOn<{ title?: string }>(L, 'webtab:new', callback),
+    // Conversas do claude guardadas no disco pra este cwd (aiTitle/branch/mtime) — usado pra
+    // reconciliar o título das abas abertas + montar o picker de "sessões anteriores".
+    listClaude: (cwd: string): Promise<ClaudeSessionInfo[]> =>
+      wsInvoke(L, 'claudeSessions:list', { cwd }),
+    // Apaga DEFINITIVAMENTE a conversa do claude do disco (o "x" do picker de anteriores).
+    deleteClaude: (cwd: string, id: string): Promise<void> =>
+      wsInvoke(L, 'claudeSessions:delete', { cwd, id })
   },
   app: {
     locale: resolvedLocale,
@@ -325,16 +259,6 @@ const deckApi = {
       const listener = (): void => callback()
       ipcRenderer.on('menu:toggle-find', listener)
       return () => ipcRenderer.removeListener('menu:toggle-find', listener)
-    },
-    onMenuOpenCliSettings: (callback: () => void): (() => void) => {
-      const listener = (): void => callback()
-      ipcRenderer.on('menu:open-cli-settings', listener)
-      return () => ipcRenderer.removeListener('menu:open-cli-settings', listener)
-    },
-    onMenuAddServer: (callback: () => void): (() => void) => {
-      const listener = (): void => callback()
-      ipcRenderer.on('menu:add-server', listener)
-      return () => ipcRenderer.removeListener('menu:add-server', listener)
     },
     onMenuDevRebuild: (callback: () => void): (() => void) => {
       const listener = (): void => callback()
@@ -425,6 +349,14 @@ const deckApi = {
     reload: (cardId: string): void => ipcRenderer.send('web:reload', cardId),
     stop: (cardId: string): void => ipcRenderer.send('web:stop', cardId),
     openDevTools: (cardId: string): void => ipcRenderer.send('web:open-devtools', cardId),
+    // Push-based live reload (POST /cards/reload → main → here): a card whose source file is
+    // `path` should re-render. The HtmlPreview for that path calls web.reload(cardId). Decouples
+    // the reload from the fs watcher — the action that mutates the card drives the refresh.
+    onReload: (callback: (msg: { path: string }) => void): (() => void) => {
+      const listener = (_: unknown, msg: { path: string }): void => callback(msg)
+      ipcRenderer.on('card:reload', listener)
+      return () => ipcRenderer.removeListener('card:reload', listener)
+    },
     getState: (
       cardId: string
     ): Promise<{
@@ -510,93 +442,6 @@ const deckApi = {
       wsInvoke(L, 'history:get-workspace-meta', { cwd }),
     setWorkspaceIsolated: (cwd: string, isolated: boolean): Promise<boolean> =>
       wsInvoke(L, 'history:set-workspace-isolated', { cwd, isolated })
-  },
-  ssh: {
-    exec: (args: {
-      host: string
-      command: string
-      identity?: string
-      timeoutMs?: number
-    }): Promise<{
-      ok: boolean
-      exitCode: number | null
-      stdout: string
-      stderr: string
-      error?: string
-    }> => wsInvoke(L, 'ssh:exec', args),
-    installDeckyServer: (args: {
-      host: string
-      identity?: string
-    }): Promise<{ ok: boolean; error?: string }> =>
-      // npm install no RP4 pode demorar minutos — sobe pra 10min.
-      wsInvoke(L, 'ssh:install-decky-server', args, { timeoutMs: 10 * 60 * 1000 }),
-    openRemote: (args: {
-      host: string
-      identity?: string
-    }): Promise<{ ok: boolean; localUrl?: string; token?: string; error?: string }> =>
-      // start + wait token + tunnel ~5-15s, mas dá margem.
-      wsInvoke(L, 'ssh:open-remote', args, { timeoutMs: 60_000 }),
-    onInstallProgress: (
-      cb: (
-        ev:
-          | {
-              kind: 'step'
-              step: { id: string; state: 'pending' | 'running' | 'ok' | 'error'; detail?: string }
-            }
-          | { kind: 'log'; line: string }
-          | { kind: 'done'; ok: boolean; error?: string }
-      ) => void
-    ): (() => void) => wsOn(L, 'ssh:install-progress', cb)
-  },
-  // Multi-engine: lista/adiciona engines (local + servers). "Add server" chama add() em vez do
-  // antigo reopen-with-remote (que relançava e escondia o local). add() persiste o server no
-  // state do main, registra a conexão em runtime (sem relaunch) e devolve o engine pro renderer
-  // inserir na árvore. setRoutes empurra os mapas workspace/session → engineId pro roteamento.
-  engines: {
-    list: (): Engine[] => listEngines(),
-    add: async (cfg: {
-      label: string
-      url: string
-      token?: string
-      sshHost?: string
-      sshIdentity?: string
-    }): Promise<Engine> => {
-      const engine = await wsInvoke<Engine>(L, 'engines:add', cfg)
-      upsertEngine(engine)
-      subscribeEnginePty(engine.id)
-      return engine
-    },
-    remove: async (engineId: string): Promise<boolean> => {
-      // Avisa o backend (engines:remove no main persiste no state e desfaz a entrada).
-      const ok = await wsInvoke<boolean>(L, 'engines:remove', { engineId })
-      // Limpa a cache do preload — list() e wsInvoke(engineId,...) param de reconhecer o engine.
-      // Sem isso, App.tsx chamava engines.list() e ainda via o engine removido, então
-      // setEngines não mudava nada e a UI parecia "não remover".
-      removeEngine(engineId)
-      return ok
-    },
-    setRoutes: (routes: {
-      workspaces?: Record<string, string>
-      sessions?: Record<string, string>
-    }): void => {
-      if (routes.workspaces) {
-        for (const k of Object.keys(wsRoutes)) delete wsRoutes[k]
-        Object.assign(wsRoutes, routes.workspaces)
-      }
-      if (routes.sessions) {
-        for (const k of Object.keys(sessionRoutes)) delete sessionRoutes[k]
-        Object.assign(sessionRoutes, routes.sessions)
-      }
-    },
-    // Notifica o renderer quando um engine remoto reconecta (tunnel SSH novo + URL/token
-    // novos via reconnectAllRemoteEngines). O preload já chama upsertEngine internamente,
-    // mas o React precisa saber pra re-disparar effects que dependem de engines (ex: re-ler
-    // workspace.read dos workspaces remotos quando a conexão volta).
-    onUpdate: (callback: (engine: Engine) => void): (() => void) =>
-      wsOn<Engine>(L, 'engines:updated', callback),
-    // Síncrono — devolve engineId da sessão (default LOCAL). Usado por componentes que precisam
-    // distinguir comportamento local vs remoto sem fan-out (ex: paste de imagem no Terminal).
-    engineForSession: (id: string): string => engineForSession(id)
   },
   widget: {
     // Server forwards every widget:call here. The renderer dispatches into the widget registry

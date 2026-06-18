@@ -30,7 +30,7 @@ function readHeadFields(file: string): Pick<ClaudeSessionInfo, 'title' | 'gitBra
   let txt = ''
   try {
     const fd = openSync(file, 'r')
-    const buf = Buffer.alloc(131072) // 128KB
+    const buf = Buffer.alloc(262144) // 256KB — folga p/ mensagens com imagem inline (base64) no topo
     const n = readSync(fd, buf, 0, buf.length, 0)
     closeSync(fd)
     txt = buf.toString('utf8', 0, n)
@@ -46,7 +46,53 @@ function readHeadFields(file: string): Pick<ClaudeSessionInfo, 'title' | 'gitBra
       return m[1]
     }
   }
-  return { title: grab('aiTitle'), gitBranch: grab('gitBranch'), lastPrompt: grab('lastPrompt') }
+  return { title: grab('aiTitle'), gitBranch: grab('gitBranch'), lastPrompt: firstUserPrompt(txt) }
+}
+
+// 1º prompt de verdade do usuário — rótulo de fallback pras conversas SEM aiTitle no picker (em vez
+// do hash do id). O claude NÃO grava um campo "lastPrompt": o texto vive em records type:"user"
+// cujo message.content é string OU array de blocos {type:"text"}. Por isso não dá pra pegar por
+// regex simples como aiTitle — varre o head linha a linha. Pula meta/caveat (isMeta), records sem
+// bloco de texto (tool_result/image) e wrappers de slash-command (<command-name>…/<local-command-…>).
+function firstUserPrompt(txt: string): string | null {
+  for (const line of txt.split('\n')) {
+    const s = line.trim()
+    if (!s.startsWith('{')) continue
+    // Pré-filtro barato: só registros de mensagem do usuário, nunca os meta/caveat (a linha
+    // "[Image: source: …]" e a do caveat vêm com "isMeta":true).
+    if (!s.includes('"type":"user"') || s.includes('"isMeta":true')) continue
+    let text: string | null = null
+    try {
+      const content = (JSON.parse(s) as { message?: { content?: unknown } }).message?.content
+      if (typeof content === 'string') text = content
+      else if (Array.isArray(content)) {
+        for (const b of content) {
+          const blk = b as { type?: unknown; text?: unknown }
+          if (blk?.type === 'text' && typeof blk.text === 'string') {
+            text = blk.text
+            break
+          }
+        }
+      }
+    } catch {
+      // Linha gigante cortada pelo limite do head: mensagem com imagem inline em base64. O bloco de
+      // texto vem ANTES do de imagem no content, então o prefixo já o contém — extrai o 1º
+      // "text":"…" (form array) ou o "content":"…" (form string) por regex tolerante a truncação.
+      const m = /"text":"((?:[^"\\]|\\.)*)"/.exec(s) ?? /"content":"((?:[^"\\]|\\.)*)"/.exec(s)
+      if (m) {
+        try {
+          text = JSON.parse(`"${m[1]}"`) as string
+        } catch {
+          text = m[1]
+        }
+      }
+    }
+    if (!text) continue
+    const clean = text.replace(/\s+/g, ' ').trim()
+    if (!clean || clean.startsWith('<')) continue // wrapper de comando, não prompt humano
+    return clean.length > 100 ? clean.slice(0, 99) + '…' : clean
+  }
+  return null
 }
 
 /**

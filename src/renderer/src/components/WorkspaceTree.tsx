@@ -14,6 +14,8 @@ export interface PrevClaudeSession {
   id: string
   title: string | null
   gitBranch: string | null
+  /** 1º prompt do usuário — fallback de rótulo quando a conversa ainda não tem aiTitle. */
+  lastPrompt: string | null
   mtimeMs: number
 }
 
@@ -221,7 +223,9 @@ function PrevClaudeSessions({
               }}
             >
               <History size={10} className="wstree-stash-icon" />
-              <span className="wstree-stash-name">{c.title || c.id.slice(0, 8)}</span>
+              <span className="wstree-stash-name">
+                {c.title || c.lastPrompt || c.id.slice(0, 8)}
+              </span>
               <span className="wstree-stash-meta">
                 {relativeTime(c.mtimeMs)}
                 {c.gitBranch ? ` · ${c.gitBranch}` : ''}
@@ -233,7 +237,8 @@ function PrevClaudeSessions({
               title="apagar conversa definitivamente"
               onClick={(e) => {
                 e.stopPropagation()
-                if (confirm(`Apagar definitivamente "${c.title || c.id.slice(0, 8)}"?`)) {
+                const label = c.title || c.lastPrompt || c.id.slice(0, 8)
+                if (confirm(`Apagar definitivamente "${label}"?`)) {
                   onDelete(c.id)
                 }
               }}

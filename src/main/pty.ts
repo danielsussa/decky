@@ -11,7 +11,6 @@ import {
   type CreatePtyArgs,
   type DeckyWsServer
 } from '@decky/server'
-import { startSessionHandoffBackend, stopSessionHandoffBackend } from './handoff-backend'
 import { broadcastSessionTitle, broadcastSessionRunning } from './preview-server'
 
 // Re-exports usados por outros módulos do main (dev-rebuild, index.ts).
@@ -20,9 +19,7 @@ export { loginShellPath, killAllPtys }
 // IPC bridge — toda a lógica de PTY (multiplexer, recovery, env building) vive em
 // @decky/server/pty-manager. Aqui só:
 //   1. Injeta callbacks que adapter eventos do manager pra webContents.send (renderer).
-//   2. Liga onHandoffStart/Stop ao handoff-backend.ts (que ainda mora aqui porque depende
-//      de WebContents — vai pro server quando virar browser-manager).
-//   3. Registra os ipcMain.handle/on que delegam pros métodos puros do server.
+//   2. Registra os ipcMain.handle/on que delegam pros métodos puros do server.
 
 export function registerPtyHandlers(
   getWindow: () => BrowserWindow | null,
@@ -51,19 +48,6 @@ export function registerPtyHandlers(
     // sessionTitles): some quando o processo termina. Broadcast win + ws (web também renderiza abas).
     onRunning(id, cmd) {
       broadcastSessionRunning(getWindow, getWsServer, id, cmd)
-    },
-    onHandoffStart(id) {
-      if (process.env.DECKY_NO_HANDOFF) return
-      try {
-        startSessionHandoffBackend(id)
-      } catch (e) {
-        console.error(`[handoff] session=${id} failed to start backend:`, e)
-      }
-    },
-    onHandoffStop(id) {
-      void stopSessionHandoffBackend(id).catch((e) =>
-        console.error(`[handoff] session=${id} stop failed:`, e)
-      )
     }
   })
 

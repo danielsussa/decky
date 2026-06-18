@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Bug } from 'lucide-react'
 import { useWebViewVisible } from '../hooks/useWebViewVisible'
 import { t } from '../lib/i18n'
+import { userIsTyping } from '../lib/focus-guard'
 
 interface WebPreviewProps {
   // The DeckCard id this preview belongs to — also the key the main process uses to identify
@@ -101,9 +102,10 @@ export default function WebPreview({
   const lastTitleRef = useRef<string>('')
   const lastFaviconRef = useRef<string | null>(null)
 
-  // Empty url = "nova aba" → focus address bar for immediate typing.
+  // Empty url = "nova aba" → focus address bar for immediate typing (unless the user is already
+  // typing elsewhere, e.g. the terminal).
   useEffect(() => {
-    if (!url) inputRef.current?.focus()
+    if (!url && !userIsTyping()) inputRef.current?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

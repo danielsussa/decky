@@ -247,7 +247,12 @@ app
     // IPC test
     ipcMain.on('ping', () => console.log('pong'))
 
-    Menu.setApplicationMenu(buildMenu(() => mainWindow))
+    Menu.setApplicationMenu(
+      buildMenu(
+        () => mainWindow,
+        () => wsServer
+      )
+    )
 
     registerPtyHandlers(
       () => mainWindow,
@@ -350,9 +355,6 @@ app
       () => mainWindow,
       () => wsServer
     )
-    // O backend do handoff agora sobe POR SESSÃO em pty.ts (start no spawn / stop no exit),
-    // bound em /tmp/handoff-decky-<sessionId>.sock e escopado em cards da própria sessão.
-    // O HANDOFF_SOCKET do pty aponta clientes pra esse socket isolado. Sem chamada global aqui.
 
     ipcMain.handle('dialog:pick-folder', async () => {
       const opts: Electron.OpenDialogOptions = {

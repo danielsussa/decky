@@ -4,7 +4,6 @@ import { execSync, execFile } from 'node:child_process'
 import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { workspaceCardsDir } from '@decky/shared/node'
-import { sessionHandoffSocketPath } from './handoff-paths'
 import { claudeSessionFile, readLatestAiTitle } from './claude-sessions'
 
 // PTY multiplexer + lifecycle. Puro Node — sem Electron API. Eventos saem via callbacks
@@ -100,10 +99,6 @@ export interface PtyManagerEvents {
   onData?(id: string, data: string): void
   /** PTY morreu. */
   onExit?(id: string, code: number): void
-  /** Hook pra subir o handoff backend dessa sessão. */
-  onHandoffStart?(id: string): void
-  /** Hook pra derrubar o handoff backend (libera socket). */
-  onHandoffStop?(id: string): void
   /**
    * O foreground process do PTY entrou/saiu do `claude`. Usado pra persistir "essa sessão tava com
    * claude" e qual conversa resumir no próximo boot. Local-only (engines remotos caem fora).
@@ -332,9 +327,15 @@ function pollProcesses(): void {
 
     if (proc !== prev) {
       lastProc.set(id, proc)
-      // Algo (potencial claude) acabou de virar foreground vindo do shell → marca o instante, pra
-      // capturar a conversa que ELE cria (.jsonl nascido depois daqui), não a mais escrita de outra aba.
-      if (!isShellProc(base) && isShellProc(procBase(prev))) claudeStartAt.set(id, Date.now())
+      // CLAUDE acabou de virar foreground vindo do shell → marca o instante, pra capturar a conversa
+      // que ELE cria (.jsonl nascido depois daqui), não a mais escrita de outra aba. CRÍTICO: exige
+      // looksLikeClaude(base). Sem esse gate, QUALQUER comando (npm run dev, node, vite…) que vira
+      // foreground marcava claudeStartAt e deixava a aba "caçando" conversa (bloco abaixo) por todo o
+      // tempo que o comando rodasse; ao FECHAR outra sessão do mesmo cwd, a conversa liberada do
+      // `claimed` caía na janela de birthtime e a aba roubava o título (e o claudeSessionId) dela.
+      if (!isShellProc(base) && isShellProc(procBase(prev)) && looksLikeClaude(base)) {
+        claudeStartAt.set(id, Date.now())
+      }
       // claude em foreground (nome 'claude' ou a versão X.Y.Z) → flip imediato (responsivo p/ a
       // animação de borda).
       if (looksLikeClaude(base)) {
@@ -377,7 +378,11 @@ function pollProcesses(): void {
     // desta — conversa nascida após esse instante é dela. Abas resumidas (`claude --resume X`) não
     // criam .jsonl novo → resolve dá null (sem roubo). Um não-shell que não é claude idem.
     const since = claudeStartAt.get(id) ?? 0
-    if (!sidById.has(id) && since > 0 && !isShellProc(base)) {
+    // claudeOn.has(id) (não só `!isShellProc(base)`): só caça conversa enquanto o CLAUDE é o
+    // foreground desta aba. claudeOn persiste durante tool-calls (foreground flicka p/ node/git sem
+    // soltar o vínculo) e some no retorno ao shell — então captura de 1º prompt demorado e tool-calls
+    // seguem funcionando, mas um `npm run dev`/`node` solto nunca entra em modo de captura.
+    if (!sidById.has(id) && since > 0 && claudeOn.has(id)) {
       // claimed = sids já vinculados a QUALQUER outra aba viva (inclui as semeadas via --resume, que
       // têm sidById mas talvez não claudeStartAt) — varre sidById pra não deixar buraco.
       const claimed = new Set<string>()
@@ -481,10 +486,6 @@ function spawnPty(args: CreatePtyArgs): void {
         DECKY_URL: process.env.DECKY_URL || 'http://127.0.0.1:6790',
         // Where this workspace's shared card files live, so tools can Glob/Read them.
         DECKY_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir()),
-        // Socket DESTA sessão pro handoff CLI/SDK/MCP. O backend só dirige cards da própria
-        // sessão — sem isso, qualquer cliente caía no socket global e mexia em card de
-        // outra sessão/workspace. Bound pelo callback onHandoffStart abaixo.
-        HANDOFF_SOCKET: sessionHandoffSocketPath(args.id),
         // Histórico de shell isolado por aba (HISTFILE próprio + ZDOTDIR shim no zsh).
         ...historyEnv(args.id, file)
       }
@@ -509,8 +510,6 @@ function spawnPty(args: CreatePtyArgs): void {
   if (args.claudeSessionId) sidById.set(args.id, args.claudeSessionId)
   else sidById.delete(args.id)
   startProcPolling()
-  // Sobe o backend handoff scoped na sessão. Idempotente.
-  events.onHandoffStart?.(args.id)
 
   term.onData((data) => {
     events.onData?.(args.id, data)
@@ -524,8 +523,6 @@ function spawnPty(args: CreatePtyArgs): void {
     claudeStartAt.delete(args.id)
     claudeOn.delete(args.id)
     lastRunning.delete(args.id)
-    // Derruba o backend handoff dessa sessão (libera socket).
-    events.onHandoffStop?.(args.id)
     events.onExit?.(args.id, exitCode)
     settleDying(args.id) // unblock any create() waiting on this id to die
   })
@@ -548,8 +545,6 @@ export function killPty(id: string): void {
   const term = ptys.get(id)
   if (!term) return
   ptys.delete(id)
-  // Derruba backend handoff junto.
-  events.onHandoffStop?.(id)
   killGraceful(id, term)
 }
 

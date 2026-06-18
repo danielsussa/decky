@@ -1,8 +1,12 @@
 import { Menu, dialog, BrowserWindow, app, type MenuItemConstructorOptions } from 'electron'
 import { getDevInfo } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
+import { type DeckyWsServer } from '@decky/server'
 
-export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
+export function buildMenu(
+  getWindow: () => BrowserWindow | null,
+  getWsServer: () => DeckyWsServer | null
+): Menu {
   const isMac = process.platform === 'darwin'
   const devInfo = getDevInfo()
   const build = getBuildInfo()
@@ -21,7 +25,12 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
       buttonLabel: 'Open in decky'
     })
     if (!result.canceled && result.filePaths[0]) {
-      win.webContents.send('session:add', { cwd: result.filePaths[0], kind: 'claude' })
+      // The renderer subscribes to session:add over the WS broadcast (preload's wsOn), NOT over
+      // Electron IPC — so a bare webContents.send is dropped. Mirror the other emitters
+      // (index.ts/preview-server.ts) and broadcast over the WS server too.
+      const payload = { cwd: result.filePaths[0], kind: 'claude' as const }
+      win.webContents.send('session:add', payload)
+      getWsServer()?.broadcast('session:add', payload)
     }
   }
 

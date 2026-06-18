@@ -299,15 +299,27 @@ class WebViewsManager {
   reload(cardId: string): void {
     const s = this.views.get(cardId)
     if (!s) return
+    const wc = s.view.webContents
+    // Live-reload (arquivo do card muda no disco) recarrega a view enquanto o usuário pode estar
+    // digitando no terminal do renderer. Ao recarregar, o Chromium devolve o foco de OS pra view
+    // nativa — roubando o foco "do nada". Se a view NÃO estava com foco (caso do live-reload; o
+    // reload manual pelo address bar tem a view focada), devolvemos o foco ao renderer assim que o
+    // novo load assenta.
+    if (!wc.isFocused()) {
+      wc.once('did-stop-loading', () => {
+        const win = this.getWin()
+        if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.focus()
+      })
+    }
     // Reload em cima da página de erro recarregaria o próprio data: URL (no-op visual). O que
     // o usuário quer é tentar de novo a URL que falhou — re-disparamos a navegação real.
     if (s.failedUrl) {
       const url = s.failedUrl
       s.failedUrl = null
-      void s.view.webContents.loadURL(url).catch(() => {})
+      void wc.loadURL(url).catch(() => {})
       return
     }
-    s.view.webContents.reload()
+    wc.reload()
   }
 
   stop(cardId: string): void {

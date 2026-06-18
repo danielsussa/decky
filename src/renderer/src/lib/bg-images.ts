@@ -37,3 +37,14 @@ export function bgUrlFor(themeId: string, seed?: string | null): string | null {
   const idx = seed ? djb2(seed) % urls.length : 0
   return urls[idx]
 }
+
+// URL exata de uma imagem fixada (tema + índice), pro background pinado pelo usuário no
+// seletor de Tema. null se o slot não existe.
+export function bgUrlAt(themeId: string, idx: number): string | null {
+  return BY_THEME[themeId]?.[idx] ?? null
+}
+
+// Todas as imagens de um tema (ordenadas por índice), pro grid do seletor de Tema.
+export function bgImagesFor(themeId: string): string[] {
+  return BY_THEME[themeId] ?? []
+}

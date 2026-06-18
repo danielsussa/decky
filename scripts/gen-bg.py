@@ -39,10 +39,12 @@ STYLE_SUFFIX = (
 # diferente do vizinho. Mantém paleta + estilo coesos via STYLE_SUFFIX.
 SCENES: dict[str, list[str]] = {
     "abissal": [
-        # 0 — aprovado v1: baleia + coral em silhueta, deep navy
-        "Deep ocean abyss with a low-poly whale silhouette swimming past dark coral "
-        "structures in the middle distance. Subtle bioluminescent particles. Navy, "
-        "abyssal blue, dark teal palette.",
+        # 0 — sub iluminado, claro PORÉM teal/azul saturado (rev3: clarear sem lavar a cor)
+        "Sunlit underwater sea scene with a low-poly whale gliding through clear water, "
+        "diagonal sunbeams from above. Rich saturated turquoise and teal water graduating "
+        "to deeper blue at the edges. Brighter than a dark abyss but clearly an oceanic "
+        "teal-and-blue palette, vivid aqua and teal dominant. Not pale, not washed out, "
+        "no sandy cream, no white sky.",
         # 1 — coral reef colorido
         "Underwater coral reef colony, faceted brain corals and fan corals in bluish-"
         "purple and muted teal. A small school of glowing fish drifting through. "
@@ -110,24 +112,30 @@ SCENES: dict[str, list[str]] = {
         "Erupting volcano in the background with a glowing orange lava river winding "
         "toward the viewer through dark polygonal terrain. Smoke plume rising. Dramatic "
         "red-orange and obsidian black palette.",
-        # 1 — vulcão diurno, paleta clara (reescrito: era escuro demais)
-        "Daytime volcanic landscape: a gently smoking volcano under a wide pale sky, soft "
-        "warm ash slopes in dusty rose and light gray, a thin glowing amber lava trickle "
-        "as a small accent. Bright and airy, pale sky dominant, generous negative space, "
-        "high-key light palette, minimal dark areas.",
-        # 2 — campo vulcânico ensolarado, claro (reescrito)
-        "Sunlit volcanic field of pale pumice and warm beige ash dunes, a distant low "
-        "cone on the horizon under a bright hazy sky. Soft coral, sand and cream tones "
-        "with faint ember accents. High-key luminous palette, airy and minimal, lots of "
-        "negative space.",
+        # 1 — vulcão em erupção, claro PORÉM com lava forte (rev3: clarear sem perder o tema)
+        "Active volcano erupting in warm daylight, bright glowing orange-red lava flowing "
+        "down its slopes toward the viewer. Warm hazy amber sky brighter than night, lit "
+        "volcanic terrain in warm rust and ember tones. Vivid molten lava is the clear "
+        "focal point. Lighter and warmer than a dark night scene but unmistakably "
+        "volcanic — strong orange and red palette, glowing lava prominent. Not pale, not "
+        "a sandy desert.",
+        # 2 — planície com rios de lava, clara mas quente (rev3: clarear sem perder o tema)
+        "Volcanic plain criss-crossed by bright glowing orange lava rivers and molten "
+        "cracks, warm golden-hour light. Faceted warm rust and dark-terracotta rock "
+        "between channels of vivid incandescent lava. Warm amber sky glow above. Lighter "
+        "and warmer than a dark night scene, lava clearly the focal element. Rich orange, "
+        "red and ember palette. Not pale, not a sandy desert.",
         # 3 — tubo de lava (caverna)
         "Lava tube cave interior with a glowing magma channel running through. Faceted "
         "stalactites hanging from the roof. Enclosed scene, intense orange light "
         "against black rock.",
-        # 4 — terraços vulcânicos em luz quente, claro (reescrito: era basalto preto)
-        "Weathered volcanic terraces seen from a high angle in warm daylight, terracotta "
-        "and ochre faceted rock with thin soft-glowing amber seams between them. Bright "
-        "dusty palette, pale sky along the top, generous negative space, minimal black.",
+        # 4 — colunas de basalto com lava, clara mas avermelhada (rev3: clarear sem perder o tema)
+        "Field of faceted hexagonal basalt columns seen at an angle, bright incandescent "
+        "orange lava glowing in the cracks between them, warm reddish daylight. Rock in "
+        "warm terracotta, brick-red and rust tones, vivid molten lava seams running "
+        "across the frame as the focal element. Lighter and warmer than a dark night "
+        "scene but clearly volcanic, reddish-orange palette throughout. Not pale, not a "
+        "sandy desert, no blue sky.",
     ],
     "geleira": [
         # 0 — aprovado v1: icebergs em água espelho
@@ -137,10 +145,12 @@ SCENES: dict[str, list[str]] = {
         "Glacier cliff calving into the sea, a large ice slab mid-fall with geometric "
         "spray particles. Faceted blue ice wall behind. Dramatic motion in still "
         "composition.",
-        # 2 — geleira clara e luminosa (reescrito: era caverna deep cyan, escura)
-        "Bright glacier scene: pale faceted ice formations under a soft white-blue sky, "
-        "gentle pastel highlights of mint and powder blue, lots of luminous white and "
-        "negative space. High-key, airy, light icy palette.",
+        # 2 — campo de gelo, claro PORÉM azul gelo saturado (rev3: clarear sem lavar a cor)
+        "Open sunlit glacier field of faceted ice in clear icy blue and cyan under a "
+        "bright powder-blue sky, daylight. Vivid glacial blue and cyan tones across the "
+        "ice, cool blue shadows between the faceted blocks, crisp and luminous. Brighter "
+        "than a dark scene but clearly an icy-blue palette, saturated glacier blue "
+        "dominant. Not washed-out white, not pale pastel, no cave, no tunnel.",
         # 3 — cordilheira nevada sob aurora
         "Snowy mountain ridge under an aurora borealis, green and purple geometric "
         "sky ribbons above white faceted peaks. Cool night palette with vibrant "

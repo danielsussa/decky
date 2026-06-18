@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { t } from '../lib/i18n'
+import { userIsTyping } from '../lib/focus-guard'
 
 interface EditorPreviewProps {
   content: string
@@ -74,9 +75,10 @@ export default function EditorPreview({ content, path }: EditorPreviewProps): Re
     setBaseline(content)
   }
 
-  // Auto-focus on first mount so the user can start typing immediately.
+  // Auto-focus on first mount so the user can start typing immediately — but never steal focus
+  // from the terminal if the user is already typing there (this preview can mount on the side).
   useEffect(() => {
-    taRef.current?.focus()
+    if (!userIsTyping()) taRef.current?.focus()
   }, [])
 
   // Brief "salvo" flash that fades after 1.5s.

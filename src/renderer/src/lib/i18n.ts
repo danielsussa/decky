@@ -203,6 +203,13 @@ const messages = {
   'cmd.appearance': { pt: 'aparência', en: 'appearance' },
   'cmd.colorPrefix': { pt: 'Cor: ', en: 'Color: ' },
   'cmd.workspaceTheme': { pt: 'tema do workspace', en: 'workspace theme' },
+  'cmd.theme': { pt: 'Tema', en: 'Theme' },
+  'cmd.themeHint': { pt: 'escolher imagem de fundo', en: 'pick a background image' },
+  'themePicker.title': { pt: 'Tema do workspace', en: 'Workspace theme' },
+  'themePicker.sub': {
+    pt: 'escolha a imagem de fundo — o tema segue a cor dela',
+    en: 'pick a background image — the theme follows its color'
+  },
   'cmd.newWebTab': { pt: 'Nova aba de browser', en: 'New browser tab' },
   'cmd.webTabHint': { pt: 'abre um webview', en: 'opens a webview' },
   'cmd.googleSearch': { pt: 'Buscar no Google', en: 'Search Google' },

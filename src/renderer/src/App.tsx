@@ -14,7 +14,8 @@ import PagesPanel, { type WorkspacePage } from './components/PagesPanel'
 import { OverlayActiveProvider, SessionVisibleProvider } from './web-visibility'
 import type { PreviewSource } from '@decky/shared'
 import { KNOWN_WIDGET_TYPES } from '@decky/shared'
-import { bgUrlFor } from './lib/bg-images'
+import { bgUrlFor, bgUrlAt } from './lib/bg-images'
+import ThemePicker from './components/ThemePicker'
 import { t } from './lib/i18n'
 import {
   applyTheme,
@@ -563,6 +564,14 @@ function App(): React.JSX.Element {
   // otherwise an empty-default ensure-assigned could fire & clobber the persisted map before
   // the read resolves.
   const [themesHydrated, setThemesHydrated] = useState(false)
+  // Imagem de fundo FIXADA por workspace (tema + índice), escolhida no seletor de Tema (Cmd+P →
+  // Tema). Quando presente, sobrepõe a imagem sorteada por hash e o tema do workspace passa a ser
+  // o `theme` dela. Persistido em ~/.decky/state.json sob 'workspaceBgs'. bgsHydrated gateia o
+  // persist pra não clobberar o disco com {} antes do read resolver.
+  const [workspaceBgs, setWorkspaceBgs] = useState<Record<string, { theme: string; idx: number }>>(
+    {}
+  )
+  const [bgsHydrated, setBgsHydrated] = useState(false)
   // Per-workspace "default process" for brand-new sessions. A workspace ABSENT from this map has
   // no default yet → the "deixar o claude como default?" banner shows while claude runs. Once the
   // user decides, the entry is 'claude' (auto-`claude` on new sessions) or 'shell' (dismissed, no
@@ -640,6 +649,8 @@ function App(): React.JSX.Element {
   // "Find in cards" palette (Cmd/Ctrl+Shift+F) — full-text search of the workspace
   // card library at <workspace>/.decky/cards/.
   const [cardSearchOpen, setCardSearchOpen] = useState(false)
+  // Seletor de Tema (grid de imagens) aberto por Cmd+P → "Tema".
+  const [themePickerOpen, setThemePickerOpen] = useState(false)
   const [openPanels, setOpenPanels] = useState<PanelId[]>([])
   // Which sub-panel (terminal / sessions tree / cards preview) currently holds focus.
   // Drives a thin accent strip on top so the user knows which area their keys land in.
@@ -800,6 +811,12 @@ function App(): React.JSX.Element {
       if (m && typeof m === 'object') setWorkspaceThemes(m)
       setThemesHydrated(true)
     })
+    void window.deck.state
+      .get<Record<string, { theme: string; idx: number }>>('workspaceBgs')
+      .then((m) => {
+        if (m && typeof m === 'object') setWorkspaceBgs(m)
+        setBgsHydrated(true)
+      })
     void window.deck.state.get<Record<string, string>>('defaultCmdByWs').then((m) => {
       if (m && typeof m === 'object') setDefaultCmdByWs(m)
       setDefaultCmdHydrated(true)
@@ -1540,6 +1557,10 @@ function App(): React.JSX.Element {
     void window.deck.state.set('workspaceThemes', workspaceThemes)
   }, [workspaceThemes, themesHydrated])
   useEffect(() => {
+    if (!bgsHydrated) return
+    void window.deck.state.set('workspaceBgs', workspaceBgs)
+  }, [workspaceBgs, bgsHydrated])
+  useEffect(() => {
     if (!defaultCmdHydrated) return
     void window.deck.state.set('defaultCmdByWs', defaultCmdByWs)
   }, [defaultCmdByWs, defaultCmdHydrated])
@@ -1562,13 +1583,16 @@ function App(): React.JSX.Element {
   // collision-avoidance at registration); the mode (dark/light) is a global toggle. Both reapply
   // to :root; terminals tint themselves.
   useEffect(() => {
-    const th = themeFor(workspace)
+    // Imagem fixada no seletor de Tema (se houver) manda no tema E na imagem; senão cai no
+    // tema atribuído ao workspace + imagem sorteada por hash do path.
+    const pin = workspace ? workspaceBgs[workspace] : null
+    const th = (pin && THEMES.find((x) => x.id === pin.theme)) || themeFor(workspace)
     applyTheme(th, mode, document.documentElement, workspace)
     // Override --bg-image com a PNG bundlada local (assets/bg/<theme>/<n>.png). Fallback
     // pras URLs Unsplash do applyTheme se ainda não geramos imagem pro tema.
-    const localBg = bgUrlFor(th.id, workspace)
+    const localBg = pin ? bgUrlAt(pin.theme, pin.idx) : bgUrlFor(th.id, workspace)
     if (localBg) document.documentElement.style.setProperty('--bg-image', `url("${localBg}")`)
-  }, [workspace, mode, themeFor])
+  }, [workspace, mode, themeFor, workspaceBgs])
 
   // Auto-expand the active workspace so its sessions show in the tree.
   useEffect(() => {
@@ -2712,7 +2736,6 @@ function App(): React.JSX.Element {
     previewedNav
   }
 
-  const currentThemeId = workspace ? workspaceThemes[workspace] : null
   const paletteCommands: Command[] = [
     {
       id: 'theme:toggle-mode',
@@ -2721,12 +2744,14 @@ function App(): React.JSX.Element {
       run: toggleMode
     },
     ...(workspace
-      ? THEMES.filter((th) => th.id !== currentThemeId).map((th) => ({
-          id: `theme:color:${th.id}`,
-          label: `${t('cmd.colorPrefix')}${th.name}`,
-          hint: t('cmd.workspaceTheme'),
-          run: () => setWorkspaceThemes((prev) => ({ ...prev, [workspace]: th.id }))
-        }))
+      ? [
+          {
+            id: 'theme:open-picker',
+            label: t('cmd.theme'),
+            hint: t('cmd.themeHint'),
+            run: () => setThemePickerOpen(true)
+          }
+        ]
       : []),
     // Only when THIS workspace already has a default process chosen — removing it drops the entry
     // from the map, so the "deixar o claude como default?" banner can prompt again.
@@ -2776,7 +2801,7 @@ function App(): React.JSX.Element {
   // Overlays that cover the canvas area force every web card's native overlay to hide
   // (a WebContentsView paints above the React shell, so without this it would obscure the
   // command palette). Keep this short and additive — anything truly overlay-shaped goes here.
-  const overlayActive = paletteOpen || cardSearchOpen
+  const overlayActive = paletteOpen || cardSearchOpen || themePickerOpen
 
   return (
     <OverlayActiveProvider active={overlayActive}>
@@ -2963,6 +2988,18 @@ function App(): React.JSX.Element {
             commands={paletteCommands}
             onWebSearch={openGoogleSearch}
             onClose={() => setPaletteOpen(false)}
+          />
+        )}
+        {themePickerOpen && workspace && (
+          <ThemePicker
+            current={workspaceBgs[workspace] ?? null}
+            onPick={(theme, idx) => {
+              // Fixa a imagem E faz o tema do workspace seguir a cor dela (todo o app —
+              // árvore, terminais — lê o tema de workspaceThemes).
+              setWorkspaceBgs((prev) => ({ ...prev, [workspace]: { theme, idx } }))
+              setWorkspaceThemes((prev) => ({ ...prev, [workspace]: theme }))
+            }}
+            onClose={() => setThemePickerOpen(false)}
           />
         )}
         {cardSearchOpen && workspace && (

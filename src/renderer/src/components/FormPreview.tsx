@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormField, FormSpec } from '@decky/shared'
 import { t } from '../lib/i18n'
+import { userIsTyping } from '../lib/focus-guard'
 
 interface FormPreviewProps {
   spec: FormSpec
@@ -81,9 +82,10 @@ export default function FormPreview({ spec }: FormPreviewProps): React.JSX.Eleme
   const [errMsg, setErrMsg] = useState<string | null>(null)
   const firstInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
 
-  // Autofocus first writable field.
+  // Autofocus first writable field — unless the user is mid-keystroke in the terminal (this
+  // form can mount/remount on the side while they type a prompt).
   useEffect(() => {
-    if (status === 'pending') firstInputRef.current?.focus()
+    if (status === 'pending' && !userIsTyping()) firstInputRef.current?.focus()
   }, [status])
 
   const setValue = (key: string, val: string | boolean): void => {

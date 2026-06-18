@@ -339,42 +339,89 @@ function spoofUserAgentData() {
   // host is dark, and decide for themselves what to render.
 })()
 
-// __meTracker — instrumentação de "página pronta" pro waitForSettled do handoff (conta fetch/XHR
-// em voo + marca última mutação de DOM). Lido pelo backend @handoff/runtime-electron. Roda no main
-// world (contextIsolation off) pra enxergar fetch/XHR reais.
-// ⚠️ DUP: sincronizado com TRACKER_SCRIPT de @handoff/runtime-electron (runtime/electron/src/tracker.ts).
+// __meTracker — instrumentação de "página pronta" pros facilitadores de navegação do decky
+// (settle/wait-request) e pro waitForSettled do handoff. Conta fetch/XHR em voo + marca última
+// mutação de DOM, e mantém um ring buffer (≤100) dos requests CONCLUÍDOS pra alimentar
+// `decky web wait-request`. Lido por src/main/web/facilitators.ts e pelo backend
+// @handoff/runtime-electron. Roda no main world (contextIsolation off) pra enxergar fetch/XHR reais.
+// ⚠️ DUP: sincronizado com TRACKER_SCRIPT de @handoff/runtime-electron (runtime/electron/src/tracker.ts);
+// o `requests` ring buffer é uma extensão aditiva do decky (handoff conta requests via CDP).
 ;(() => {
   if (window.__meTracker) return
   let inFlight = 0
   let lastMutation = Date.now()
+  // Ring buffer de requests concluídos: { url, method, status, startedAt, finishedAt, failed }.
+  const requests = []
+  const pushReq = (rec) => {
+    requests.push(rec)
+    if (requests.length > 100) requests.shift()
+  }
+  // Resolve URL relativa contra a página (o wait-request casa por URL absoluta).
+  const absUrl = (u) => {
+    try {
+      return new URL(String(u), location.href).href
+    } catch {
+      return String(u)
+    }
+  }
   const origFetch = window.fetch ? window.fetch.bind(window) : null
   if (origFetch) {
     window.fetch = function (input, init) {
       if (init && init.keepalive) return origFetch(input, init)
       inFlight++
-      const done = () => {
-        inFlight--
+      const method = (init && init.method) || (input && input.method) || 'GET'
+      const url = typeof input === 'string' ? input : (input && input.url) || String(input)
+      const rec = {
+        url: absUrl(url),
+        method: String(method).toUpperCase(),
+        status: 0,
+        startedAt: Date.now(),
+        finishedAt: undefined,
+        failed: false
       }
+      pushReq(rec)
       return origFetch(input, init).then(
         (r) => {
-          done()
+          inFlight--
+          rec.status = r.status
+          rec.finishedAt = Date.now()
           return r
         },
         (e) => {
-          done()
+          inFlight--
+          rec.failed = true
+          rec.finishedAt = Date.now()
           throw e
         }
       )
     }
   }
   const XHR = XMLHttpRequest.prototype
+  const origOpen = XHR.open
+  XHR.open = function (method, url, ...rest) {
+    this.__meReq = { method: String(method || 'GET').toUpperCase(), url: absUrl(url || '') }
+    return origOpen.call(this, method, url, ...rest)
+  }
   const origSend = XHR.send
   XHR.send = function (...args) {
     if (!this.__meCounted) {
       this.__meCounted = true
       inFlight++
+      const rec = {
+        url: (this.__meReq && this.__meReq.url) || '',
+        method: (this.__meReq && this.__meReq.method) || 'GET',
+        status: 0,
+        startedAt: Date.now(),
+        finishedAt: undefined,
+        failed: false
+      }
+      pushReq(rec)
+      const xhr = this
       const dec = () => {
         inFlight--
+        rec.status = xhr.status
+        rec.finishedAt = Date.now()
+        rec.failed = xhr.status === 0
       }
       this.addEventListener('loadend', dec, { once: true })
     }
@@ -407,6 +454,10 @@ function spoofUserAgentData() {
     get lastMutation() {
       return lastMutation
     },
-    debug: () => ({ inFlight, lastMutation })
+    // Cópia rasa: o consumidor (main process) recebe um snapshot, não a referência viva.
+    get requests() {
+      return requests.slice()
+    },
+    debug: () => ({ inFlight, lastMutation, requests: requests.length })
   }
 })()

@@ -269,13 +269,21 @@ function randomSessionName(): string {
   return `${a}-${j}`
 }
 
-function defaultSession(cwd: string): Session {
+// withClaude seeds the session with claude as its foreground process (TerminalHost autoruns
+// `claude`) — used when the workspace's persisted default (defaultCmdByWs) is 'claude'.
+function defaultSession(cwd: string, withClaude = false): Session {
   return {
     id: `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     label: randomSessionName(),
     project: projectFromCwd(cwd),
-    cwd
+    cwd,
+    ...(withClaude ? { claude: true } : {})
   }
+}
+
+// The workspace's chosen default starts a new session in `claude` (vs a plain shell).
+function wantsClaudeDefault(map: Record<string, string>, cwd: string): boolean {
+  return map[cwd] === 'claude'
 }
 
 // Drop legacy claude-specific fields persistidos antes do refactor "terminal direto" — o disco
@@ -555,6 +563,13 @@ function App(): React.JSX.Element {
   // otherwise an empty-default ensure-assigned could fire & clobber the persisted map before
   // the read resolves.
   const [themesHydrated, setThemesHydrated] = useState(false)
+  // Per-workspace "default process" for brand-new sessions. A workspace ABSENT from this map has
+  // no default yet → the "deixar o claude como default?" banner shows while claude runs. Once the
+  // user decides, the entry is 'claude' (auto-`claude` on new sessions) or 'shell' (dismissed, no
+  // autostart). Persisted globally in state.json so it survives across boots and is readable for
+  // any workspace, active or not. Gated by defaultCmdHydrated to avoid clobbering on first paint.
+  const [defaultCmdByWs, setDefaultCmdByWs] = useState<Record<string, string>>({})
+  const [defaultCmdHydrated, setDefaultCmdHydrated] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeId, setActiveId] = useState<string | undefined>(undefined)
   // GLOBAL pool of sessions with a live pty (most-recent at the end), ACROSS workspaces — so
@@ -698,6 +713,7 @@ function App(): React.JSX.Element {
     titles,
     pinned,
     cardsByClaudeSession,
+    defaultCmdByWs,
     wsLoaded
   })
   stateRef.current = {
@@ -713,6 +729,7 @@ function App(): React.JSX.Element {
     titles,
     pinned,
     cardsByClaudeSession,
+    defaultCmdByWs,
     wsLoaded
   }
 
@@ -779,6 +796,10 @@ function App(): React.JSX.Element {
     void window.deck.state.get<Record<string, string>>('workspaceThemes').then((m) => {
       if (m && typeof m === 'object') setWorkspaceThemes(m)
       setThemesHydrated(true)
+    })
+    void window.deck.state.get<Record<string, string>>('defaultCmdByWs').then((m) => {
+      if (m && typeof m === 'object') setDefaultCmdByWs(m)
+      setDefaultCmdHydrated(true)
     })
     void window.deck.state.get<string>(LAST_WORKSPACE_KEY).then((ws) => {
       if (ws) setWorkspace(ws)
@@ -969,10 +990,10 @@ function App(): React.JSX.Element {
       setFocusedCardBySession((p) => ({ ...p, [aId]: id }))
     })
     const unsubNewSession = window.deck.app.onMenuNewSession(() => {
-      const { workspace: ws, startupCwd: scwd } = stateRef.current
+      const { workspace: ws, startupCwd: scwd, defaultCmdByWs: dmap } = stateRef.current
       const cwd = ws || scwd
       if (!cwd) return
-      const def = defaultSession(cwd)
+      const def = defaultSession(cwd, wantsClaudeDefault(dmap, cwd))
       setSessions((prev) => [...prev, def])
       setActiveId(def.id)
     })
@@ -1241,7 +1262,10 @@ function App(): React.JSX.Element {
           initial = pendingActiveRef.current
         }
         if (pendingNewRef.current) {
-          const def = defaultSession(workspace)
+          const def = defaultSession(
+            workspace,
+            wantsClaudeDefault(stateRef.current.defaultCmdByWs, workspace)
+          )
           sess = [...sess, def]
           initial = def.id
         }
@@ -1274,7 +1298,10 @@ function App(): React.JSX.Element {
         const claudeCtxRe = await rehydrateCardsByClaude(data.cardsByClaudeSession, workspace)
         if (!cancelled) setCardsByClaudeSession(claudeCtxRe)
       } else {
-        const def = defaultSession(workspace)
+        const def = defaultSession(
+          workspace,
+          wantsClaudeDefault(stateRef.current.defaultCmdByWs, workspace)
+        )
         pendingActiveRef.current = null
         pendingNewRef.current = false
         loadedWorkspaceRef.current = workspace
@@ -1499,6 +1526,10 @@ function App(): React.JSX.Element {
     if (!themesHydrated) return
     void window.deck.state.set('workspaceThemes', workspaceThemes)
   }, [workspaceThemes, themesHydrated])
+  useEffect(() => {
+    if (!defaultCmdHydrated) return
+    void window.deck.state.set('defaultCmdByWs', defaultCmdByWs)
+  }, [defaultCmdByWs, defaultCmdHydrated])
 
   // Resolve any path (active workspace OR a session's cwd) to its theme. Pure lookup against the
   // persisted assignment table; falls back to the hash when no assignment exists (e.g. a cwd
@@ -1537,14 +1568,24 @@ function App(): React.JSX.Element {
   useEffect(() => {
     for (const ws of workspaces) {
       if (ws === workspace) continue // active workspace uses live `sessions`
-      void window.deck.workspace
-        .read<WorkspaceState>(ws)
-        .then(async (data) => {
+      void Promise.all([
+        window.deck.workspace.read<WorkspaceState>(ws),
+        window.deck.sessions.listClaude(ws)
+      ])
+        .then(async ([data, claude]) => {
           const sess = data?.sessions ?? []
-          // Label: session_set_title persistido (titles) → fallback no random placeholder.
+          // aiTitle (auto-gerado pelo claude) das conversas deste workspace, keyado por sid. Espelha
+          // o aiTitleBySid do workspace ativo — sem isso a árvore só mostrava título explícito ou o
+          // placeholder aleatório pros WS não-focados.
+          const aiBySid: Record<string, string> = {}
+          for (const c of claude) if (c.title) aiBySid[c.id] = c.title
+          // Label: session_set_title persistido (titles) → aiTitle do claude → random placeholder.
           const list: TreeSession[] = sess.map((s) => ({
             id: s.id,
-            label: data?.titles?.[s.id] || s.label
+            label:
+              data?.titles?.[s.id] ||
+              (s.claudeSessionId ? aiBySid[s.claudeSessionId] : undefined) ||
+              s.label
           }))
           setWsSessionsCache((c) => {
             const prev = c[ws]
@@ -1673,10 +1714,10 @@ function App(): React.JSX.Element {
       if (openMod && !e.altKey && (e.key === 'n' || e.key === 'N')) {
         e.preventDefault()
         e.stopPropagation()
-        const { workspace: ws, startupCwd: scwd } = stateRef.current
+        const { workspace: ws, startupCwd: scwd, defaultCmdByWs: dmap } = stateRef.current
         const cwd = ws || scwd
         if (cwd) {
-          const def = defaultSession(cwd)
+          const def = defaultSession(cwd, wantsClaudeDefault(dmap, cwd))
           setSessions((prev) => [...prev, def])
           setActiveId(def.id)
         }
@@ -2154,7 +2195,7 @@ function App(): React.JSX.Element {
   const newSession = (): void => {
     const cwd = workspace || startupCwd
     if (!cwd) return
-    const def = defaultSession(cwd)
+    const def = defaultSession(cwd, wantsClaudeDefault(defaultCmdByWs, cwd))
     setSessions((prev) => [...prev, def])
     setActiveId(def.id)
   }
@@ -2671,6 +2712,23 @@ function App(): React.JSX.Element {
           run: () => setWorkspaceThemes((prev) => ({ ...prev, [workspace]: th.id }))
         }))
       : []),
+    // Only when THIS workspace already has a default process chosen — removing it drops the entry
+    // from the map, so the "deixar o claude como default?" banner can prompt again.
+    ...(workspace && workspace in defaultCmdByWs
+      ? [
+          {
+            id: 'ws:clear-default',
+            label: 'Remover processo default do workspace',
+            hint: `default atual: ${defaultCmdByWs[workspace]}`,
+            run: () =>
+              setDefaultCmdByWs((prev) => {
+                const next = { ...prev }
+                delete next[workspace]
+                return next
+              })
+          }
+        ]
+      : []),
     { id: 'web:new', label: t('cmd.newWebTab'), hint: t('cmd.webTabHint'), run: openWebTab },
     {
       id: 'tags:open',
@@ -2745,6 +2803,37 @@ function App(): React.JSX.Element {
                             nenhum card focado — clique numa tab pra dar contexto
                           </span>
                         )}
+                      </div>
+                    )
+                  })()}
+                  {(() => {
+                    // "Deixar o claude como default?" — só aparece quando ESTE workspace ainda não
+                    // tem default escolhido (ausente do mapa) E a sessão ativa está com o claude em
+                    // foreground. Decidir grava 'claude' (auto-abre claude em sessões novas) ou
+                    // 'shell' (dispensado, sem autostart) — em ambos o banner some pra sempre.
+                    const aS = sessions.find((s) => s.id === activeId)
+                    if (!workspace || !aS?.claude || workspace in defaultCmdByWs) return null
+                    const ws = workspace
+                    return (
+                      <div className="default-cmd-banner">
+                        <span className="default-cmd-banner-text">
+                          Deixar o <strong>claude</strong> como default deste workspace?
+                        </span>
+                        <button
+                          type="button"
+                          className="default-cmd-banner-btn"
+                          onClick={() => setDefaultCmdByWs((p) => ({ ...p, [ws]: 'claude' }))}
+                        >
+                          Sim, sempre abrir claude
+                        </button>
+                        <button
+                          type="button"
+                          className="default-cmd-banner-dismiss"
+                          title="agora não"
+                          onClick={() => setDefaultCmdByWs((p) => ({ ...p, [ws]: 'shell' }))}
+                        >
+                          ×
+                        </button>
                       </div>
                     )
                   })()}

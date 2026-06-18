@@ -500,26 +500,41 @@ app.on('window-all-closed', () => {
 // the debounced save (400ms) drops the tail and a just-created session is lost on quit.
 let didFlush = false
 app.on('before-quit', (e) => {
-  if (didFlush) return // second pass (after flush) — let the quit proceed
+  if (didFlush) return // já estamos no shutdown — não re-entra
   didFlush = true
-  killAllPtys()
+  // SEMPRE seguramos o quit e dirigimos o shutdown nós mesmos: 1) flush do workspace, 2) drena os
+  // ptys (espera o onExit pra liberar a ThreadSafeFunction do node-pty — ver killAllPtys), 3) só
+  // então app.exit(0). Sem o drain, o teardown do env Node roda com um callback do pty pendente e
+  // aborta (SIGABRT → "decky quit unexpectedly"). app.exit pula o teardown gracioso; o relaunch do
+  // dev-rebuild continua valendo (Electron: relaunch dispara em app.quit OU app.exit).
+  e.preventDefault()
+
   stopPreviewServer()
   // Best-effort close do WS server. Não bloqueia o quit — sessions WS fechadas pelo OS de qualquer jeito.
   void wsServer?.close().catch(() => {})
   wsServer = null
-  const win = mainWindow
-  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
-  e.preventDefault()
-  let settled = false
-  const finish = (): void => {
-    if (settled) return
-    settled = true
-    ipcMain.removeListener('app:flush-done', finish)
-    app.quit() // re-quit; didFlush is now true so this pass falls through
-  }
-  ipcMain.once('app:flush-done', finish)
-  win.webContents.send('app:flush')
-  setTimeout(finish, 1500) // safety: never hang quit if the renderer can't ack
+
+  const flushRenderer = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const win = mainWindow
+      if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return resolve()
+      let settled = false
+      const finish = (): void => {
+        if (settled) return
+        settled = true
+        ipcMain.removeListener('app:flush-done', finish)
+        resolve()
+      }
+      ipcMain.once('app:flush-done', finish)
+      win.webContents.send('app:flush')
+      setTimeout(finish, 1500) // safety: never hang quit if the renderer can't ack
+    })
+
+  void (async () => {
+    await flushRenderer()
+    await killAllPtys() // espera os ptys morrerem → TSFN liberada antes do exit
+    app.exit(0)
+  })()
 })
 
 process.on('SIGTERM', () => app.quit())

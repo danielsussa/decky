@@ -1948,7 +1948,7 @@ textarea.form-input {
   width: 100%;
   height: 100%;
   background: var(--bg-0);
-  padding: 8px 4px 12px 8px;
+  padding: 8px 4px 20px 8px;
   user-select: text;
 }
 
@@ -2005,6 +2005,66 @@ textarea.form-input {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+/* "Deixar o claude como default?" — prompt above the terminal, shown while a workspace has no
+   default process chosen and claude is running in the active session. */
+.default-cmd-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: rgba(138, 92, 246, 0.1);
+  border-bottom: 1px solid rgba(138, 92, 246, 0.4);
+  font-family: var(--mono);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.default-cmd-banner-text {
+  color: var(--text-2);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.default-cmd-banner-text strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+.default-cmd-banner-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(138, 92, 246, 0.15);
+  border: 1px solid rgba(138, 92, 246, 0.5);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.default-cmd-banner-btn:hover {
+  background: rgba(138, 92, 246, 0.28);
+}
+.default-cmd-banner-dismiss {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.default-cmd-banner-dismiss:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .terminal-host .xterm,

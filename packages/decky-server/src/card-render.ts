@@ -1828,6 +1828,223 @@ const TOC_JS =
 })();
 `
 
+// kpi — grid de indicadores. spec: { id, items: [{ value, label, delta? }] }. delta colorido por
+// sinal (começa com '-' ou '↓' = baixa/vermelho; senão alta/verde). Op setItems / getter items.
+const KPI_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('kpi', \`
+    .dk-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px; margin: 1em 0; }
+    .dk-kpi .cell { background: var(--bg-1); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px; }
+    .dk-kpi .num { font-size: 26px; font-weight: 800; color: var(--accent);
+      letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .dk-kpi .lab { font-size: 12px; color: var(--text-2); margin-top: 3px; }
+    .dk-kpi .delta { font-size: 12px; font-weight: 600; margin-top: 4px;
+      font-variant-numeric: tabular-nums; }
+    .dk-kpi .delta.up { color: #34d399; } .dk-kpi .delta.down { color: #fb7185; }
+  \`);
+  function render(el, spec) {
+    const items = Array.isArray(spec.items) ? spec.items : [];
+    const grid = document.createElement('div');
+    grid.className = 'dk-kpi';
+    for (const it of items) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      const num = document.createElement('div');
+      num.className = 'num';
+      num.textContent = it.value != null ? String(it.value) : '';
+      const lab = document.createElement('div');
+      lab.className = 'lab';
+      lab.textContent = it.label || '';
+      cell.appendChild(num); cell.appendChild(lab);
+      if (it.delta != null && it.delta !== '') {
+        const d = document.createElement('div');
+        const s = String(it.delta);
+        const down = /^[-↓]/.test(s.trim());
+        d.className = 'delta ' + (down ? 'down' : 'up');
+        d.textContent = s;
+        cell.appendChild(d);
+      }
+      grid.appendChild(cell);
+    }
+    el.replaceWith(grid);
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'kpi',
+        ops: { setItems: (a) => { spec.items = (a && a.items) || []; const n = grid.cloneNode(false);
+          grid.replaceWith(n); render(n, spec); return { ok: true }; } },
+        getters: { items: () => items }
+      });
+    }
+  }
+  function initAll() {
+    document.querySelectorAll('[data-decky-kpi]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      render(el, h.parseSpec(el));
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
+// callout — caixa de destaque. spec: { id, tone?: 'info'|'tip'|'warn'|'danger', title?, text }.
+const CALLOUT_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('callout', \`
+    .dk-callout { border-left: 3px solid var(--accent); background: var(--bg-1);
+      border-radius: 8px; padding: 12px 14px; margin: 1em 0; }
+    .dk-callout .ttl { font-weight: 650; margin-bottom: 4px; display: flex; gap: 7px; align-items: center; }
+    .dk-callout .ico { font-size: 14px; }
+    .dk-callout .body { color: var(--text-2); white-space: pre-wrap; }
+    .dk-callout.tip { border-left-color: #34d399; }
+    .dk-callout.warn { border-left-color: #fbbf24; }
+    .dk-callout.danger { border-left-color: #fb7185; }
+  \`);
+  const ICON = { info: 'ℹ️', tip: '💡', warn: '⚠️', danger: '🛑' };
+  function render(el, spec) {
+    const tone = ['info','tip','warn','danger'].includes(spec.tone) ? spec.tone : 'info';
+    const box = document.createElement('div');
+    box.className = 'dk-callout ' + tone;
+    if (spec.title) {
+      const t = document.createElement('div'); t.className = 'ttl';
+      const ic = document.createElement('span'); ic.className = 'ico'; ic.textContent = ICON[tone];
+      const tx = document.createElement('span'); tx.textContent = spec.title;
+      t.appendChild(ic); t.appendChild(tx); box.appendChild(t);
+    }
+    const body = document.createElement('div'); body.className = 'body';
+    body.textContent = spec.text || '';
+    box.appendChild(body);
+    el.replaceWith(box);
+  }
+  function initAll() {
+    document.querySelectorAll('[data-decky-callout]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      render(el, h.parseSpec(el));
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
+// table — tabela estilizada. spec: { id, headers: [string], rows: [[cell]], align?: ['left'|'right'] }.
+// Células que começam com '+' ficam verdes e '-' vermelhas (deltas). Op setRows / getter rows.
+const TABLE_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('table', \`
+    .dk-table { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 14px; }
+    .dk-table th, .dk-table td { text-align: left; padding: 9px 12px;
+      border-bottom: 1px solid var(--border); }
+    .dk-table th { color: var(--text-2); font-weight: 600; font-size: 12px;
+      text-transform: uppercase; letter-spacing: 0.06em; }
+    .dk-table td.r, .dk-table th.r { text-align: right; font-variant-numeric: tabular-nums; }
+    .dk-table tr:last-child td { border-bottom: none; }
+    .dk-table .pos { color: #34d399; } .dk-table .neg { color: #fb7185; }
+  \`);
+  function render(el, spec) {
+    const headers = Array.isArray(spec.headers) ? spec.headers : [];
+    const rows = Array.isArray(spec.rows) ? spec.rows : [];
+    const align = Array.isArray(spec.align) ? spec.align : [];
+    const cls = (i) => (align[i] === 'right' ? ' class="r"' : '');
+    const thead = headers.length
+      ? '<thead><tr>' + headers.map((hh, i) => '<th' + cls(i) + '>' + esc(hh) + '</th>').join('') + '</tr></thead>'
+      : '';
+    const tbody = '<tbody>' + rows.map((r) => '<tr>' + (Array.isArray(r) ? r : []).map((c, i) => {
+      const s = c == null ? '' : String(c);
+      const tone = /^\\+/.test(s.trim()) ? ' pos' : /^-/.test(s.trim()) ? ' neg' : '';
+      const a = align[i] === 'right' ? ' r' : '';
+      const klass = (tone || a) ? ' class="' + (a + tone).trim() + '"' : '';
+      return '<td' + klass + '>' + esc(s) + '</td>';
+    }).join('') + '</tr>').join('') + '</tbody>';
+    const tbl = document.createElement('table');
+    tbl.className = 'dk-table';
+    tbl.innerHTML = thead + tbody;
+    el.replaceWith(tbl);
+    if (spec.id && typeof window.__deckyRegisterWidget === 'function') {
+      window.__deckyRegisterWidget(spec.id, {
+        type: 'table',
+        ops: { setRows: (a) => { spec.rows = (a && a.rows) || []; const n = document.createElement('table');
+          tbl.replaceWith(n); render(n, spec); return { ok: true }; } },
+        getters: { rows: () => rows }
+      });
+    }
+  }
+  function esc(s) { return String(s).replace(/[<>&]/g, (c) => c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'); }
+  function initAll() {
+    document.querySelectorAll('[data-decky-table]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      render(el, h.parseSpec(el));
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
+// columns — layout multi-coluna. spec: { id, cols: ["md", "md", ...] }. Cada coluna renderiza
+// markdown (via marked); empilha em telas estreitas.
+const COLUMNS_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('columns', \`
+    .dk-columns { display: grid; gap: 18px; margin: 1em 0;
+      grid-template-columns: repeat(var(--n, 2), 1fr); }
+    @media (max-width: 640px) { .dk-columns { grid-template-columns: 1fr; } }
+    .dk-columns > div > :first-child { margin-top: 0; }
+  \`);
+  let markedP = null;
+  function loadMarked() { if (!markedP) markedP = import('${MARKED_URL}').then((m) => m.marked); return markedP; }
+  function render(el, spec) {
+    const cols = Array.isArray(spec.cols) ? spec.cols : [];
+    const row = document.createElement('div');
+    row.className = 'dk-columns';
+    row.style.setProperty('--n', String(Math.max(1, cols.length)));
+    const cells = cols.map((md) => { const d = document.createElement('div'); d.textContent = md || ''; row.appendChild(d); return { d, md: md || '' }; });
+    el.replaceWith(row);
+    loadMarked().then((marked) => { for (const c of cells) { try { c.d.innerHTML = marked.parse(c.md, { gfm: true }); } catch (e) {} } }).catch(() => {});
+  }
+  function initAll() {
+    document.querySelectorAll('[data-decky-columns]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      render(el, h.parseSpec(el));
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
+// divider — separador. spec: {} (sem campos).
+const DIVIDER_JS =
+  WIDGET_HELPERS_JS +
+  `
+(() => {
+  const h = window.__deckyHelpers;
+  h.injectOnce('divider', '.dk-divider { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }');
+  function initAll() {
+    document.querySelectorAll('[data-decky-divider]').forEach((el) => {
+      if (el.dataset.deckyInit) return; el.dataset.deckyInit = '1';
+      const hr = document.createElement('hr'); hr.className = 'dk-divider'; el.replaceWith(hr);
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAll);
+  else initAll();
+})();
+`
+
 // MCP widget bridge — opens a WS to the decky-server, listens for `widget:call` broadcasts,
 // dispatches to widgets registered via `window.__deckyRegisterWidget(widgetId, {type, ops, getters})`,
 // and sends back `widget:call-reply`. Only handles calls whose cardId matches THIS page's cardId
@@ -1953,6 +2170,11 @@ const VIRTUAL_ROUTES: Record<string, { body: string; mime: string }> = {
   '/__decky/widgets/bridge.js': { body: BRIDGE_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/title.js': { body: TITLE_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/text.js': { body: TEXT_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/kpi.js': { body: KPI_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/callout.js': { body: CALLOUT_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/table.js': { body: TABLE_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/columns.js': { body: COLUMNS_JS, mime: 'text/javascript; charset=utf-8' },
+  '/__decky/widgets/divider.js': { body: DIVIDER_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/toc.js': { body: TOC_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/flow.js': { body: FLOW_JS, mime: 'text/javascript; charset=utf-8' },
   '/__decky/widgets/checklist.js': {

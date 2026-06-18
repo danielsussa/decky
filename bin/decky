@@ -224,7 +224,9 @@ function sleep(ms) {
 // The bridge identifies a card by its card:// path minus extension (see card-protocol /
 // BRIDGE_JS deriveCardId). For a manifest at <cardsDir>/foo/bar.json that's "foo/bar".
 function bridgeCardId(absPath) {
-  return require('node:path').relative(cardsDir(), absPath).replace(/\.json$/i, '')
+  return require('node:path')
+    .relative(cardsDir(), absPath)
+    .replace(/\.json$/i, '')
 }
 
 // Fire-and-forget op on a live widget (POST /widget/invoke). Used by stream mode per keystroke —
@@ -470,7 +472,11 @@ async function cmdSet(args) {
 
   // text block: keep the one-h1 rule on updates too (using the merged md).
   if (w.type === 'text') {
-    const nextMd = hasMd ? flags.md : typeof update.md === 'string' ? update.md : w.spec && w.spec.md
+    const nextMd = hasMd
+      ? flags.md
+      : typeof update.md === 'string'
+        ? update.md
+        : w.spec && w.spec.md
     const err = validateTextMd(typeof nextMd === 'string' ? nextMd : '')
     if (err) die(err)
   }
@@ -482,7 +488,8 @@ async function cmdSet(args) {
   const keys = Object.keys(update)
   if (keys.length === 1 && keys[0] === 'text' && w.type === 'title') {
     // Live in-place via the bridge — no reload/flash.
-    if (flags.animate !== undefined) await animateSetText(cardId, widgetId, flags.text, Number(flags.animate) || 40)
+    if (flags.animate !== undefined)
+      await animateSetText(cardId, widgetId, flags.text, Number(flags.animate) || 40)
     else widgetInvokeAsync(cardId, widgetId, 'setText', { text: flags.text })
   } else if (keys.length === 1 && keys[0] === 'md' && w.type === 'text') {
     // Live in-place re-render of the markdown block via the bridge — no reload/flash.
@@ -512,7 +519,9 @@ async function cmdDelWidget(args) {
   writeManifest(target.path, target.manifest)
   await notifyReload(target.path)
   const removed = before - target.manifest.widgets.length
-  out(`removed ${removed} widget${removed === 1 ? '' : 's'} (${ids.join(', ')}) from ${target.path}`)
+  out(
+    `removed ${removed} widget${removed === 1 ? '' : 's'} (${ids.join(', ')}) from ${target.path}`
+  )
 }
 
 // Convenience one-liner: ensure a title on screen. Appends to the focused manifest, or creates a
@@ -583,7 +592,20 @@ const WIDGET_CATALOG = [
     'table of contents (auto)',
     '{ "title"?: "Conteúdo", "levels"?: [1,2,3], "sticky"?: false }  — auto-scans page headings (title widgets + text h1/h2/h3), clickable + scroll-spy; or pass "items": [{text,level,target}] explicit'
   ],
-  ['checklist', 'list w/ persistence', '{ "items": [{ "id": "a", "label": "...", "checked": false }] }'],
+  ['kpi', 'metric grid', '{ "items": [{ "value": "R$ 1,2M", "label": "ARR", "delta": "+18%" }] }'],
+  ['callout', 'highlight box', '{ "tone": "info|tip|warn|danger", "title": "...", "text": "..." }'],
+  [
+    'table',
+    'styled table',
+    '{ "headers": ["Item","Valor"], "rows": [["a","+10"],["b","-3"]], "align": ["left","right"] }'
+  ],
+  ['columns', 'multi-column markdown', '{ "cols": ["## A\\n…", "## B\\n…"] }'],
+  ['divider', 'horizontal rule', '{}'],
+  [
+    'checklist',
+    'list w/ persistence',
+    '{ "items": [{ "id": "a", "label": "...", "checked": false }] }'
+  ],
   [
     'matrix',
     'decision matrix',
@@ -602,7 +624,7 @@ const WIDGET_CATALOG = [
   ['mermaid', 'mermaid diagram', '{ "src": "graph TD; A-->B" }']
 ]
 function cmdWidgets() {
-  out('known widget types — add with: decky add-widget <type> [--id=NAME] \'<specJson>\'\n')
+  out("known widget types — add with: decky add-widget <type> [--id=NAME] '<specJson>'\n")
   const pad = Math.max(...WIDGET_CATALOG.map(([n]) => n.length))
   for (const [name, desc, spec] of WIDGET_CATALOG) {
     out(`  ${name.padEnd(pad)}  ${desc}`)
@@ -645,7 +667,9 @@ function cmdSync() {
   try {
     repo = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.decky', 'dev.json'), 'utf-8')).repo
   } catch {
-    die('~/.decky/dev.json not found — sync only works in a dev environment (with the repo configured).')
+    die(
+      '~/.decky/dev.json not found — sync only works in a dev environment (with the repo configured).'
+    )
   }
   if (!repo) die('dev.json has no "repo" field.')
   const synced = []
@@ -662,13 +686,330 @@ function cmdSync() {
   out('the next call uses the new version (the hook context re-injects only on a new session).')
 }
 
+// ---- web (browser control) ------------------------------------------------
+// `decky web <sub> …` drives the focused web card (or --card=<id>) via POST /web/act — the same
+// endpoint the browser_* MCP tools use. These are the navigation facilitators ported from handoff
+// (settle / wait / wait-until / wait-request / click-label) plus the basic verbs. Flags follow the
+// decky convention `--flag=value` (e.g. --card=<id>, --method=POST, --timeout=30000).
+
+async function webAct(body) {
+  // Strip undefined so the server gets a clean body.
+  const clean = {}
+  for (const [k, v] of Object.entries(body)) if (v !== undefined) clean[k] = v
+  return api('POST', '/web/act', clean)
+}
+
+// Read a credential from the macOS Keychain (service "decky", then "handoff"), else the env var.
+// Runs locally — the secret never crosses the server boundary. Mirrors src/main/web/secrets.ts.
+async function readSecret(name) {
+  const { execFile } = require('node:child_process')
+  const envKey = name.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  const fromKeychain = (service) =>
+    new Promise((resolve) => {
+      execFile(
+        'security',
+        ['find-generic-password', '-s', service, '-a', name, '-w'],
+        (err, stdout) => {
+          if (err) return resolve(null)
+          const v = String(stdout).replace(/\n$/, '')
+          resolve(v.length ? v : null)
+        }
+      )
+    })
+  for (const service of ['decky', 'handoff']) {
+    const v = await fromKeychain(service)
+    if (v != null) return v
+  }
+  if (process.env[envKey]) return process.env[envKey]
+  die(
+    `secret "${name}" not found. Store it with:\n` +
+      `  security add-generic-password -s decky -a ${name} -U -A -w\n` +
+      `(or set ${envKey} in the environment)`
+  )
+}
+
+function webUsage() {
+  out('decky web — drive the focused web card (or --card=<id>).\n')
+  out('usage:\n  decky web <sub> [args] [--card=<id>] [--json]\n')
+  out('subcommands:')
+  const rows = [
+    [
+      'navigate <url>',
+      'open/navigate a web card (settles by default; --no-settle; --resilient for anti-bot)'
+    ],
+    [
+      'captcha-wait',
+      'wait until a captcha/challenge in the card is solved (focuses decky on detect)'
+    ],
+    ['snapshot', 'list interactive elements (ref + stable sid + role + label)'],
+    ['read', 'extract url + title + visible text'],
+    ['click <ref|sid>', 'click an element by ref or stable id'],
+    ['click-label <regex>', 'click the element whose label matches (shortest wins; --strict)'],
+    ['type <ref|sid> <text>', 'type into an input/textarea/contenteditable'],
+    ['eval <js>', 'evaluate JS in the page, print the JSON result'],
+    ['wait [ms]', 'wait for the page to settle (network + DOM quiet); ms caps the wait'],
+    ['wait-until <expr>', 'poll a JS expression until truthy (--timeout=ms)'],
+    ['wait-request <pat>', 'wait for a network request matching pat (--method=POST, --timeout=ms)'],
+    ['diag', 'stealth fingerprint check (bot.sannysoft.com or --url=…)'],
+    ['replay [--last=N]', 'show the recorded state-changing actions for the card'],
+    ['secret get <name>', 'read a credential from the Keychain (service decky/handoff) or env'],
+    ['adapters', 'list the site-adapter verbs that match the active card URL'],
+    ['adapter <tool> [json]', 'run a site-adapter verb with optional JSON args']
+  ]
+  const pad = Math.max(...rows.map(([n]) => n.length))
+  for (const [n, d] of rows) out(`  ${n.padEnd(pad)}  ${d}`)
+}
+
+// Human-friendly rendering of a /web/act result (use --json for the raw object).
+function prettyWeb(sub, r) {
+  if (r == null) return '(no result)'
+  if (sub === 'snapshot' && Array.isArray(r.elements)) {
+    const lines = [
+      `${r.title || '(untitled)'} — ${r.url}`,
+      `${r.elements.length} interactive element(s):`
+    ]
+    for (const e of r.elements) {
+      const v = e.value ? ` = ${JSON.stringify(e.value)}` : ''
+      const t = e.type ? `[${e.type}]` : ''
+      lines.push(`  ${String(e.ref).padEnd(5)} ${e.sid}  ${e.role}${t}  ${e.name || ''}${v}`)
+    }
+    return lines.join('\n')
+  }
+  if (sub === 'read' && typeof r.text === 'string') {
+    return `${r.title || '(untitled)'} — ${r.url}\n\n${r.text}`
+  }
+  if (sub === 'navigate') {
+    if (r.ok === false && r.blocked) {
+      return `✗ blocked: ${r.blocked.descriptor} at ${r.url} (after ${r.attempts} attempts) — decky brought to front; solve it in the card`
+    }
+    const tags = []
+    if (r.created) tags.push('new card')
+    if (r.attempts) tags.push(`${r.attempts} attempt${r.attempts === 1 ? '' : 's'}`)
+    if (r.settled === false) tags.push('not settled')
+    return `→ ${r.url}${r.title ? `  (${r.title})` : ''}${tags.length ? `  [${tags.join(', ')}]` : ''}`
+  }
+  if (sub === 'captcha-wait') {
+    return r.hit ? `captcha cleared (was: ${r.descriptor})` : 'no captcha (page clean)'
+  }
+  if (sub === 'wait') {
+    return r.settled
+      ? `settled in ${r.elapsedMs}ms`
+      : `not fully settled (${r.elapsedMs}ms — noisy SPA?)`
+  }
+  if (sub === 'wait-until') return `condition met in ${r.elapsedMs}ms`
+  if (sub === 'wait-request') {
+    return `${r.method} ${r.url} → ${r.status}${r.failed ? ' (failed)' : ''} in ${r.durationMs}ms`
+  }
+  if (sub === 'click-label') return `clicked "${r.label}" (${r.ref})`
+  if (sub === 'diag' && Array.isArray(r.checks)) {
+    const lines = [
+      `source: ${r.source}`,
+      `url:    ${r.url}`,
+      `ua:     ${r.ua}`,
+      `totals: ${r.totals.passed} passed · ${r.totals.failed} failed · ${r.totals.unknown} unknown`,
+      ''
+    ]
+    const nameW = Math.max(8, ...r.checks.map((c) => c.name.length))
+    for (const c of r.checks) {
+      const mark = c.status === 'passed' ? '+' : c.status === 'failed' ? '-' : '?'
+      lines.push(`  ${mark}  ${c.name.padEnd(nameW)}  ${c.value}`)
+    }
+    return lines.join('\n')
+  }
+  if (sub === 'replay' && Array.isArray(r.events)) {
+    if (!r.events.length) return `no replay events for card ${r.cardId}`
+    const lines = [`replay — card ${r.cardId} (${r.events.length} event(s)):`]
+    for (const e of r.events) {
+      const when = new Date(e.ts).toISOString().slice(11, 19)
+      const status = e.ok ? 'ok ' : 'ERR'
+      const where = e.urlAfter && e.urlAfter !== e.urlBefore ? ` → ${e.urlAfter}` : ''
+      const detail = e.error ? `  ${e.error}` : ''
+      lines.push(`  ${when}  ${status}  ${e.cmd.padEnd(18)} ${e.durationMs}ms${where}${detail}`)
+    }
+    return lines.join('\n')
+  }
+  if (sub === 'adapters' && Array.isArray(r.tools)) {
+    if (!r.tools.length) return `no adapter verbs for ${r.url || '(no web card)'}`
+    const lines = [`adapter verbs for ${r.url}:`]
+    for (const t of r.tools) lines.push(`  ${t.name}  [${t.adapter}]  — ${t.description}`)
+    return lines.join('\n')
+  }
+  if (sub === 'adapter') {
+    return r.ok ? JSON.stringify(r.result, null, 2) : `error: ${r.error || 'unknown'}`
+  }
+  if (r.ok !== undefined) return r.ok ? 'ok' : `error: ${r.error || 'unknown'}`
+  return JSON.stringify(r, null, 2)
+}
+
+async function cmdWeb(args) {
+  requireSession()
+  const sub = args[0]
+  if (!sub || sub === 'help' || sub === '-h' || sub === '--help') return webUsage()
+  const { flags, pos } = parseFlags(args.slice(1))
+  const card = typeof flags.card === 'string' ? flags.card : undefined
+  const asJson = flags.json === true
+  const numFlag = (name) => (flags[name] !== undefined ? Number(flags[name]) : undefined)
+  const print = (r) => out(asJson ? JSON.stringify(r, null, 2) : prettyWeb(sub, r))
+
+  switch (sub) {
+    case 'navigate': {
+      const url = pos.join(' ').trim()
+      if (!url)
+        die(
+          'usage: decky web navigate <url> [--no-settle] [--resilient [--warm-up=<url>] [--retries=N]]'
+        )
+      if (flags.resilient === true) {
+        return print(
+          await webAct({
+            action: 'resilient-navigate',
+            url,
+            cardId: card,
+            warmUp: typeof flags['warm-up'] === 'string' ? flags['warm-up'] : undefined,
+            retries: numFlag('retries')
+          })
+        )
+      }
+      const settleOff = flags['no-settle'] === true
+      return print(
+        await webAct({
+          action: 'navigate',
+          url,
+          cardId: card,
+          settle: settleOff ? false : undefined
+        })
+      )
+    }
+    case 'captcha-wait':
+      return print(
+        await webAct({ action: 'captcha-wait', timeoutMs: numFlag('timeout'), cardId: card })
+      )
+    case 'snapshot':
+      return print(await webAct({ action: 'snapshot', cardId: card }))
+    case 'read':
+      return print(await webAct({ action: 'read', cardId: card }))
+    case 'click': {
+      const ref = pos[0]
+      if (!ref) die('usage: decky web click <ref|sid>')
+      return print(await webAct({ action: 'click', ref, cardId: card }))
+    }
+    case 'click-label': {
+      const label = pos.join(' ').trim()
+      if (!label) die('usage: decky web click-label <regex> [--strict] [--index=N]')
+      return print(
+        await webAct({
+          action: 'click-label',
+          label,
+          strict: flags.strict === true,
+          index: numFlag('index'),
+          cardId: card
+        })
+      )
+    }
+    case 'type': {
+      const ref = pos[0]
+      const text = pos.slice(1).join(' ')
+      if (!ref) die('usage: decky web type <ref|sid> <text>')
+      return print(await webAct({ action: 'type', ref, text, cardId: card }))
+    }
+    case 'eval': {
+      const code = pos.join(' ')
+      if (!code) die('usage: decky web eval <js>')
+      return print(await webAct({ action: 'eval', code, cardId: card }))
+    }
+    case 'wait': {
+      return print(
+        await webAct({
+          action: 'wait',
+          timeoutMs: pos[0] !== undefined ? Number(pos[0]) : undefined,
+          cardId: card
+        })
+      )
+    }
+    case 'wait-until': {
+      const expression = pos.join(' ').trim()
+      if (!expression) die('usage: decky web wait-until <jsExpression> [--timeout=ms]')
+      return print(
+        await webAct({
+          action: 'wait-until',
+          expression,
+          timeoutMs: numFlag('timeout'),
+          cardId: card
+        })
+      )
+    }
+    case 'wait-request': {
+      const pattern = pos[0]
+      if (!pattern) die('usage: decky web wait-request <urlPattern> [--method=POST] [--timeout=ms]')
+      return print(
+        await webAct({
+          action: 'wait-request',
+          pattern,
+          method: typeof flags.method === 'string' ? flags.method : undefined,
+          timeoutMs: numFlag('timeout'),
+          cardId: card
+        })
+      )
+    }
+    case 'diag': {
+      const url = typeof flags.url === 'string' ? flags.url : undefined
+      return print(
+        await webAct({ action: 'diag', url, timeoutMs: numFlag('settle'), cardId: card })
+      )
+    }
+    case 'replay': {
+      const qs = []
+      if (numFlag('last') !== undefined) qs.push(`last=${numFlag('last')}`)
+      if (card) qs.push(`cardId=${encodeURIComponent(card)}`)
+      const r = await api('GET', `/web/replay${qs.length ? `?${qs.join('&')}` : ''}`)
+      return print(r)
+    }
+    case 'secret': {
+      // Read the Keychain DIRECTLY here — the secret never crosses the server's HTTP boundary.
+      if (pos[0] !== 'get' || !pos[1]) die('usage: decky web secret get <name>')
+      return out(await readSecret(pos[1]))
+    }
+    case 'adapters': {
+      const r = await api('GET', '/web/adapters')
+      return print(r)
+    }
+    case 'adapter': {
+      const name = pos[0]
+      if (!name) die('usage: decky web adapter <tool> [argsJson]')
+      let parsed = {}
+      const argsArg = pos.slice(1).join(' ').trim()
+      if (argsArg) {
+        try {
+          parsed = JSON.parse(argsArg)
+        } catch (e) {
+          die(`invalid argsJson: ${e.message}`)
+        }
+      }
+      return print(await api('POST', '/web/adapters/run', { name, args: parsed, cardId: card }))
+    }
+    default:
+      die(`unknown web subcommand: ${sub}\nrun \`decky web help\`.`)
+  }
+}
+
 const COMMANDS = {
   help: { summary: 'list the commands', run: cmdHelp },
+  web: {
+    summary:
+      'drive the focused web card: decky web <navigate|snapshot|click|type|wait|…> (see: decky web help)',
+    run: cmdWeb
+  },
   'new-tab': { summary: 'open a new empty web tab, named: decky new-tab <title>', run: cmdNewTab },
-  'list-tabs': { summary: 'list the tabs open in the current session (web vs card)', run: cmdListTabs },
-  'new-card': { summary: 'create an empty card-manifest and open it (1 card, N widgets)', run: cmdNewCard },
+  'list-tabs': {
+    summary: 'list the tabs open in the current session (web vs card)',
+    run: cmdListTabs
+  },
+  'new-card': {
+    summary: 'create an empty card-manifest and open it (1 card, N widgets)',
+    run: cmdNewCard
+  },
   'add-widget': {
-    summary: 'add a widget to the focused card-manifest: decky add-widget <type> [--text] [--animate]',
+    summary:
+      'add a widget to the focused card-manifest: decky add-widget <type> [--text] [--animate]',
     run: cmdAddWidget
   },
   set: {
@@ -679,12 +1020,18 @@ const COMMANDS = {
     summary: 'remove widget(s) by id from the focused card-manifest: decky del-widget <id>...',
     run: cmdDelWidget
   },
-  title: { summary: 'one-liner title: decky title <text> [--animate] (creates a card if none focused)', run: cmdTitle },
+  title: {
+    summary: 'one-liner title: decky title <text> [--animate] (creates a card if none focused)',
+    run: cmdTitle
+  },
   widgets: { summary: 'list the known widget types + their spec shape', run: cmdWidgets },
   version: { summary: 'decky version', run: cmdVersion },
   session: { summary: 'show the current session context', run: cmdSession },
   ping: { summary: 'test the connection to the decky server', run: cmdPing },
-  sync: { summary: 'copy decky from the repo → DECKY_BIN_DIR (dev hot-reload, no rebuild)', run: cmdSync }
+  sync: {
+    summary: 'copy decky from the repo → DECKY_BIN_DIR (dev hot-reload, no rebuild)',
+    run: cmdSync
+  }
 }
 
 async function main() {

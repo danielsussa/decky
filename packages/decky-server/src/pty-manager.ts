@@ -197,14 +197,18 @@ function claudeProjectSlug(cwd: string): string {
 
 // A conversa que o claude DESTA aba criou: o .jsonl em ~/.claude/projects/<slug>/ cujo BIRTHTIME é
 // >= o instante em que o claude virou foreground (`sinceMs`, com folga de 3s). Um `claude` fresh
-// cria um .jsonl AGORA; já `claude --resume X` e as conversas de OUTRAS abas têm birthtime ANTIGO →
-// ficam de fora. Isso conserta o swap em que "mtime mais recente" pegava a conversa que estava sendo
-// MAIS escrita (a da aba ativa) em vez da desta aba. `exclude` = ids já reivindicados por outras abas
-// vivas (dedup). O basename sem extensão é o session id que `claude --resume` aceita.
+// cria um .jsonl quando o PRIMEIRO prompt é enviado — o que pode ser muitos segundos (ou minutos)
+// após o launch (tempo de ler/digitar) — então NÃO há teto fixo de tempo; o limite SUPERIOR é
+// `upperMs` = o instante em que a PRÓXIMA aba (mesmo cwd) lançou claude (conversa nascida depois
+// disso é dela, não desta). `claude --resume X` e conversas de OUTRAS abas têm birthtime fora do
+// intervalo → ficam de fora. Isso conserta o swap em que "mtime mais recente" pegava a conversa
+// mais escrita (a da aba ativa). `exclude` = ids já reivindicados por outras abas vivas (dedup). O
+// basename sem extensão é o session id que `claude --resume` aceita.
 function resolveClaudeSessionByBirth(
   cwd: string,
   sinceMs: number,
-  exclude?: Set<string>
+  exclude?: Set<string>,
+  upperMs = Infinity
 ): string | null {
   try {
     const dir = join(os.homedir(), '.claude', 'projects', claudeProjectSlug(cwd))
@@ -219,10 +223,11 @@ function resolveClaudeSessionByBirth(
       } catch {
         continue
       }
-      // JANELA: a conversa DESTA aba nasce perto do claudeStartAt. Fora de [-3s, +5s] não é dela —
-      // crucial pro limite SUPERIOR: sem ele, uma aba que resumiu conversa antiga (sem .jsonl novo)
-      // ficava elegível pra qualquer .jsonl nascido depois e ROUBAVA a conversa nova de outra aba.
-      if (born < sinceMs - 3000 || born > sinceMs + 5000) continue
+      // JANELA: a conversa DESTA aba nasce em [claudeStartAt-3s, upperMs). O limite inferior (-3s,
+      // folga de clock) descarta conversas anteriores ao launch (--resume, abas antigas). O superior
+      // (`upperMs`) é o launch da próxima aba do cwd, ou Infinity se ela é a última a ter subido
+      // claude — daí espera o .jsonl nascer por quanto tempo for (1º prompt demorado), sem orfanar.
+      if (born < sinceMs - 3000 || born >= upperMs) continue
       // Dentro da janela, pega o nascido MAIS PRÓXIMO do claudeStartAt (= a conversa DESTA aba). Pegar
       // "o mais novo" deixava uma aba roubar o .jsonl de OUTRA aba que iniciou claude poucos s depois.
       if (!best || Math.abs(born - sinceMs) < Math.abs(best.born - sinceMs)) best = { id: sid, born }
@@ -289,17 +294,27 @@ function pollProcesses(): void {
       }
     }
 
-    // Captura a conversa que ESTA aba criou, por BIRTHTIME, SÓ numa janela curta (≤7s) logo após o
-    // claude virar foreground (claudeStartAt). Fora da janela PARAMOS de tentar — essa era a falha:
-    // uma aba que resumiu conversa antiga (sem .jsonl novo) capturava pra sempre e ROUBAVA a conversa
-    // nova de OUTRA aba (nascida depois). Abas resumidas (`claude --resume X`) não criam .jsonl novo
-    // → não capturam nada na janela → mantêm o sid persistido (correto), sem roubar ninguém. Um
-    // não-shell que NÃO é claude também não cria .jsonl → resolve dá null (sem falso-positivo).
+    // Captura a conversa que ESTA aba criou, por BIRTHTIME, enquanto ela estiver SEM vínculo e com
+    // claude em foreground. NÃO há mais janela de 7s: o .jsonl nasce no 1º prompt (pode demorar), e
+    // o give-up orfanava pra sempre toda sessão cujo 1º prompt vinha depois disso ("sem nome"). O
+    // anti-swap agora é o `upperMs`: o launch da PRÓXIMA aba do mesmo cwd que subiu claude depois
+    // desta — conversa nascida após esse instante é dela. Abas resumidas (`claude --resume X`) não
+    // criam .jsonl novo → resolve dá null (sem roubo). Um não-shell que não é claude idem.
     const since = claudeStartAt.get(id) ?? 0
-    if (!sidById.has(id) && since > 0 && Date.now() - since <= 7000 && !isShellProc(base)) {
+    if (!sidById.has(id) && since > 0 && !isShellProc(base)) {
+      // claimed = sids já vinculados a QUALQUER outra aba viva (inclui as semeadas via --resume, que
+      // têm sidById mas talvez não claudeStartAt) — varre sidById pra não deixar buraco.
       const claimed = new Set<string>()
       for (const [otherId, sid] of sidById) if (otherId !== id) claimed.add(sid)
-      const sessionId = resolveClaudeSessionByBirth(cwd, since, claimed)
+      // upperMs = launch da próxima aba SEM vínculo no mesmo cwd que subiu claude depois de nós.
+      let upperMs = Infinity
+      for (const [otherId, otherStart] of claudeStartAt) {
+        if (otherId === id || sidById.has(otherId)) continue
+        if ((cwdById.get(otherId) ?? os.homedir()) === cwd && otherStart > since && otherStart < upperMs) {
+          upperMs = otherStart
+        }
+      }
+      const sessionId = resolveClaudeSessionByBirth(cwd, since, claimed, upperMs)
       if (sessionId) {
         sidById.set(id, sessionId)
         events.onClaude?.(id, { running: true, sessionId })
@@ -466,13 +481,37 @@ export function resizePty(id: string, cols: number, rows: number): void {
   }
 }
 
-export function killAllPtys(): void {
-  for (const term of ptys.values()) {
-    try {
-      term.kill('SIGTERM')
-    } catch {
-      // already dead
-    }
+// Mata TODOS os ptys e ESPERA cada onExit antes de resolver. Isso é o que evita o SIGABRT no quit:
+// o node-pty entrega data/exit por uma ThreadSafeFunction numa thread de leitura; se o env Node
+// começa o teardown (node::Environment::CleanupHandles) com um callback ainda pendente, o CallJS
+// dispara Napi::Error::ThrowAsJavaScriptException num env já morto → std::terminate → abort (o
+// diálogo "decky quit unexpectedly"). SIGKILL força EOF imediato no fd do pty; ao chegar o onExit a
+// TSFN já drenou e foi liberada, então é seguro sair. Timeout curto pra nunca travar o quit.
+export function killAllPtys(): Promise<void> {
+  const waits: Promise<void>[] = []
+  for (const [, term] of ptys) {
+    waits.push(
+      new Promise<void>((resolve) => {
+        let settled = false
+        const done = (): void => {
+          if (settled) return
+          settled = true
+          resolve()
+        }
+        try {
+          term.onExit(() => done())
+        } catch {
+          // sem onExit (já morto) — resolve no kill/timeout abaixo
+        }
+        try {
+          term.kill('SIGKILL')
+        } catch {
+          done() // já morto
+        }
+        setTimeout(done, 800) // não trava o quit se o EOF nunca vier
+      })
+    )
   }
   ptys.clear()
+  return Promise.all(waits).then(() => undefined)
 }

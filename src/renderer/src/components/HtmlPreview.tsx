@@ -51,6 +51,21 @@ export default function HtmlPreview({
     })
   }, [path, cardId])
 
+  // Incremental live patch: append/pop a widget without a full reload, so building a card up
+  // widget-by-widget doesn't flicker. Same path-match routing as onReload above.
+  useEffect(() => {
+    return window.deck.web.onPatch((msg) => {
+      if (msg.path !== path) return
+      window.deck.web.patchCard(cardId, {
+        op: msg.op,
+        type: msg.type,
+        id: msg.id,
+        spec: msg.spec,
+        n: msg.n
+      })
+    })
+  }, [path, cardId])
+
   if (error) {
     return (
       <div className="preview-empty">

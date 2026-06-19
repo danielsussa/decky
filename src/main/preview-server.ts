@@ -194,6 +194,8 @@ interface WebActBody {
   matchRecentMs?: number
   // navigate: settle after the load (default true).
   settle?: boolean
+  // navigate: force a brand-new web card instead of reusing the focused/only web card.
+  forceNew?: boolean
   // resilient-navigate (blockwall).
   warmUp?: string
   retries?: number
@@ -207,6 +209,12 @@ interface WebActBody {
 // Open a new web card by broadcasting a `web` preview source — the same path POST /preview uses.
 // The renderer creates + focuses the card and mounts its WebContentsView (which navigates to the
 // url). Returns the resolved cardId once the renderer acks.
+//
+// We mint an EXPLICIT fresh card id and pass it through, instead of null. With a null cardId the
+// renderer's onSourceChange falls back to the FOCUSED card and overwrites it — so "open a new web
+// card" would silently clobber whatever is focused (a markdown card, or an already-open web tab)
+// instead of spawning a new tab. An explicit id the session doesn't have yet forces a new tab,
+// exactly like the Cmd+click "open in new tab" path does.
 async function createWebCard(
   getWindow: () => BrowserWindow | null,
   getWsServer: () => DeckyWsServer | null,
@@ -214,10 +222,11 @@ async function createWebCard(
   url: string
 ): Promise<string> {
   const source: PreviewSource = { type: 'web', url }
+  const newId = `web-${Date.now().toString(36)}-${Math.floor(Math.random() * 1296).toString(36)}`
   const resolved = await parkPreviewAndAwait(
     (sId, cId, src, rId) => broadcastPreview(getWindow, getWsServer, sId, cId, src, rId),
     sessionId,
-    null,
+    newId,
     source
   )
   return resolved.cardId
@@ -292,11 +301,18 @@ async function runWebActionInner(
   // needs this to start a browsing flow from scratch; the other actions require an existing card.)
   if (body.action === 'navigate') {
     const url = normalizeWebUrl(String(body.url ?? ''))
+    // forceNew: open a fresh web card even when one is focused/open (multi-tab). `--card` is
+    // about driving a SPECIFIC card, so it's contradictory with forceNew → reject early.
+    if (body.forceNew && body.cardId) {
+      throw new Error('navigate: cannot combine forceNew with a cardId')
+    }
     let target: { cardId: string; wc: WebContents } | null = null
-    try {
-      target = resolveWebCard(sessionId, body.cardId)
-    } catch {
-      target = null
+    if (!body.forceNew) {
+      try {
+        target = resolveWebCard(sessionId, body.cardId)
+      } catch {
+        target = null
+      }
     }
     if (target) {
       // Caminho que dirige um card já aberto — sinaliza atividade pro tracker. Cria card
@@ -832,6 +848,38 @@ async function handleRequest(
       if (win && !win.isDestroyed()) win.webContents.send('card:reload', { path })
       getWsServer()?.broadcast('card:reload', { path })
       sendJson(res, 200, { ok: true, path })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
+    return
+  }
+
+  // POST /cards/patch { path, op, type?, id?, spec?, n? } — INCREMENTAL live patch (no full
+  // reload): op 'append' drops one widget into the open card(s) for `path`, op 'pop' removes the
+  // last n. Lets a card be built/torn down widget-by-widget WITHOUT the reload flicker. The manifest
+  // on disk remains the source of truth — a later full reload reconciles. The CLI falls back to
+  // /cards/reload if this fails, so it degrades cleanly on an older server.
+  if (req.method === 'POST' && url === '/cards/patch') {
+    try {
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as {
+        path?: unknown
+        op?: unknown
+        type?: unknown
+        id?: unknown
+        spec?: unknown
+        n?: unknown
+      }
+      const path = typeof body.path === 'string' ? body.path : ''
+      const op = body.op === 'append' || body.op === 'pop' ? body.op : ''
+      if (!path || !op) {
+        sendJson(res, 400, { error: 'path and op (append|pop) required' })
+        return
+      }
+      const msg = { path, op, type: body.type, id: body.id, spec: body.spec, n: body.n }
+      const win = getWindow()
+      if (win && !win.isDestroyed()) win.webContents.send('card:patch', msg)
+      sendJson(res, 200, { ok: true })
     } catch (err) {
       sendJson(res, 400, { error: (err as Error).message })
     }

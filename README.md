@@ -21,7 +21,7 @@ The terminal stays the source of truth; the panel is where the work becomes *vis
 - **Rich previews.** HTML, Markdown, diffs (per-file, color-gutter), JSON (collapsible tree), `.xlsx`, and arbitrary files — opened in the panel instead of dumped as text.
 - **Workspaces in one window.** The opposite of a window-per-folder editor: open many projects *inside* a single instance and switch between them in the left tree.
 - **Browser-style sessions.** Sessions are listed but only spawn a process when opened; an LRU cap keeps the heavy ones warm and suspends the rest. Reopening a session resumes the conversation (`--resume`) intact.
-- **An MCP server + `decky` CLI.** Claude gets preview tools (`preview_html`, `preview_show`, `preview_diff`, `preview_json`, …) via MCP, plus a `decky` command on its PATH to operate the app from inside a session.
+- **An MCP server + `decky` CLI.** Claude gets preview tools (`preview_show`, `preview_diff`, `preview_json`, …) via MCP, plus a `decky` command on its PATH that authors cards as manifests (`new-card` + `add-widget`) and operates the app from inside a session.
 
 ## What it looks like
 
@@ -41,13 +41,17 @@ The terminal stays the source of truth; the panel is where the work becomes *vis
 ## How it fits together
 
 ```
-┌─────────────────────────┬───────────────────────────┐
-│  Workspace tree          │                           │
-│   └ session (claude)     │      Preview panel        │
-│                          │   cards · diffs · html    │
-│  > terminal              │   json · files · web      │
-│                          │                           │
-└─────────────────────────┴───────────────────────────┘
+┌────────────────────────────┬─────────────────────────────┐
+│ WORKSPACES / SESSIONS      │ PREVIEW PANEL               │
+├────────────────────────────┼─────────────────────────────┤
+│                            │                             │
+│  v my-project              │   cards    diffs   html     │
+│     - claude   <- active   │   json     files   xlsx     │
+│  > another-repo            │   markdown         web      │
+│                            │                             │
+│  $ npm run dev ...         │   live-reloads on save      │
+│                            │                             │
+└────────────────────────────┴─────────────────────────────┘
 ```
 
 State is **hybrid**:

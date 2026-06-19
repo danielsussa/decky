@@ -3,7 +3,7 @@ import ResizableSplit from './components/ResizableSplit'
 import Preview from './components/Preview'
 import DeckGrid, { type DeckCard as DeckCardData } from './components/DeckGrid'
 import DeckTabs from './components/DeckTabs'
-import WorkspaceTree, { type TreeSession } from './components/WorkspaceTree'
+import WorkspaceTree, { type TreeSession, type WsActivityFilter } from './components/WorkspaceTree'
 import GitStats from './components/GitStats'
 import TerminalHost from './components/TerminalHost'
 import type { Session } from './types'
@@ -589,6 +589,13 @@ function App(): React.JSX.Element {
   // lists of NON-active workspaces (read lazily from their workspace.json).
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<string[]>([])
   const [wsSessionsCache, setWsSessionsCache] = useState<Record<string, TreeSession[]>>({})
+  // claudeSessionId → timestamp do último turn REAL (user/assistant) da conversa, lido do .jsonl.
+  // Recência durável por conversa (imune ao mtime ruidoso de resume). Fonte do filtro de abas, junto
+  // da atividade ao vivo. Preenchido de listClaude (workspace ativo + não-ativos), sem persistir.
+  const [lastTurnBySid, setLastTurnBySid] = useState<Record<string, number>>({})
+  // Filtro de recência das ABAS na árvore (tudo / ativas <1d / ativas <1h). A aba FOCADA nunca é
+  // escondida (não some o que você está olhando). Persistido em ~/.decky/state.json.
+  const [wsFilter, setWsFilter] = useState<WsActivityFilter>('all')
   // Cards are created on-demand by the session's bot (via preview_*); a session starts empty.
   const [cardsBySession, setCardsBySession] = useState<Record<string, string[]>>({})
   const [focusedCardBySession, setFocusedCardBySession] = useState<Record<string, string | null>>(
@@ -619,7 +626,14 @@ function App(): React.JSX.Element {
   // Lista completa das conversas do claude do workspace ativo (do disco) — fonte do picker
   // "sessões anteriores". Recarregada por workspace junto do aiTitleBySid.
   const [claudeSessions, setClaudeSessions] = useState<
-    { id: string; title: string | null; gitBranch: string | null; lastPrompt: string | null; mtimeMs: number }[]
+    {
+      id: string
+      title: string | null
+      gitBranch: string | null
+      lastPrompt: string | null
+      mtimeMs: number
+      lastTurnMs: number
+    }[]
   >([])
   const [wsLoaded, setWsLoaded] = useState(false)
   const [lastWorkspaceResolved, setLastWorkspaceResolved] = useState(false)
@@ -1283,6 +1297,18 @@ function App(): React.JSX.Element {
       if (cancelled) return
       if (data && Array.isArray(data.sessions) && data.sessions.length > 0) {
         let sess = migrateSessions(data.sessions)
+        // Guard contra "ghost resume": uma aba pode ter um claudeSessionId persistido cuja conversa
+        // não existe mais no disco (sid capturado errado, /clear, ou conversa apagada). O autorun
+        // faria `claude --resume <morto>` → "No conversation found" e a aba abre quebrada. Valida
+        // contra as conversas REAIS do cwd (listClaude já inclui sessões-pasta do claude 2.x) e solta
+        // o sid órfão → autorun cai pra `claude` limpo, e o vínculo determinístico re-resolve depois.
+        const known = new Set((await window.deck.sessions.listClaude(workspace)).map((c) => c.id))
+        if (cancelled) return
+        sess = sess.map((s) =>
+          s.claudeSessionId && !known.has(s.claudeSessionId)
+            ? { ...s, claudeSessionId: undefined }
+            : s
+        )
         const previews = await window.deck.preview.rehydrate(data.previews ?? {}, workspace)
         if (cancelled) return
         let initial =
@@ -1500,6 +1526,14 @@ function App(): React.JSX.Element {
     void window.deck.state.get<Mode>('themeMode').then((m) => {
       if (m === 'light' || m === 'dark') setMode(m)
     })
+    void window.deck.state.get<WsActivityFilter>('wsFilter').then((f) => {
+      if (f === 'all' || f === '1d' || f === '1h') setWsFilter(f)
+    })
+  }, [])
+
+  const changeWsFilter = useCallback((f: WsActivityFilter): void => {
+    setWsFilter(f)
+    void window.deck.state.set('wsFilter', f)
   }, [])
 
   const toggleMode = useCallback((): void => {
@@ -1616,13 +1650,20 @@ function App(): React.JSX.Element {
           // placeholder aleatório pros WS não-focados.
           const aiBySid: Record<string, string> = {}
           for (const c of claude) if (c.title) aiBySid[c.id] = c.title
+          // Recência durável (último turn real) das conversas deste WS, pro filtro de abas.
+          const turnDelta: Record<string, number> = {}
+          for (const c of claude) turnDelta[c.id] = c.lastTurnMs
+          if (Object.keys(turnDelta).length) {
+            setLastTurnBySid((prev) => ({ ...prev, ...turnDelta }))
+          }
           // Label: session_set_title persistido (titles) → aiTitle do claude → random placeholder.
           const list: TreeSession[] = sess.map((s) => ({
             id: s.id,
             label:
               data?.titles?.[s.id] ||
               (s.claudeSessionId ? aiBySid[s.claudeSessionId] : undefined) ||
-              s.label
+              s.label,
+            claudeSessionId: s.claudeSessionId
           }))
           setWsSessionsCache((c) => {
             const prev = c[ws]
@@ -1971,22 +2012,41 @@ function App(): React.JSX.Element {
     })
   }, [sessions, cardsBySession, focusedCardBySession, previewsByCard])
 
-  // Lê o aiTitle das conversas do claude deste workspace (uma vez por workspace) pra dar nome real
-  // às abas. Lê dos arquivos ~/.claude/projects/<slug>/*.jsonl via o server. Não persiste (display).
+  // Chave estável do conjunto de conversas ABERTAS (sids ordenados) — muda só quando uma aba abre,
+  // fecha ou (re)vincula seu claudeSessionId, não a cada repaint/atividade. Re-dispara o reload do
+  // claudeSessions abaixo pra o picker "sessões anteriores" refletir disco + abertas: fechar uma aba
+  // faz a conversa REAPARECER no picker (antes sumia: o snapshot só carregava na troca de workspace),
+  // e vincular o sid de uma aba a TIRA do picker (mata a duplicação aberta-também-listada).
+  const openSidsKey = sessions
+    .map((s) => s.claudeSessionId)
+    .filter(Boolean)
+    .sort()
+    .join(',')
+
+  // Lê o aiTitle das conversas do claude deste workspace pra dar nome real às abas, e alimenta o
+  // picker "sessões anteriores". Lê dos arquivos ~/.claude/projects/<slug>/*.jsonl via o server.
+  // Re-roda a cada troca de workspace E a cada mudança no conjunto de abas abertas (openSidsKey),
+  // não só uma vez — senão o snapshot fica stale e conversas pós-snapshot somem ao fechar. Não
+  // persiste (display). Como a lista vem 100% do disco, o replace de aiTitleBySid é seguro.
   useEffect(() => {
     if (!wsLoaded || !workspace) return
     let cancelled = false
     void window.deck.sessions.listClaude(workspace).then((list) => {
       if (cancelled) return
       const bySid: Record<string, string> = {}
-      for (const c of list) if (c.title) bySid[c.id] = c.title
+      const turnDelta: Record<string, number> = {}
+      for (const c of list) {
+        if (c.title) bySid[c.id] = c.title
+        turnDelta[c.id] = c.lastTurnMs
+      }
       setAiTitleBySid(bySid)
       setClaudeSessions(list)
+      setLastTurnBySid((prev) => ({ ...prev, ...turnDelta }))
     })
     return () => {
       cancelled = true
     }
-  }, [wsLoaded, workspace])
+  }, [wsLoaded, workspace, openSidsKey])
 
   // Tab name priority: explicit session_set_title > claude aiTitle > default placeholder. Quando há
   // um comando rodando em foreground (npm run dev…), some como sufixo: `toucan-happy (npm run dev)`.
@@ -1999,10 +2059,9 @@ function App(): React.JSX.Element {
   })
 
   // Picker "sessões anteriores": conversas do claude do workspace ativo que NÃO estão abertas como
-  // aba, mais recentes primeiro, limitadas (a pasta pode ter centenas).
-  const openClaudeSids = new Set(
-    sessions.map((s) => s.claudeSessionId).filter(Boolean) as string[]
-  )
+  // aba, mais recentes primeiro. Mesmo conjunto de sids do openSidsKey (que dispara o reload do
+  // claudeSessions), então o filtro e o snapshot ficam coerentes no mesmo render — sem duplicação.
+  const openClaudeSids = new Set(openSidsKey ? openSidsKey.split(',') : [])
   // Não abertas, mais recentes primeiro (claudeSessions já vem ordenado por mtime desc). A lista
   // fica escondida até o toggle, então renderizar todas (scroll) é ok.
   const claudePrev = claudeSessions.filter((c) => !openClaudeSids.has(c.id))
@@ -2089,6 +2148,15 @@ function App(): React.JSX.Element {
     for (const [id, a] of Object.entries(sessionActivity)) {
       const wasWorking = wasWorkingRef.current[id] === true
       if (wasWorking && !a.active) {
+        // Um turn acabou de terminar → carimba a recência DURÁVEL da conversa com agora. Faz uma
+        // conversa antiga, ao ser iterada, virar "recente" na hora pro filtro de abas — sem esperar
+        // o próximo reload do listClaude (que só roda no switch/mount de workspace). Espelha o que o
+        // .jsonl acabou de gravar (o turn novo tem timestamp ~agora), só que sem reler o disco.
+        const sid = (
+          stateRef.current.sessions.find((s) => s.id === id) ??
+          stateRef.current.liveSessions.find((s) => s.id === id)
+        )?.claudeSessionId
+        if (sid) setLastTurnBySid((prev) => ({ ...prev, [sid]: Date.now() }))
         const watching = id === activeId && document.hasFocus()
         console.log('[notify] working→idle edge', {
           id,
@@ -2117,7 +2185,8 @@ function App(): React.JSX.Element {
   if (workspace && loadedWorkspaceRef.current === workspace) {
     treeSessionsByWorkspace[workspace] = sessionsWithTitles.map((s) => ({
       id: s.id,
-      label: s.label
+      label: s.label,
+      claudeSessionId: s.claudeSessionId
     }))
   }
 
@@ -2721,10 +2790,42 @@ function App(): React.JSX.Element {
     projectFromCwd(a).localeCompare(projectFromCwd(b), undefined, { sensitivity: 'base' })
   )
 
+  // Recency filter on the SESSION TABS (not workspaces): hide tabs whose LAST REAL claude turn
+  // (lastTurnBySid — durable, resume-noise-immune) is older than the window. NOT raw output time:
+  // claude repaints the whole transcript on resume, which would bump every just-resumed tab to
+  // "active now" and hide nothing (the bug). A tab is kept when: it's the focused tab; it's working
+  // RIGHT NOW (sessionActivity.active — decays ~1.5s after output stops, so a resumed-then-idle tab
+  // is NOT kept by it); or its last turn is unknown (durable 0 → shell tab / not yet loaded — don't
+  // hide what we can't date). Workspace rows always show; only their children are filtered.
+  const SESSION_FILTER_WINDOW_MS: Record<Exclude<WsActivityFilter, 'all'>, number> = {
+    '1d': 86_400_000,
+    '1h': 3_600_000
+  }
+  let hiddenSessionCount = 0
+  let filteredTreeSessions: Record<string, TreeSession[]> = treeSessionsByWorkspace
+  if (wsFilter !== 'all') {
+    const win = SESSION_FILTER_WINDOW_MS[wsFilter]
+    const out: Record<string, TreeSession[]> = {}
+    for (const [ws, list] of Object.entries(treeSessionsByWorkspace)) {
+      out[ws] = list.filter((s) => {
+        const durable = s.claudeSessionId ? (lastTurnBySid[s.claudeSessionId] ?? 0) : 0
+        const keep =
+          s.id === activeId ||
+          sessionActivity[s.id]?.active ||
+          durable === 0 ||
+          now - durable < win
+        if (!keep) hiddenSessionCount++
+        return keep
+      })
+    }
+    filteredTreeSessions = out
+  }
+
   // Flat session list across all workspaces, in tree order (workspace registry × sessions).
+  // Built from the FILTERED set so Cmd+Arrow nav matches what the tree shows under the filter.
   const navSessions: { ws: string; id: string }[] = []
   for (const ws of sortedWorkspaces) {
-    for (const s of treeSessionsByWorkspace[ws] ?? []) navSessions.push({ ws, id: s.id })
+    for (const s of filteredTreeSessions[ws] ?? []) navSessions.push({ ws, id: s.id })
   }
 
   navRef.current = {
@@ -2852,9 +2953,20 @@ function App(): React.JSX.Element {
                     // tem default escolhido (ausente do mapa) E a sessão ativa está com o claude em
                     // foreground. Decidir grava 'claude' (auto-abre claude em sessões novas) ou
                     // 'shell' (dispensado, sem autostart) — em ambos o banner some pra sempre.
+                    //
+                    // Keyado em loadedWorkspaceRef (o WS a que `sessions`/`activeId` realmente
+                    // pertencem), NÃO no `workspace` síncrono. Na troca de WS, `workspace` muda na
+                    // hora mas `sessions` carrega async; nesse gap o terminal VISÍVEL ainda é o do
+                    // WS anterior. Se a condição do banner misturasse o `workspace` novo com a
+                    // sessão antiga, o banner podia aparecer/sumir no meio do gap → muda a altura
+                    // do terminal → dispara o ResizeObserver → o claude do WS que você ESTÁ SAINDO
+                    // redesenha a tela inteira. Gatear pelo WS carregado mantém a chrome estável
+                    // até o novo WS realmente entrar. (`sessions`/`activeId` lagam JUNTO com o
+                    // loadedWorkspaceRef, então a condição inteira fica consistente: no gap reflete
+                    // o WS antigo sem mudança; só troca quando o novo WS de fato entra.)
+                    const ws = loadedWorkspaceRef.current
                     const aS = sessions.find((s) => s.id === activeId)
-                    if (!workspace || !aS?.claude || workspace in defaultCmdByWs) return null
-                    const ws = workspace
+                    if (!ws || !aS?.claude || ws in defaultCmdByWs) return null
                     return (
                       <div className="default-cmd-banner">
                         <span className="default-cmd-banner-text">
@@ -2891,11 +3003,14 @@ function App(): React.JSX.Element {
                 <WorkspaceTree
                   isFocused={focusedPanel === 'tree'}
                   workspaces={sortedWorkspaces}
+                  hiddenCount={hiddenSessionCount}
+                  filter={wsFilter}
+                  onFilterChange={changeWsFilter}
                   activeWorkspace={workspace}
                   activeSessionId={activeId}
                   previewedSession={previewedNav}
                   expanded={expandedWorkspaces}
-                  sessionsByWorkspace={treeSessionsByWorkspace}
+                  sessionsByWorkspace={filteredTreeSessions}
                   activity={sessionActivity}
                   mode={mode}
                   themeFor={themeFor}

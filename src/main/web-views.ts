@@ -1,9 +1,9 @@
 import {
   WebContentsView,
+  BrowserWindow,
   ipcMain,
   Menu,
   clipboard,
-  type BrowserWindow,
   type WebContents
 } from 'electron'
 import { WEB_PARTITION } from './web-session'
@@ -74,6 +74,16 @@ type EmitState = (cardId: string) => void
 class WebViewsManager {
   private views = new Map<string, ViewState>()
   private getWin: () => BrowserWindow | null
+  // HTTP Basic/Digest auth: o Electron NÃO abre o popup de credenciais sozinho (o Chrome.exe
+  // abre) — sem um listener de 'login' + preventDefault, ele cancela toda autenticação e a
+  // página recebe 401 em branco. Estes mapas dão memória de sessão estilo browser:
+  //  - authCache: realm-key → credencial aceita, pra reusar em subresources do mesmo realm sem
+  //    repopupar a cada imagem/fetch protegido.
+  //  - authAttempts: URL do request → quantas vezes o 'login' disparou pra ELE. >1 significa que
+  //    a credencial (lembrada ou digitada) acabou de ser recusada → não reusa a do cache, abre o
+  //    popup de novo. Limpo no did-navigate (nav top-level nova = começa do zero).
+  private authCache = new Map<string, { username: string; password: string }>()
+  private authAttempts = new Map<string, number>()
 
   constructor(getWin: () => BrowserWindow | null) {
     this.getWin = getWin
@@ -332,6 +342,36 @@ class WebViewsManager {
     void wc.executeJavaScript(code).catch(() => {})
   }
 
+  // Incremental live patch — append one widget (from its spec) or pop the last n, by driving the
+  // card's __decky*Widget runtime hooks. No document reload, so building a card up doesn't flicker.
+  // The `&&` guards make it a no-op on a card whose bridge predates these hooks (it reconciles on
+  // the next full reload). JSON.stringify is JS-literal-safe except U+2028/2029, which we escape.
+  patchCard(
+    cardId: string,
+    patch: { op: string; type?: string; id?: string; spec?: unknown; n?: number }
+  ): void {
+    const lit = (v: unknown): string =>
+      JSON.stringify(v ?? null)
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029')
+    // If the runtime hook isn't there yet (card still loading, or a bridge predating these hooks),
+    // fall back to a full reload — the manifest on disk already has the change, so the reloaded page
+    // renders it correctly. Steady state (card ready) takes the in-place path: no reload, no flicker.
+    if (patch.op === 'append') {
+      this.executeJavaScript(
+        cardId,
+        `window.__deckyAppendWidget ? window.__deckyAppendWidget(${lit(patch.type || '')}, ${lit(
+          patch.id || ''
+        )}, ${lit(patch.spec || {})}) : location.reload()`
+      )
+    } else if (patch.op === 'pop') {
+      this.executeJavaScript(
+        cardId,
+        `window.__deckyPopWidget ? window.__deckyPopWidget(${Number(patch.n) || 1}) : location.reload()`
+      )
+    }
+  }
+
   // Liga/desliga o estado "controlado pelo handoff" no card:
   //  - injeta o BLOCKER no DOM da página (engole input REAL — isTrusted=true; sintético do
   //    handoff é isTrusted=false e passa direto),
@@ -367,6 +407,34 @@ class WebViewsManager {
     const fire = (): void => emit(cardId)
     wc.on('did-start-loading', fire)
     wc.on('did-stop-loading', fire)
+    // HTTP auth (401 Basic/Digest, ou 407 de proxy). Sem este handler o Electron cancela a
+    // autenticação e a página fica em branco/erro — diferente do Chrome, que abre o popup de
+    // login. Replicamos esse popup com um modal próprio e devolvemos as credenciais via callback.
+    wc.on('login', (event, details, authInfo, callback) => {
+      event.preventDefault()
+      const realmKey = `${authInfo.isProxy ? 'proxy' : `${authInfo.host}:${authInfo.port}`}|${authInfo.scheme}|${authInfo.realm}`
+      const reqUrl = details.url || ''
+      const attempt = (this.authAttempts.get(reqUrl) ?? 0) + 1
+      this.authAttempts.set(reqUrl, attempt)
+      const cached = this.authCache.get(realmKey)
+      // Credencial lembrada nesta sessão e ainda não recusada pra ESTE request → tenta calado.
+      if (cached && attempt === 1) {
+        callback(cached.username, cached.password)
+        return
+      }
+      // attempt > 1 = a credencial acabou de ser recusada (re-challenge) → não reusa o cache.
+      if (attempt > 1) this.authCache.delete(realmKey)
+      void this.promptForCredentials(authInfo).then((creds) => {
+        if (creds) {
+          this.authCache.set(realmKey, creds)
+          callback(creds.username, creds.password)
+        } else {
+          // Cancelado → limpa o contador e cancela a auth (página recebe o 401 do servidor).
+          this.authAttempts.delete(reqUrl)
+          callback()
+        }
+      })
+    })
     // Intercept clicks on links INSIDE a card:// page — instead of navigating the embedded
     // WebContentsView (which would replace e.g. the tags-index with the clicked card), tell
     // the renderer to open the target as a NEW decky tab (with de-dup against existing tabs).
@@ -389,6 +457,9 @@ class WebViewsManager {
       }
     })
     wc.on('did-navigate', (_e, url) => {
+      // Nav top-level commitou → qualquer auth em voo foi aceita. Zera o contador de tentativas
+      // pra um futuro re-challenge real (sessão expirada) voltar a popupar em vez de reusar.
+      this.authAttempts.clear()
       const s = this.views.get(cardId)
       // Navegação pra página de erro interna (data: URL carregada pelo did-fail-load handler).
       // Não mexe em favicon, não loga no histórico, e mantém s.failedUrl ativo pra snapshot
@@ -629,6 +700,67 @@ class WebViewsManager {
     })
   }
 
+  // Abre um modal nativo pedindo usuário/senha (réplica do popup de Basic Auth do Chrome).
+  // Resolve com as credenciais digitadas ou null (cancelado / janela fechada). A página do modal
+  // é uma data: URL estática que devolve o resultado via console.log('__DECKY_AUTH__:…') — mesmo
+  // canal console-message já usado pra capturar popups (__DECKY_POPUP__), sem precisar de preload.
+  private promptForCredentials(
+    authInfo: Electron.AuthInfo
+  ): Promise<{ username: string; password: string } | null> {
+    return new Promise((resolve) => {
+      const parent = this.getWin()
+      const authWin = new BrowserWindow({
+        parent: parent ?? undefined,
+        modal: !!parent,
+        width: 460,
+        height: 252,
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        title: 'Autenticação necessária',
+        backgroundColor: '#1a1a1a',
+        show: false,
+        webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true }
+      })
+      let settled = false
+      const finish = (result: { username: string; password: string } | null): void => {
+        if (settled) return
+        settled = true
+        resolve(result)
+        if (!authWin.isDestroyed()) authWin.close()
+      }
+      authWin.webContents.on('console-message', (e) => {
+        const m = /^__DECKY_AUTH__:([\s\S]*)$/.exec(e.message ?? '')
+        if (!m) return
+        if (m[1] === 'cancel') {
+          finish(null)
+          return
+        }
+        try {
+          const parsed = JSON.parse(m[1])
+          finish({
+            username: String(parsed.username ?? ''),
+            password: String(parsed.password ?? '')
+          })
+        } catch {
+          finish(null)
+        }
+      })
+      // Fechar pelo X (ou Esc fechando a janela) sem ter respondido = cancelar.
+      authWin.once('closed', () => {
+        if (!settled) {
+          settled = true
+          resolve(null)
+        }
+      })
+      authWin.once('ready-to-show', () => authWin.show())
+      void authWin.loadURL(
+        `data:text/html;charset=utf-8,${encodeURIComponent(buildAuthPromptHtml(authInfo))}`
+      )
+    })
+  }
+
   // Snapshot of a view's state for the renderer's address bar / nav buttons. Returns null if
   // the view doesn't exist (the renderer can then show a stale "loading" until create acks).
   snapshot(cardId: string): {
@@ -806,6 +938,90 @@ function buildErrorPageHtml(failedUrl: string, code: number, desc: string): stri
 </html>`
 }
 
+// Modal de credenciais (HTTP Basic/Digest). Estilo dark casando com o shell e a página de erro.
+// Devolve o resultado por console.log('__DECKY_AUTH__:<json|cancel>') — capturado em
+// promptForCredentials. Enter envia, Esc cancela; sem <form> pra não disparar navegação no submit.
+function buildAuthPromptHtml(authInfo: Electron.AuthInfo): string {
+  const showPort =
+    !authInfo.isProxy && !!authInfo.port && authInfo.port !== 80 && authInfo.port !== 443
+  const host = authInfo.isProxy
+    ? `proxy ${authInfo.host}:${authInfo.port}`
+    : `${authInfo.host}${showPort ? ':' + authInfo.port : ''}`
+  const safeHost = escapeHtml(host)
+  const safeRealm = escapeHtml(authInfo.realm || '')
+  const realmLine = safeRealm ? `<div class="realm">${safeRealm}</div>` : ''
+  return `<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title>Autenticação necessária</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #1a1a1a;
+    color: #e6e6e6;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 18px 20px;
+    box-sizing: border-box;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  h1 { font-size: 14px; font-weight: 600; margin: 0 0 4px; color: #fff; }
+  .host {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; color: #8a8a8a; word-break: break-all; margin-bottom: 2px;
+  }
+  .realm { font-size: 12px; color: #707070; margin-bottom: 12px; }
+  label { display: block; font-size: 11px; color: #9a9a9a; margin: 8px 0 3px; }
+  input {
+    width: 100%; box-sizing: border-box; background: #232323; color: #e6e6e6;
+    border: 1px solid #3a3a3a; border-radius: 6px; padding: 7px 9px; font-size: 13px;
+    outline: none; -webkit-user-select: text; user-select: text;
+  }
+  input:focus { border-color: #5a7fb3; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  button {
+    border: 0; border-radius: 6px; padding: 7px 16px; font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: background 0.12s ease;
+  }
+  #cancel { background: #2e2e2e; color: #cfcfcf; }
+  #cancel:hover { background: #383838; }
+  #ok { background: #3a5a86; color: #fff; }
+  #ok:hover { background: #466a9c; }
+</style>
+</head>
+<body>
+  <h1>Autenticação necessária</h1>
+  <div class="host">${safeHost}</div>
+  ${realmLine}
+  <label for="u">Usuário</label>
+  <input id="u" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <label for="p">Senha</label>
+  <input id="p" type="password" autocomplete="off">
+  <div class="row">
+    <button id="cancel" type="button">Cancelar</button>
+    <button id="ok" type="button">Entrar</button>
+  </div>
+  <script>
+    var u = document.getElementById('u');
+    var p = document.getElementById('p');
+    function ok() {
+      console.log('__DECKY_AUTH__:' + JSON.stringify({ username: u.value, password: p.value }));
+    }
+    function cancel() { console.log('__DECKY_AUTH__:cancel'); }
+    document.getElementById('ok').addEventListener('click', ok);
+    document.getElementById('cancel').addEventListener('click', cancel);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); ok(); }
+      else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+    u.focus();
+  </script>
+</body>
+</html>`
+}
+
 // Blocker de input HUMANO injetado na página quando o handoff está dirigindo o card. Usa
 // listeners em capture no document filtrando por `e.isTrusted`: eventos REAIS do usuário
 // (kb/mouse vindos do OS, isTrusted=true) são preventDefault + stopImmediatePropagation;
@@ -920,6 +1136,16 @@ export function setupWebViews(getWin: () => BrowserWindow | null): void {
   ipcMain.on('web:back', (_e, cardId: string) => manager!.back(cardId))
   ipcMain.on('web:forward', (_e, cardId: string) => manager!.forward(cardId))
   ipcMain.on('web:reload', (_e, cardId: string) => manager!.reload(cardId))
+  ipcMain.on(
+    'web:patch',
+    (
+      _e,
+      payload: {
+        cardId: string
+        patch: { op: string; type?: string; id?: string; spec?: unknown; n?: number }
+      }
+    ) => manager!.patchCard(payload.cardId, payload.patch)
+  )
   ipcMain.on('web:stop', (_e, cardId: string) => manager!.stop(cardId))
   ipcMain.on('web:open-devtools', (_e, cardId: string) => manager!.toggleDevTools(cardId))
   ipcMain.handle('web:get-state', (_e, cardId: string) => manager!.snapshot(cardId))

@@ -357,6 +357,30 @@ const deckApi = {
       ipcRenderer.on('card:reload', listener)
       return () => ipcRenderer.removeListener('card:reload', listener)
     },
+    // Incremental live patch (POST /cards/patch → main → here): append/pop a single widget on the
+    // card for `path` WITHOUT a full reload (no flicker). The HtmlPreview for that path forwards it
+    // to web.patchCard(cardId, …). Falls back to a reload on the CLI side if the server lacks it.
+    patchCard: (
+      cardId: string,
+      patch: { op: string; type?: string; id?: string; spec?: unknown; n?: number }
+    ): void => ipcRenderer.send('web:patch', { cardId, patch }),
+    onPatch: (
+      callback: (msg: {
+        path: string
+        op: string
+        type?: string
+        id?: string
+        spec?: unknown
+        n?: number
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _: unknown,
+        msg: { path: string; op: string; type?: string; id?: string; spec?: unknown; n?: number }
+      ): void => callback(msg)
+      ipcRenderer.on('card:patch', listener)
+      return () => ipcRenderer.removeListener('card:patch', listener)
+    },
     getState: (
       cardId: string
     ): Promise<{

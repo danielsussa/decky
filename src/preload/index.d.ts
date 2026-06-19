@@ -13,6 +13,8 @@ export type ClaudeSessionInfo = {
   gitBranch: string | null
   lastPrompt: string | null
   mtimeMs: number
+  /** Timestamp do último turn real (user/assistant) — recência honesta da conversa p/ filtro. */
+  lastTurnMs: number
 }
 
 export interface DeckAPI {
@@ -219,6 +221,20 @@ export interface DeckAPI {
     stop: (cardId: string) => void
     openDevTools: (cardId: string) => void
     onReload: (callback: (msg: { path: string }) => void) => () => void
+    patchCard: (
+      cardId: string,
+      patch: { op: string; type?: string; id?: string; spec?: unknown; n?: number }
+    ) => void
+    onPatch: (
+      callback: (msg: {
+        path: string
+        op: string
+        type?: string
+        id?: string
+        spec?: unknown
+        n?: number
+      }) => void
+    ) => () => void
     getState: (cardId: string) => Promise<{
       url: string
       title: string

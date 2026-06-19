@@ -18,15 +18,29 @@ export interface ClaudeSessionInfo {
   lastPrompt: string | null
   /** mtime do arquivo (ordenação por recência). */
   mtimeMs: number
+  /**
+   * Timestamp do último turn REAL (user/assistant), não o mtime — alimenta o filtro de recência das
+   * abas. O mtime mente: o decky bumpa o .jsonl ao re-abrir a conversa em background (live pool)
+   * escrevendo metadado sem timestamp, então uma conversa ociosa há horas mas só resumida agora
+   * teria mtime "agora". O último turn de verdade é o sinal honesto de "quando interagi com isto".
+   * Fallback pro mtime quando nenhum turn é legível.
+   */
+  lastTurnMs: number
 }
 
 function projectSlug(cwd: string): string {
   return cwd.replace(/[/.]/g, '-')
 }
 
+// session id do claude = UUID v4 (basename do .jsonl OU nome da pasta `<sid>/`). Distingue a pasta
+// `memory/` (e afins) de uma sessão ao varrer o dir do projeto.
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 // Lê só um prefixo do .jsonl (título/branch aparecem nos primeiros records; evita carregar
 // transcripts de vários MB). Extrai por regex pra não depender de linhas JSON completas.
-function readHeadFields(file: string): Pick<ClaudeSessionInfo, 'title' | 'gitBranch' | 'lastPrompt'> {
+function readHeadFields(
+  file: string
+): Pick<ClaudeSessionInfo, 'title' | 'gitBranch' | 'lastPrompt'> {
   let txt = ''
   try {
     const fd = openSync(file, 'r')
@@ -101,26 +115,85 @@ function firstUserPrompt(txt: string): string | null {
  */
 export function listClaudeSessions(cwd: string): ClaudeSessionInfo[] {
   const dir = join(homedir(), '.claude', 'projects', projectSlug(cwd))
-  let files: string[]
+  let entries: import('node:fs').Dirent[]
   try {
-    files = readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+    entries = readdirSync(dir, { withFileTypes: true })
   } catch {
     return []
   }
+  // Uma sessão é `<sid>.jsonl` (transcript) OU uma pasta `<sid>/` (claude-code 2.x: criada quando o
+  // 1º turno dispara subagents, ANTES do .jsonl principal flushar). Dedup por sid — quando as duas
+  // formas coexistem o .jsonl manda (head fields/aiTitle); pasta-só → title/branch null até flushar.
+  const seen = new Set<string>()
   const rows: ClaudeSessionInfo[] = []
-  for (const f of files) {
-    const full = join(dir, f)
+  for (const e of entries) {
+    let sid: string | null = null
+    if (e.isFile() && e.name.endsWith('.jsonl')) sid = e.name.slice(0, -'.jsonl'.length)
+    else if (e.isDirectory() && SESSION_ID_RE.test(e.name)) sid = e.name
+    if (!sid || seen.has(sid)) continue
+    seen.add(sid)
+    const full = join(dir, `${sid}.jsonl`)
     let mtimeMs = 0
+    let head = { title: null, gitBranch: null, lastPrompt: null } as ReturnType<typeof readHeadFields>
+    let lastTurnMs = 0
     try {
       mtimeMs = statSync(full).mtimeMs
+      head = readHeadFields(full)
+      // lastTurnMs = último turn real (não o mtime ruidoso de resume). Fallback pro mtime quando o
+      // tail não tem turn legível (conversa só com metadado / formato inesperado).
+      lastTurnMs = lastTurnTime(full) || mtimeMs
     } catch {
-      continue
+      // pasta-só (sem .jsonl ainda): ordena pela mtime da pasta, sem head fields.
+      try {
+        mtimeMs = statSync(join(dir, sid)).mtimeMs
+        lastTurnMs = mtimeMs
+      } catch {
+        continue
+      }
     }
-    const head = readHeadFields(full)
-    rows.push({ id: f.slice(0, -'.jsonl'.length), mtimeMs, ...head })
+    rows.push({ id: sid, mtimeMs, lastTurnMs, ...head })
   }
   rows.sort((a, b) => b.mtimeMs - a.mtimeMs)
   return rows
+}
+
+// Tail lido pra achar o último turn real (128KB cobre vários turns recentes sem ler transcripts
+// de MBs). Turns são frequentes o bastante pra caberem nessa janela.
+const TURN_TAIL_BYTES = 131072
+
+// Maior timestamp de um turn REAL de conversa (records type:"user"/"assistant" carregam
+// "timestamp":"<iso>"). NÃO conta os records de metadado que o decky/claude escrevem em background
+// no resume (permission-mode, mode, ai-title, last-prompt) — esses não têm timestamp — nem os
+// records type:"system", que o resume pode injetar com a hora atual sem o usuário ter feito nada.
+// É isto que separa "workspace ativo" de "workspace só re-aberto". Lê só o tail. 0 se não achar.
+function lastTurnTime(file: string): number {
+  let txt = ''
+  try {
+    const size = statSync(file).size
+    const start = Math.max(0, size - TURN_TAIL_BYTES)
+    const len = size - start
+    if (len <= 0) return 0
+    const buf = Buffer.alloc(len)
+    const fd = openSync(file, 'r')
+    try {
+      readSync(fd, buf, 0, len, start)
+    } finally {
+      closeSync(fd)
+    }
+    txt = buf.toString('utf8')
+  } catch {
+    return 0
+  }
+  let max = 0
+  // 1 record por linha; a 1ª pode vir truncada pelo offset — só ignora (regex não casa).
+  for (const line of txt.split('\n')) {
+    if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"')) continue
+    const m = /"timestamp":"([^"]+)"/.exec(line)
+    if (!m) continue
+    const t = Date.parse(m[1])
+    if (t > max) max = t
+  }
+  return max
 }
 
 /** Caminho do .jsonl da conversa do claude pra este cwd + sessionId. */

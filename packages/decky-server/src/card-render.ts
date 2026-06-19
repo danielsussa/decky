@@ -346,7 +346,7 @@ export function renderManifest(manifest: CardManifest): string {
 <title>${title}</title>
 <link rel="stylesheet" href="${DEFAULT_CSS_PATH}">
 <style>
-  body { padding: 24px; margin: 0; }
+  body { padding: 28px 32px 56px; margin: 0; font-size: 14.5px; line-height: 1.65; }
   .dk-card-widgets { display: flex; flex-direction: column; gap: 16px; }
 </style>
 </head>
@@ -497,22 +497,26 @@ const TEXT_JS =
 (() => {
   const h = window.__deckyHelpers;
   h.injectOnce('text', \`
-    .dk-text { margin: 0.5em 0; color: var(--text-1); line-height: 1.6; }
+    /* Escala em-based espelhando .md-body (render legado). Cada widget de texto = uma seção
+       que era um h2 (##) no markdown, então seu h1 casa com o h2 do md-body (1.4em), o h2
+       com o h3 (1.15em), etc. Em vez de px fixo, escala junto com o corpo (14.5px). */
+    .dk-text { margin: 0.5em 0; color: var(--text-1); line-height: 1.65; }
     .dk-text > :first-child { margin-top: 0; }
     .dk-text > :last-child { margin-bottom: 0; }
-    .dk-text h1 { font-size: 23px; font-weight: 650; margin: 0 0 0.5em;
+    .dk-text h1 { font-size: 1.4em; font-weight: 600; margin: 0 0 0.5em; line-height: 1.3;
       color: var(--text-0, var(--text-1)); letter-spacing: -0.01em; }
-    .dk-text h2 { font-size: 18px; font-weight: 600; margin: 1.2em 0 0.4em; }
-    .dk-text h3 { font-size: 15px; font-weight: 600; margin: 1em 0 0.3em; }
-    .dk-text p { margin: 0.5em 0; }
-    .dk-text ul, .dk-text ol { margin: 0.5em 0; padding-left: 1.4em; }
-    .dk-text li { margin: 2px 0; }
-    .dk-text code { font: 12.5px var(--mono); background: var(--bg-1);
+    .dk-text h2 { font-size: 1.15em; font-weight: 600; margin: 1.2em 0 0.4em; }
+    .dk-text h3 { font-size: 1em; font-weight: 600; margin: 1em 0 0.3em; }
+    .dk-text p { margin: 0.6em 0; }
+    .dk-text ul, .dk-text ol { margin: 0.5em 0; padding-left: 1.5em; }
+    .dk-text li { margin: 0.2em 0; }
+    .dk-text code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-1);
       padding: 1px 4px; border-radius: 3px; }
     .dk-text pre { background: var(--bg-1); padding: 10px 12px; border-radius: 6px; overflow: auto; }
     .dk-text pre code { background: none; padding: 0; }
-    .dk-text blockquote { margin: 0.6em 0; padding: 2px 12px;
-      border-left: 3px solid var(--border); color: var(--text-2); }
+    .dk-text blockquote { margin: 0.6em 0; padding: 2px 14px; border-radius: 0 4px 4px 0;
+      border-left: 3px solid var(--accent);
+      background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--text-2); }
     .dk-text table { border-collapse: collapse; margin: 0.6em 0; }
     .dk-text th, .dk-text td { border: 1px solid var(--border); padding: 4px 8px; }
     .dk-text a { color: var(--accent); }
@@ -796,9 +800,9 @@ const CHECKLIST_JS =
 (() => {
   const h = window.__deckyHelpers;
   const CSS = \`
-    .dk-checklist { margin: 1em 0; padding: 0; list-style: none; }
+    .dk-checklist { margin: 0.4em 0; padding: 0; list-style: none; }
     .dk-checklist li { display: flex; align-items: flex-start; gap: 8px;
-      padding: 6px 8px; border-radius: 4px; cursor: pointer;
+      padding: 2px 8px; border-radius: 4px; cursor: pointer;
       transition: background 80ms; }
     .dk-checklist li:hover { background: var(--bg-1); }
     .dk-checklist li.done .dk-cl-label { text-decoration: line-through; color: var(--text-3); }
@@ -2159,6 +2163,84 @@ const BRIDGE_JS = `
     return () => {
       if (registry.get(widgetId) === entry) registry.delete(widgetId);
     };
+  };
+  // Live patch (NO reload → no flicker): build & append a single widget from its spec, or pop
+  // the last one. The card already carries every widget runtime, so we drop the div in and (re)load
+  // the type's script with a cache-bust — its idempotent initAll (deckyInit guard) inits ONLY the
+  // new div, leaving the already-rendered widgets (and their state) untouched. Used while a card is
+  // built/torn down widget-by-widget; the manifest on disk stays the source of truth.
+  window.__deckyAppendWidget = function (type, id, spec) {
+    const container = document.querySelector('.dk-card-widgets');
+    if (!container || !type) return;
+    spec = spec || {};
+    // Two CSS tricks so a widget appears smoothly, never showing its raw JSON:
+    //  - .dk-pending: hide the placeholder until its runtime sets data-decky-init (every widget does
+    //    so BEFORE rendering). So the JSON spec in textContent never paints, and the slot stays
+    //    collapsed (no layout) until there's real content → siblings shift exactly once.
+    //  - .dk-appended: a wrapper that fades+rises in. It works for BOTH render styles — replace-in
+    //    widgets (text/title) swap the placeholder for a fresh node INSIDE this wrapper; fill-in
+    //    widgets (checklist) fill the placeholder in place. Either way the wrapper is what we fade.
+    if (!document.getElementById('dk-pending-style')) {
+      const st = document.createElement('style');
+      st.id = 'dk-pending-style';
+      st.textContent =
+        '.dk-pending:not([data-decky-init]){display:none!important}' +
+        '.dk-appended{opacity:0;transform:translateY(4px);' +
+        'transition:opacity 260ms ease,transform 260ms ease}' +
+        '.dk-appended.dk-shown{opacity:1;transform:none}' +
+        '.dk-appended.dk-leaving{opacity:0!important;transform:translateY(4px)!important}';
+      document.head.appendChild(st);
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'dk-appended';
+    const div = document.createElement('div');
+    div.className = 'dk-pending';
+    div.setAttribute('data-decky-' + type, '');
+    if (id) div.setAttribute('data-decky-wid', id);
+    // Same shape renderManifest emits: mermaid reads raw text, others a JSON spec from textContent.
+    div.textContent =
+      type === 'mermaid'
+        ? String(spec.src || spec.code || '')
+        : JSON.stringify(Object.assign({ id: id }, spec));
+    wrap.appendChild(div);
+    container.appendChild(wrap);
+    const s = document.createElement('script');
+    s.src = '/__decky/widgets/' + type + '.js?t=' + Date.now();
+    // onload = the widget script ran (initAll rendered it). Two rAFs ensure the browser has painted
+    // the hidden start state before we flip to .dk-shown, so the transition actually animates.
+    s.onload = function () {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          wrap.classList.add('dk-shown');
+        });
+      });
+    };
+    document.head.appendChild(s);
+  };
+  window.__deckyPopWidget = function (n) {
+    n = Math.max(1, (n | 0) || 1);
+    const container = document.querySelector('.dk-card-widgets');
+    if (!container) return;
+    // Collect the last n elements UP FRONT — fading out leaves them in the DOM briefly, so reading
+    // lastElementChild in a loop would re-grab the same node. Appended widgets fade out (.dk-leaving
+    // → removed after the transition); plain ones (full-render) just go.
+    const victims = [];
+    let el = container.lastElementChild;
+    while (el && victims.length < n) {
+      victims.push(el);
+      el = el.previousElementSibling;
+    }
+    victims.forEach(function (node) {
+      if (node.classList.contains('dk-appended')) {
+        node.classList.remove('dk-shown');
+        node.classList.add('dk-leaving');
+        setTimeout(function () {
+          node.remove();
+        }, 260);
+      } else {
+        node.remove();
+      }
+    });
   };
   window.__deckyBridge = { cardId, registry };
   connect();

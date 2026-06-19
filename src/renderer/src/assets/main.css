@@ -689,13 +689,18 @@ code {
 .md-body {
   flex: 1;
   overflow: auto;
-  padding: 20px 28px;
+  padding: 28px 32px 56px;
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 14.5px;
+  line-height: 1.65;
   color: var(--text-1);
   user-select: text;
+}
+
+/* Kill the leading heading's top margin so the doc doesn't open with dead space. */
+.md-body > .md-block:first-child :is(h1, h2, h3, h4):first-child {
+  margin-top: 0;
 }
 
 .md-context-menu {
@@ -884,8 +889,10 @@ body.md-expanding-active {
 }
 
 .md-body blockquote {
-  border-left: 3px solid var(--border);
-  padding: 0 12px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-radius: 0 4px 4px 0;
+  padding: 2px 14px;
   margin: 0.8em 0;
   color: var(--text-2);
 }
@@ -1500,14 +1507,65 @@ textarea.form-input {
   flex-direction: column;
   padding-bottom: 4px;
 }
+.wstree-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 4px 12px;
+}
 .wstree-title {
-  padding: 8px 12px 4px;
   color: var(--text-3);
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+.wstree-head .wstree-title {
+  padding: 0;
+}
+.wstree-filter {
+  display: inline-flex;
+  gap: 1px;
+  background: var(--bg-2);
+  border-radius: 5px;
+  padding: 1px;
+}
+.wstree-filter-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.wstree-filter-btn:hover {
+  color: var(--text-1);
+}
+.wstree-filter-btn.is-active {
+  background: var(--bg-0);
+  color: var(--text-1);
+  box-shadow: 0 0 0 1px var(--border);
+}
+.wstree-filter-more {
+  align-self: flex-start;
+  margin: 2px 0 0 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.wstree-filter-more:hover {
+  color: var(--text-1);
 }
 .wstree-row {
   display: flex;

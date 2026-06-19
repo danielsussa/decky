@@ -1,7 +1,7 @@
 import * as pty from 'node-pty'
 import os from 'os'
 import { execSync, execFile } from 'node:child_process'
-import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { workspaceCardsDir } from '@decky/shared/node'
 import { claudeSessionFile, readLatestAiTitle } from './claude-sessions'
@@ -250,6 +250,42 @@ function claudeProjectSlug(cwd: string): string {
   return cwd.replace(/[/.]/g, '-')
 }
 
+// session id do claude = UUID v4 (basename do .jsonl OU nome da pasta `<sid>/`). Usado pra não
+// confundir a pasta `memory/` (e outras) com uma sessão ao varrer o dir do projeto.
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Vínculo DETERMINÍSTICO aba↔conversa: a função `claude` do shim (ver ensureZshShim) gera um uuid,
+// força `claude --session-id <uuid>` e ANUNCIA o id escrevendo $DECKY_CLAUDE_SID_DIR/<DECKY_SESSION_ID>
+// (= o id desta aba). O server lê esse arquivo e vincula na hora, sem adivinhar por birthtime/nome de
+// processo (que já causou vários casos de "sessão sem nome"). A heurística de birthtime fica só como
+// fallback (claude lançado fora do shim — bash, claude chamado por path absoluto, build antigo).
+function claudeSidDir(): string {
+  return join(os.homedir(), '.decky', 'claude-sid')
+}
+// Lê e CONSOME (apaga) o sid anunciado por esta aba. Consumir evita que um anúncio de uma run
+// anterior re-vincule errado uma run nova que (por algum motivo) não anunciou.
+function readAnnouncedSid(id: string): string | null {
+  const file = join(claudeSidDir(), id)
+  try {
+    const sid = readFileSync(file, 'utf8').trim()
+    try {
+      unlinkSync(file)
+    } catch {
+      /* já sumiu — ok */
+    }
+    return SESSION_ID_RE.test(sid) ? sid : null
+  } catch {
+    return null // nada anunciado
+  }
+}
+function clearAnnouncedSid(id: string): void {
+  try {
+    unlinkSync(join(claudeSidDir(), id))
+  } catch {
+    /* não existe — ok */
+  }
+}
+
 // A conversa que o claude DESTA aba criou: o .jsonl em ~/.claude/projects/<slug>/ cujo BIRTHTIME é
 // >= o instante em que o claude virou foreground (`sinceMs`, com folga de 3s). Um `claude` fresh
 // cria um .jsonl quando o PRIMEIRO prompt é enviado — o que pode ser muitos segundos (ou minutos)
@@ -268,13 +304,18 @@ function resolveClaudeSessionByBirth(
   try {
     const dir = join(os.homedir(), '.claude', 'projects', claudeProjectSlug(cwd))
     let best: { id: string; born: number } | null = null
-    for (const f of readdirSync(dir)) {
-      if (!f.endsWith('.jsonl')) continue
-      const sid = f.slice(0, -'.jsonl'.length)
-      if (exclude?.has(sid)) continue
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      // Uma sessão é `<sid>.jsonl` (transcript principal) OU, no claude-code 2.x, uma PASTA `<sid>/`
+      // (criada de cara quando o 1º turno dispara subagents; o .jsonl principal só flusha no fim do
+      // turno). Sem reconhecer a pasta, uma sessão agent-first ficava órfã até o flush — às vezes
+      // minutos. Pega o sid das duas formas; o birthtime é o do arquivo/pasta.
+      let sid: string | null = null
+      if (e.isFile() && e.name.endsWith('.jsonl')) sid = e.name.slice(0, -'.jsonl'.length)
+      else if (e.isDirectory() && SESSION_ID_RE.test(e.name)) sid = e.name
+      if (!sid || exclude?.has(sid)) continue
       let born = 0
       try {
-        born = statSync(join(dir, f)).birthtimeMs
+        born = statSync(join(dir, e.name)).birthtimeMs
       } catch {
         continue
       }
@@ -291,6 +332,24 @@ function resolveClaudeSessionByBirth(
   } catch {
     return null // dir não existe (claude nunca rodou neste cwd) etc.
   }
+}
+
+// Existe transcript da conversa <sid> no disco? Arquivo `<sid>.jsonl` OU pasta `<sid>/` (claude-code
+// 2.x). Usado pra detectar "ghost bind": um sid vinculado que NUNCA virou conversa real (a conversa
+// da aba divergiu por /clear ou um --session-id que não pegou) → o título jamais sincronizaria.
+function claudeSessionExistsOnDisk(cwd: string, sid: string): boolean {
+  const dir = join(os.homedir(), '.claude', 'projects', claudeProjectSlug(cwd))
+  try {
+    if (statSync(join(dir, `${sid}.jsonl`)).isFile()) return true
+  } catch {
+    /* sem .jsonl */
+  }
+  try {
+    if (statSync(join(dir, sid)).isDirectory()) return true
+  } catch {
+    /* sem pasta */
+  }
+  return false
 }
 
 // Sync contínuo aiTitle → título da aba. Roda no poll pra cada aba com conversa do claude já
@@ -327,13 +386,15 @@ function pollProcesses(): void {
 
     if (proc !== prev) {
       lastProc.set(id, proc)
-      // CLAUDE acabou de virar foreground vindo do shell → marca o instante, pra capturar a conversa
-      // que ELE cria (.jsonl nascido depois daqui), não a mais escrita de outra aba. CRÍTICO: exige
-      // looksLikeClaude(base). Sem esse gate, QUALQUER comando (npm run dev, node, vite…) que vira
-      // foreground marcava claudeStartAt e deixava a aba "caçando" conversa (bloco abaixo) por todo o
-      // tempo que o comando rodasse; ao FECHAR outra sessão do mesmo cwd, a conversa liberada do
-      // `claimed` caía na janela de birthtime e a aba roubava o título (e o claudeSessionId) dela.
-      if (!isShellProc(base) && isShellProc(procBase(prev)) && looksLikeClaude(base)) {
+      // CLAUDE acabou de virar foreground → marca o instante (âncora do birthtime), pra capturar a
+      // conversa que ELE cria (.jsonl nascido depois daqui), não a mais escrita de outra aba. Marca
+      // na PRIMEIRA aparição do claude (claudeOn ainda false) — vale tanto shell→claude direto QUANTO
+      // shell→node→claude: o claude sobe como 'node' por um instante antes de setar o process title
+      // pra versão (X.Y.Z), e exigir prev=shell PERDIA esse caso (node→claude tem prev='node' ≠ shell)
+      // → claudeStartAt nunca era setado → sessão órfã, sem título. Tool-calls (claude→node→claude)
+      // NÃO re-marcam (claudeOn já true, então a âncora não anda pra frente e a captura do 1º prompt
+      // demorado segue válida). npm/node/vite soltos não entram (não passam em looksLikeClaude).
+      if (looksLikeClaude(base) && !claudeOn.has(id)) {
         claudeStartAt.set(id, Date.now())
       }
       // claude em foreground (nome 'claude' ou a versão X.Y.Z) → flip imediato (responsivo p/ a
@@ -356,6 +417,7 @@ function pollProcesses(): void {
         claudeStartAt.delete(id)
         lastTitleMtime.delete(id) // próxima conversa (.jsonl novo) re-sincroniza do zero
         lastTitle.delete(id)
+        clearAnnouncedSid(id) // descarta anúncio não-consumido desta run (evita re-vínculo stale)
       }
 
       // Anotação do comando em foreground (sufixo da aba). Enquanto o claude é o foreground ele já
@@ -371,23 +433,29 @@ function pollProcesses(): void {
       }
     }
 
-    // Captura a conversa que ESTA aba criou, por BIRTHTIME, enquanto ela estiver SEM vínculo e com
-    // claude em foreground. NÃO há mais janela de 7s: o .jsonl nasce no 1º prompt (pode demorar), e
-    // o give-up orfanava pra sempre toda sessão cujo 1º prompt vinha depois disso ("sem nome"). O
-    // anti-swap agora é o `upperMs`: o launch da PRÓXIMA aba do mesmo cwd que subiu claude depois
-    // desta — conversa nascida após esse instante é dela. Abas resumidas (`claude --resume X`) não
-    // criam .jsonl novo → resolve dá null (sem roubo). Um não-shell que não é claude idem.
-    const since = claudeStartAt.get(id) ?? 0
-    // claudeOn.has(id) (não só `!isShellProc(base)`): só caça conversa enquanto o CLAUDE é o
-    // foreground desta aba. claudeOn persiste durante tool-calls (foreground flicka p/ node/git sem
-    // soltar o vínculo) e some no retorno ao shell — então captura de 1º prompt demorado e tool-calls
-    // seguem funcionando, mas um `npm run dev`/`node` solto nunca entra em modo de captura.
-    if (!sidById.has(id) && since > 0 && claudeOn.has(id)) {
-      // claimed = sids já vinculados a QUALQUER outra aba viva (inclui as semeadas via --resume, que
-      // têm sidById mas talvez não claudeStartAt) — varre sidById pra não deixar buraco.
+    // VÍNCULO aba↔conversa. Só enquanto o claude é o foreground desta aba (claudeOn — persiste em
+    // tool-calls, some no retorno ao shell). Ordem: (1) anúncio determinístico do shim, (2) reconcile
+    // de GHOST bind, (3) fallback por birthtime.
+    if (claudeOn.has(id)) {
+      const since = claudeStartAt.get(id) ?? 0
+
+      // (1) DETERMINÍSTICO: a função `claude` do shim forçou --session-id e anunciou em
+      // $DECKY_CLAUDE_SID_DIR/<id>. Consome e vincula na hora — sem adivinhar, sem esperar o .jsonl
+      // nascer. Só quando ainda não há vínculo (anúncio de uma run nova, após voltar ao shell que
+      // limpou o sid). Consumir o arquivo evita re-vincular stale depois.
+      if (!sidById.has(id)) {
+        const announced = readAnnouncedSid(id)
+        if (announced) {
+          sidById.set(id, announced)
+          events.onClaude?.(id, { running: true, sessionId: announced })
+        }
+      }
+
+      // claimed = sids já vinculados a QUALQUER outra aba viva (inclui semeados via --resume, que têm
+      // sidById mas talvez não claudeStartAt). upperMs = launch da próxima aba SEM vínculo no mesmo cwd
+      // que subiu claude depois de nós (conversa nascida após isso é dela — anti-swap).
       const claimed = new Set<string>()
       for (const [otherId, sid] of sidById) if (otherId !== id) claimed.add(sid)
-      // upperMs = launch da próxima aba SEM vínculo no mesmo cwd que subiu claude depois de nós.
       let upperMs = Infinity
       for (const [otherId, otherStart] of claudeStartAt) {
         if (otherId === id || sidById.has(otherId)) continue
@@ -395,10 +463,35 @@ function pollProcesses(): void {
           upperMs = otherStart
         }
       }
-      const sessionId = resolveClaudeSessionByBirth(cwd, since, claimed, upperMs)
-      if (sessionId) {
-        sidById.set(id, sessionId)
-        events.onClaude?.(id, { running: true, sessionId })
+
+      // (2) GHOST BIND: o sid vinculado NÃO tem transcript no disco embora o claude rode. Acontece
+      // quando a conversa REAL da aba divergiu do sid fixado — /clear (gera um sid novo sem voltar ao
+      // shell, então o vínculo nunca soltou) ou um --session-id que não virou transcript. Re-resolve
+      // pra conversa de verdade sendo escrita no cwd. resolveByBirth só devolve sid que EXISTE no
+      // disco, então um sid recém-anunciado cujo .jsonl ainda não nasceu NÃO acha candidato → não é
+      // solto à toa. Sem isso, uma aba com /clear ficava presa a um sid morto, sem título, pra sempre.
+      const bound = sidById.get(id)
+      if (bound && since > 0 && !claudeSessionExistsOnDisk(cwd, bound)) {
+        const real = resolveClaudeSessionByBirth(cwd, since, claimed, upperMs)
+        if (real && real !== bound) {
+          sidById.set(id, real)
+          lastTitleMtime.delete(id) // re-sincroniza o título do zero pra conversa nova
+          lastTitle.delete(id)
+          events.onClaude?.(id, { running: true, sessionId: real })
+        }
+      }
+
+      // (3) FALLBACK por BIRTHTIME: claude fora do shim (bash, path absoluto, build antigo) → sem
+      // anúncio. Captura a conversa que ESTA aba criou pelo birthtime do .jsonl/pasta. NÃO há janela de
+      // 7s: o .jsonl nasce no 1º prompt (pode demorar) e o give-up orfanava sessões. claudeStartAt fica
+      // ancorado na 1ª aparição do claude; o upperMs faz o anti-swap. `claude --resume X` não cria
+      // .jsonl novo → resolve dá null (sem roubo).
+      if (!sidById.has(id) && since > 0) {
+        const sessionId = resolveClaudeSessionByBirth(cwd, since, claimed, upperMs)
+        if (sessionId) {
+          sidById.set(id, sessionId)
+          events.onClaude?.(id, { running: true, sessionId })
+        }
       }
     }
 
@@ -420,6 +513,23 @@ function startProcPolling(): void {
 // chato: o /etc/zshrc força HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history no startup, sobrescrevendo
 // qualquer HISTFILE do env. Por isso usamos um ZDOTDIR "shim" (carrega a config real do usuário e
 // SÓ no fim fixa o HISTFILE da aba). Pra outros shells (bash) o HISTFILE do env basta.
+// Função `claude` injetada no shim: força um --session-id conhecido e o anuncia pro decky (vínculo
+// determinístico). Passthrough quando o id já vem dado/criado (--resume/--continue/--session-id/
+// --from-pr) ou fora de uma sessão decky. `command claude` pula a função e acha o binário real (sem
+// loop). Lowercase no uuid pra casar com o basename do .jsonl que o claude cria.
+const CLAUDE_SHIM_FN =
+  'claude() {\n' +
+  '  if [[ -z "$DECKY_SESSION_ID" || -z "$DECKY_CLAUDE_SID_DIR" ]]; then command claude "$@"; return; fi\n' +
+  '  local a\n' +
+  '  for a in "$@"; do\n' +
+  '    case "$a" in -r|--resume|-c|--continue|--session-id|--from-pr) command claude "$@"; return ;; esac\n' +
+  '  done\n' +
+  '  local sid="$(uuidgen | tr "A-Z" "a-z")"\n' +
+  '  mkdir -p "$DECKY_CLAUDE_SID_DIR"\n' +
+  '  print -rn -- "$sid" > "$DECKY_CLAUDE_SID_DIR/$DECKY_SESSION_ID"\n' +
+  '  command claude --session-id "$sid" "$@"\n' +
+  '}\n'
+
 let zshShimDir: string | null = null
 function ensureZshShim(): string {
   if (zshShimDir) return zshShimDir
@@ -428,11 +538,14 @@ function ensureZshShim(): string {
   // .zshenv mantém o ZDOTDIR=shim ativo até o estágio do .zshrc; só carrega o real do usuário.
   writeFileSync(join(dir, '.zshenv'), '[ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"\n')
   // .zshrc devolve ZDOTDIR pro $HOME (config real e subshells veem o normal), carrega o .zshrc do
-  // usuário e por ÚLTIMO isola o histórico desta aba (vence até se o real setasse HISTFILE).
+  // usuário, define a função `claude` (vínculo determinístico) e por ÚLTIMO isola o histórico desta
+  // aba (vence até se o real setasse HISTFILE). A função vem DEPOIS do .zshrc do usuário pra ganhar
+  // de aliases/funções dele.
   writeFileSync(
     join(dir, '.zshrc'),
     'ZDOTDIR="$HOME"\n' +
       '[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"\n' +
+      CLAUDE_SHIM_FN +
       '[ -n "$DECKY_HISTFILE" ] && HISTFILE="$DECKY_HISTFILE"\n'
   )
   // Defensivo (o spawn é non-login, mas caso mude): login shells carregam os reais.
@@ -459,6 +572,23 @@ function historyEnv(sessionId: string, shellFile: string): Record<string, string
   return env
 }
 
+// O process.env do decky.app pode estar CONTAMINADO: se o app foi iniciado de dentro de uma sessão
+// claude (ex.: o "⟳ Rebuild" relança o app a partir de um claude), ele herda CLAUDECODE /
+// CLAUDE_CODE_* / AI_AGENT. Se essas vars vazarem pro PTY, o `claude` rodado na aba se enxerga como
+// uma SUB-SESSÃO filha (CLAUDE_CODE_CHILD_SESSION=1) → o claude-code NÃO persiste o transcript em
+// ~/.claude/projects/<slug>/<sid>.jsonl → sem .jsonl → sem aiTitle → a aba fica eternamente no
+// placeholder. Sessões abertas fora do decky (Terminal limpo) não têm isso e funcionam — era a
+// diferença. Cada PTY tem que ser um shell de TOPO, limpo. Removemos a família de vars do claude.
+function cleanParentEnv(): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v == null) continue
+    if (k === 'CLAUDECODE' || k === 'AI_AGENT' || k.startsWith('CLAUDE_CODE')) continue
+    out[k] = v
+  }
+  return out
+}
+
 function spawnPty(args: CreatePtyArgs): void {
   const requestedFile = args.command?.[0] ?? args.shell ?? defaultShell()
   // O renderer pode ter mandado um path absoluto resolvido no host LOCAL (Mac); num engine
@@ -474,7 +604,7 @@ function spawnPty(args: CreatePtyArgs): void {
       rows: args.rows,
       cwd: args.cwd ?? os.homedir(),
       env: {
-        ...(process.env as { [key: string]: string }),
+        ...cleanParentEnv(),
         // GUI launch gives us launchd's minimal PATH; restore the user's real
         // PATH so spawned tools (e.g. claude rodando manual, node, npx) sejam achados.
         // DECKY_BIN_DIR (setado pelo main) vai NA FRENTE — é o que torna o `decky` disponível
@@ -483,6 +613,8 @@ function spawnPty(args: CreatePtyArgs): void {
           ? `${process.env.DECKY_BIN_DIR}:${loginShellPath()}`
           : loginShellPath(),
         DECKY_SESSION_ID: args.id,
+        // Onde a função `claude` do shim anuncia o session id forçado (vínculo determinístico).
+        DECKY_CLAUDE_SID_DIR: claudeSidDir(),
         DECKY_URL: process.env.DECKY_URL || 'http://127.0.0.1:6790',
         // Where this workspace's shared card files live, so tools can Glob/Read them.
         DECKY_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir()),
@@ -523,6 +655,7 @@ function spawnPty(args: CreatePtyArgs): void {
     claudeStartAt.delete(args.id)
     claudeOn.delete(args.id)
     lastRunning.delete(args.id)
+    clearAnnouncedSid(args.id)
     events.onExit?.(args.id, exitCode)
     settleDying(args.id) // unblock any create() waiting on this id to die
   })

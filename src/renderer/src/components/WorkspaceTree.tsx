@@ -6,7 +6,15 @@ import { t } from '../lib/i18n'
 export interface TreeSession {
   id: string
   label: string
+  // claudeSessionId da conversa (quando a aba roda claude) — chave pra recência durável (último
+  // turn real lido do .jsonl). Ausente em abas shell puro / sem claude.
+  claudeSessionId?: string
 }
+
+// Filtro de recência das ABAS na árvore: todas, ativas no último dia, ativas na última hora.
+// "Ativa" = último turn real do claude (ou atividade ao vivo) dentro da janela; a aba focada
+// nunca é escondida. Filtra as sessões dentro de cada workspace, não os workspaces em si.
+export type WsActivityFilter = 'all' | '1d' | '1h'
 
 // Uma conversa do claude guardada no disco (do workspace ativo) que NÃO está aberta como aba —
 // candidata a "carregar sessão anterior". Vem de listClaudeSessions (aiTitle/branch/mtime).
@@ -22,6 +30,11 @@ export interface PrevClaudeSession {
 interface WorkspaceTreeProps {
   isFocused?: boolean
   workspaces: string[]
+  // Quantas ABAS o filtro de recência está escondendo (0 = nada filtrado). Vira "+N ocultas" no
+  // rodapé pra deixar claro que a árvore não mostra tudo.
+  hiddenCount?: number
+  filter: WsActivityFilter
+  onFilterChange: (f: WsActivityFilter) => void
   activeWorkspace: string | null
   activeSessionId?: string
   // Cmd+Arrow nav cursor parked in another workspace; renders as a "hover" highlight
@@ -51,6 +64,9 @@ interface WorkspaceTreeProps {
 export default function WorkspaceTree({
   isFocused,
   workspaces,
+  hiddenCount = 0,
+  filter,
+  onFilterChange,
   activeWorkspace,
   activeSessionId,
   previewedSession,
@@ -191,8 +207,39 @@ export default function WorkspaceTree({
 
   return (
     <div className="wstree panel-focusable" data-panel="tree" data-focused={isFocused}>
-      <div className="wstree-title">workspaces</div>
+      <div className="wstree-head">
+        <span className="wstree-title">workspaces</span>
+        <div className="wstree-filter" role="group" aria-label="filtrar abas por atividade">
+          {(['all', '1d', '1h'] as WsActivityFilter[]).map((f) => (
+            <button
+              key={f}
+              type="button"
+              className={`wstree-filter-btn ${filter === f ? 'is-active' : ''}`}
+              title={
+                f === 'all'
+                  ? 'todas as abas'
+                  : f === '1d'
+                    ? 'apenas abas ativas nas últimas 24h'
+                    : 'apenas abas ativas na última hora'
+              }
+              onClick={() => onFilterChange(f)}
+            >
+              {f === 'all' ? 'tudo' : f}
+            </button>
+          ))}
+        </div>
+      </div>
       {workspaces.map((ws) => renderWorkspace(ws))}
+      {filter !== 'all' && hiddenCount > 0 && (
+        <button
+          type="button"
+          className="wstree-filter-more"
+          title="mostrar todas as abas"
+          onClick={() => onFilterChange('all')}
+        >
+          +{hiddenCount} aba{hiddenCount > 1 ? 's' : ''} oculta{hiddenCount > 1 ? 's' : ''}
+        </button>
+      )}
     </div>
   )
 }
@@ -262,4 +309,3 @@ function relativeTime(ts: number): string {
   const d = Math.floor(h / 24)
   return `${d}d`
 }
-

@@ -123,15 +123,21 @@ function tabCategory(type) {
 // (web vs card), keeping the concrete kind as a secondary detail. Marks the focused tab with ▸ and
 // pinned tabs with 📌, plus the url/path — so the human (or claude) sees what's open without the
 // MCP list_cards round-trip.
-async function cmdListTabs() {
+async function cmdListTabs(args = []) {
   requireSession()
+  const { flags } = parseFlags(args)
   const mirror = await api('GET', `/sessions/${encodeURIComponent(SESSION)}/cards`)
   const cards = Array.isArray(mirror && mirror.cards) ? mirror.cards : []
+  const focused = mirror.focused || null
+  // Machine-readable: the agent needs the ids to drive a specific tab with `--card=<id>`.
+  if (flags.json === true) {
+    out(JSON.stringify({ focused, tabs: cards.map((c) => ({ ...c, cat: tabCategory(c.type) })) }, null, 2))
+    return
+  }
   if (!cards.length) {
     out('no tabs open in this session.')
     return
   }
-  const focused = mirror.focused || null
   const rows = cards.map((c) => ({ ...c, cat: tabCategory(c.type) }))
   const pad = Math.max(...rows.map((r) => r.cat.length))
   let nWeb = 0
@@ -145,7 +151,10 @@ async function cmdListTabs() {
     const kind = r.cat === 'card' && r.type ? ` [${r.type}]` : ''
     const where = r.url || r.path || ''
     const title = r.title || '(untitled)'
-    out(`${mark} ${r.cat.padEnd(pad)}  ${title}${kind}${pin}${where ? `  — ${where}` : ''}`)
+    // The id is shown so it can be passed to `decky web <sub> --card=<id>` to drive a SPECIFIC tab.
+    out(
+      `${mark} ${r.cat.padEnd(pad)}  ${r.id}  ${title}${kind}${pin}${where ? `  — ${where}` : ''}`
+    )
   }
   const parts = []
   if (nWeb) parts.push(`${nWeb} web`)
@@ -215,6 +224,26 @@ async function notifyReload(absPath) {
   } catch {
     /* best-effort */
   }
+}
+
+// Incremental live patch (no full reload → no flicker): append one widget (op 'append', with
+// type/id/spec) or pop the last n (op 'pop', with n) on the open card(s) for this path. The card's
+// runtime applies it in-place. Best-effort with a graceful fallback: if /cards/patch is missing
+// (older server) or errors, fall back to a full reload so the card still updates.
+async function notifyPatch(absPath, patch) {
+  const headers = { 'content-type': 'application/json' }
+  if (SESSION) headers['x-deck-session-id'] = SESSION
+  try {
+    const r = await fetch(BASE + '/cards/patch', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(Object.assign({ path: absPath }, patch))
+    })
+    if (r.ok) return
+  } catch {
+    /* fall through to reload */
+  }
+  await notifyReload(absPath)
 }
 
 function sleep(ms) {
@@ -426,7 +455,9 @@ async function cmdAddWidget(args) {
   }
 
   const id = appendWidget(target, type, spec)
-  await notifyReload(target.path)
+  // Incremental append (no reload → no flicker). spec here already had its id stripped by
+  // appendWidget, so we pass it alongside the id explicitly. Falls back to a full reload.
+  await notifyPatch(target.path, { op: 'append', type, id, spec })
   const hintFlag = type === 'title' ? '--text="…"' : type === 'text' ? '--md="# …"' : "--spec='{…}'"
   out(`widget '${type}' (#${id}) added to ${target.path}`)
   out(`→ update it: decky set ${id} ${hintFlag}`)
@@ -522,6 +553,24 @@ async function cmdDelWidget(args) {
   out(
     `removed ${removed} widget${removed === 1 ? '' : 's'} (${ids.join(', ')}) from ${target.path}`
   )
+}
+
+// Pop the LAST widget off the focused manifest — no id needed (stack-style). Handy for scripted
+// teardown or undoing the most recent add-widget. Optional count: `decky pop [n]` pops the last n.
+async function cmdPop(args) {
+  requireSession()
+  const { pos } = parseFlags(args)
+  const n = pos.length ? Math.max(1, Number(pos[0]) || 1) : 1
+  const target = await focusedManifest()
+  if (!target) die('no manifest card focused — open the card first.')
+  const widgets = target.manifest.widgets
+  if (!widgets.length) die('the focused card has no widgets to pop.')
+  const removed = widgets.splice(Math.max(0, widgets.length - n)).reverse()
+  writeManifest(target.path, target.manifest)
+  // Incremental pop (no reload → no flicker), removing the same count from the live DOM.
+  await notifyPatch(target.path, { op: 'pop', n: removed.length })
+  const ids = removed.map((w) => `#${w.id} (${w.type})`).join(', ')
+  out(`popped ${removed.length} widget${removed.length === 1 ? '' : 's'}: ${ids} — ${widgets.length} left`)
 }
 
 // Convenience one-liner: ensure a title on screen. Appends to the focused manifest, or creates a
@@ -735,7 +784,7 @@ function webUsage() {
   const rows = [
     [
       'navigate <url>',
-      'open/navigate a web card (settles by default; --no-settle; --resilient for anti-bot)'
+      'open/navigate a web card (--new forces a fresh tab; --no-settle; --resilient for anti-bot)'
     ],
     [
       'captcha-wait',
@@ -856,8 +905,10 @@ async function cmdWeb(args) {
       const url = pos.join(' ').trim()
       if (!url)
         die(
-          'usage: decky web navigate <url> [--no-settle] [--resilient [--warm-up=<url>] [--retries=N]]'
+          'usage: decky web navigate <url> [--new] [--no-settle] [--resilient [--warm-up=<url>] [--retries=N]]'
         )
+      const forceNew = flags.new === true
+      if (forceNew && card) die('navigate: --new and --card=<id> are mutually exclusive')
       if (flags.resilient === true) {
         return print(
           await webAct({
@@ -875,6 +926,7 @@ async function cmdWeb(args) {
           action: 'navigate',
           url,
           cardId: card,
+          forceNew: forceNew ? true : undefined,
           settle: settleOff ? false : undefined
         })
       )
@@ -1019,6 +1071,10 @@ const COMMANDS = {
   'del-widget': {
     summary: 'remove widget(s) by id from the focused card-manifest: decky del-widget <id>...',
     run: cmdDelWidget
+  },
+  pop: {
+    summary: 'remove the LAST widget from the focused card-manifest (stack pop): decky pop [n]',
+    run: cmdPop
   },
   title: {
     summary: 'one-liner title: decky title <text> [--animate] (creates a card if none focused)',

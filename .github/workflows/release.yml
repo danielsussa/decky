@@ -77,3 +77,49 @@ jobs:
         with:
           files: dist/*.dmg
           fail_on_unmatched_files: true
+
+      - name: Upload DMG artifact (for cask bump)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: dist/*.dmg
+
+  # After both arches build & publish, render the cask with the real sha256s and
+  # push it to the Homebrew tap (danielsussa/homebrew-decky) over a write deploy key.
+  update-cask:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 # app repo — for packaging/decky.rb (cask template)
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Render cask with checksums
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARM_SHA=$(shasum -a 256 artifacts/dmg-arm64/*.dmg | awk '{print $1}')
+          X64_SHA=$(shasum -a 256 artifacts/dmg-x64/*.dmg | awk '{print $1}')
+          echo "version=$VERSION  arm=$ARM_SHA  x64=$X64_SHA"
+          sed -e "s/^  version \".*\"/  version \"$VERSION\"/" \
+              -e "s/REPLACE_WITH_ARM64_DMG_SHA256/$ARM_SHA/" \
+              -e "s/REPLACE_WITH_X64_DMG_SHA256/$X64_SHA/" \
+              packaging/decky.rb > /tmp/decky.rb
+
+      - name: Push to Homebrew tap
+        env:
+          DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git clone git@github.com:danielsussa/homebrew-decky.git tap
+          cp /tmp/decky.rb tap/Casks/decky.rb
+          cd tap
+          git config user.name "decky-ci"
+          git config user.email "ci@decky.local"
+          git add Casks/decky.rb
+          git commit -m "decky ${GITHUB_REF_NAME#v}" || { echo "no changes"; exit 0; }
+          git push origin HEAD

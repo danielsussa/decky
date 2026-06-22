@@ -47,11 +47,12 @@ interface WorkspaceTreeProps {
   // Resolves each workspace path to its assigned theme (drives the color-coded chip per row).
   themeFor: (path: string | null | undefined) => Theme
   nameOf: (path: string) => string
-  // Conversas do claude do workspace ATIVO que não estão abertas (picker "sessões anteriores").
-  claudePrev: PrevClaudeSession[]
-  onLoadClaudeSession: (sessionId: string) => void
+  // Conversas do claude por workspace que não estão abertas (picker "sessões anteriores"). Indexado
+  // por workspace pra o picker abrir embaixo de QUALQUER workspace expandido, não só o ativo.
+  claudePrevByWs: Record<string, PrevClaudeSession[]>
+  onLoadClaudeSession: (ws: string, sessionId: string) => void
   // "x" do picker: apaga DEFINITIVAMENTE a conversa (some da lista + remove o .jsonl do disco).
-  onDeleteClaudeSession: (sessionId: string) => void
+  onDeleteClaudeSession: (ws: string, sessionId: string) => void
   onToggleExpand: (ws: string) => void
   onSelectSession: (ws: string, sessionId: string) => void
   onNewSession: (ws: string) => void
@@ -81,7 +82,7 @@ export default function WorkspaceTree({
   onNewSession,
   onCloseSession,
   onCloseWorkspace,
-  claudePrev,
+  claudePrevByWs,
   onLoadClaudeSession,
   onDeleteClaudeSession
 }: WorkspaceTreeProps): React.JSX.Element {
@@ -99,6 +100,8 @@ export default function WorkspaceTree({
     const isActiveWs = ws === activeWorkspace
     const isPreviewWs = previewedSession?.ws === ws
     const sessions = sessionsByWorkspace[ws] ?? []
+    // Conversas anteriores deste workspace (não só o ativo) — abre embaixo de qualquer ws expandido.
+    const claudePrev = claudePrevByWs[ws] ?? []
     // Each workspace title carries its OWN hue (from the persisted assignment, same as the
     // surface theme when that workspace is active), so the list reads as a color-coded legend.
     const wsAccent = themeFor(ws)[mode].vars['--accent']
@@ -181,7 +184,7 @@ export default function WorkspaceTree({
               <Plus size={12} />
               <span>{t('ws.newSession')}</span>
             </button>
-            {isActiveWs && claudePrev.length > 0 && (
+            {claudePrev.length > 0 && (
               <button
                 type="button"
                 className="wstree-new"
@@ -192,11 +195,11 @@ export default function WorkspaceTree({
                 <span>sessões anteriores ({claudePrev.length})</span>
               </button>
             )}
-            {isActiveWs && prevOpenFor[ws] && (
+            {prevOpenFor[ws] && claudePrev.length > 0 && (
               <PrevClaudeSessions
                 items={claudePrev}
-                onLoad={onLoadClaudeSession}
-                onDelete={onDeleteClaudeSession}
+                onLoad={(sid) => onLoadClaudeSession(ws, sid)}
+                onDelete={(sid) => onDeleteClaudeSession(ws, sid)}
               />
             )}
           </div>

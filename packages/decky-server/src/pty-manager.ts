@@ -4,7 +4,12 @@ import { execSync, execFile } from 'node:child_process'
 import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { workspaceCardsDir } from '@decky/shared/node'
-import { claudeSessionFile, readLatestAiTitle } from './claude-sessions'
+import {
+  claudeSessionFile,
+  isHeadlessClaudeSession,
+  readFirstPrompt,
+  readLatestAiTitle
+} from './claude-sessions'
 
 // PTY multiplexer + lifecycle. Puro Node — sem Electron API. Eventos saem via callbacks
 // registrados em setPtyManagerEvents (shim Electron registra-os apontando pra webContents.send;
@@ -92,6 +97,12 @@ export interface ClaudeInfo {
   running: boolean
   /** id da conversa do claude (basename do .jsonl) pra `claude --resume` no próximo boot. */
   sessionId?: string
+  /**
+   * Linha de lançamento do claude já EXPANDIDA pelo shell (um alias como `myclaude` chega aqui como o
+   * comando real, ex 'claude --model x') e SEM o `--session-id <uuid>` que o shim injeta. Capturada uma
+   * vez por run, quando o claude sobe. Alimenta o "definir <cmd> como default do workspace" no renderer.
+   */
+  launchCmd?: string
 }
 
 export interface PtyManagerEvents {
@@ -242,6 +253,30 @@ function resolveRunningCmd(id: string, shellPid: number): void {
   })
 }
 
+// Remove o `--session-id <uuid>` que o shim do claude injeta (ver ensureZshShim) — é por-conversa, não
+// faz parte do "comando default" que o usuário quer relançar em abas novas.
+function stripInjectedSid(cmd: string): string {
+  return cmd.replace(/\s+--session-id\s+[0-9a-f-]{36}/i, '').trim()
+}
+
+// Captura a LINHA de lançamento do claude desta aba pra oferecer "definir como default do workspace".
+// Pega o comando do líder do foreground group (o claude já está em foreground aqui) via `ps -o command=`:
+// isso devolve o comando JÁ EXPANDIDO pelo shell (aliases viram o comando real), que é justamente a
+// "expansão" que queremos persistir (preserva as flags). Tira só o --session-id que o shim injetou.
+// Emitido uma vez por run (chamado quando o claude vira foreground), via onClaude sem mexer no sessionId.
+function captureLaunchCmd(id: string, shellPid: number): void {
+  execFile('ps', ['-o', 'tpgid=', '-p', String(shellPid)], (err, out) => {
+    if (err) return
+    const tpgid = Number(out.trim())
+    if (!Number.isFinite(tpgid) || tpgid <= 0) return
+    execFile('ps', ['-o', 'command=', '-p', String(tpgid)], (err2, out2) => {
+      if (err2) return
+      const launchCmd = stripInjectedSid(out2.trim())
+      if (launchCmd) events.onClaude?.(id, { running: true, launchCmd })
+    })
+  })
+}
+
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // Encoding do dir de projeto do claude: `/` e `.` viram `-` (ex.
@@ -324,6 +359,12 @@ function resolveClaudeSessionByBirth(
       // (`upperMs`) é o launch da próxima aba do cwd, ou Infinity se ela é a última a ter subido
       // claude — daí espera o .jsonl nascer por quanto tempo for (1º prompt demorado), sem orfanar.
       if (born < sinceMs - 3000 || born >= upperMs) continue
+      // Conversa headless (claude -p / Agent SDK de um loop): NÃO é a conversa que ESTA aba
+      // interativa criou — um loop pode parir dezenas no mesmo cwd dentro da janela de birthtime.
+      // Sem isto, a aba bindava numa spawn que nunca recebe aiTitle e ficava eternamente no
+      // placeholder. Só checável no .jsonl (pasta-só não tem head legível → não exclui). Checado só
+      // após a janela pra não ler head de arquivos fora do intervalo a cada poll.
+      if (e.isFile() && isHeadlessClaudeSession(join(dir, e.name))) continue
       // Dentro da janela, pega o nascido MAIS PRÓXIMO do claudeStartAt (= a conversa DESTA aba). Pegar
       // "o mais novo" deixava uma aba roubar o .jsonl de OUTRA aba que iniciou claude poucos s depois.
       if (!best || Math.abs(born - sinceMs) < Math.abs(best.born - sinceMs)) best = { id: sid, born }
@@ -352,10 +393,13 @@ function claudeSessionExistsOnDisk(cwd: string, sid: string): boolean {
   return false
 }
 
-// Sync contínuo aiTitle → título da aba. Roda no poll pra cada aba com conversa do claude já
-// resolvida (sidById). Gated por mtime do .jsonl (não re-parseia a cada 1.5s) e por valor (não
-// re-emite o mesmo título). O aiTitle só aparece após alguns turnos — até lá readLatestAiTitle dá
-// null e a aba mantém o placeholder aleatório.
+// Sync contínuo do título da aba a partir do .jsonl da conversa. Roda no poll pra cada aba com
+// conversa do claude já resolvida (sidById). Gated por mtime do .jsonl (não re-parseia a cada 1.5s)
+// e por valor (não re-emite o mesmo título).
+// Prioridade: aiTitle (auto-gerado pelo claude) → primeiro prompt do usuário (fallback). O aiTitle
+// só aparece após alguns turnos (e em versões antigas do claude — ex. 2.1.80 — NUNCA aparece); até
+// lá usamos o 1º prompt, o MESMO que o picker "sessões anteriores" já mostra. Assim a aba nunca fica
+// presa no placeholder aleatório, e quando o aiTitle chega ele sobrescreve o fallback.
 function syncAiTitle(id: string, cwd: string, claudeSessionId: string): void {
   const file = claudeSessionFile(cwd, claudeSessionId)
   let mtimeMs: number
@@ -366,7 +410,7 @@ function syncAiTitle(id: string, cwd: string, claudeSessionId: string): void {
   }
   if (lastTitleMtime.get(id) === mtimeMs) return
   lastTitleMtime.set(id, mtimeMs)
-  const title = readLatestAiTitle(file)
+  const title = readLatestAiTitle(file) ?? readFirstPrompt(file)
   if (!title || lastTitle.get(id) === title) return
   lastTitle.set(id, title)
   events.onTitle?.(id, title)
@@ -396,6 +440,9 @@ function pollProcesses(): void {
       // demorado segue válida). npm/node/vite soltos não entram (não passam em looksLikeClaude).
       if (looksLikeClaude(base) && !claudeOn.has(id)) {
         claudeStartAt.set(id, Date.now())
+        // 1ª aparição do claude nesta run (tool-calls não re-disparam: claudeOn já fica true) → captura
+        // a linha de lançamento pro "definir como default". term.pid = pid do shell desta aba.
+        captureLaunchCmd(id, term.pid)
       }
       // claude em foreground (nome 'claude' ou a versão X.Y.Z) → flip imediato (responsivo p/ a
       // animação de borda).

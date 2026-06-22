@@ -36,11 +36,37 @@ function projectSlug(cwd: string): string {
 // `memory/` (e afins) de uma sessão ao varrer o dir do projeto.
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// `entrypoint`/`promptSource` que o claude carimba no 1º user record distinguem a ORIGEM da sessão:
+//   • 'cli' / 'typed'  → sessão interativa que o usuário ABRIU e digitou (resumível, ganha aiTitle).
+//   • 'sdk-cli' / 'sdk' → invocação PROGRAMÁTICA (`claude -p` / Agent SDK), tipicamente um loop/
+//     automação que dispara dezenas de runs one-shot no mesmo cwd. Essas nunca recebem aiTitle,
+//     não são resumíveis pelo usuário e, sem filtro: (1) inundam o picker "sessões anteriores" com
+//     o mesmo primeiro-prompt empurrando a sessão real pra baixo, e (2) roubam o vínculo de uma aba
+//     viva pelo birthtime, deixando a aba presa numa conversa que jamais vira título. Filtramos.
+function isHeadlessSdk(txt: string): boolean {
+  return /"entrypoint":"sdk-cli"/.test(txt) || /"promptSource":"sdk"/.test(txt)
+}
+
+// Versão file-level (lê só um head pequeno): o entrypoint vem no 1º user record, cedo no arquivo.
+// Usado pelo resolvedor de vínculo do pty-manager pra NÃO bindar uma aba a uma spawn headless.
+// Default conservador: se não dá pra ler/decidir, retorna false (não exclui).
+export function isHeadlessClaudeSession(file: string): boolean {
+  try {
+    const fd = openSync(file, 'r')
+    const buf = Buffer.alloc(65536)
+    const n = readSync(fd, buf, 0, buf.length, 0)
+    closeSync(fd)
+    return isHeadlessSdk(buf.toString('utf8', 0, n))
+  } catch {
+    return false
+  }
+}
+
 // Lê só um prefixo do .jsonl (título/branch aparecem nos primeiros records; evita carregar
 // transcripts de vários MB). Extrai por regex pra não depender de linhas JSON completas.
 function readHeadFields(
   file: string
-): Pick<ClaudeSessionInfo, 'title' | 'gitBranch' | 'lastPrompt'> {
+): Pick<ClaudeSessionInfo, 'title' | 'gitBranch' | 'lastPrompt'> & { headless: boolean } {
   let txt = ''
   try {
     const fd = openSync(file, 'r')
@@ -49,7 +75,7 @@ function readHeadFields(
     closeSync(fd)
     txt = buf.toString('utf8', 0, n)
   } catch {
-    return { title: null, gitBranch: null, lastPrompt: null }
+    return { title: null, gitBranch: null, lastPrompt: null, headless: false }
   }
   const grab = (key: string): string | null => {
     const m = new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`).exec(txt)
@@ -60,7 +86,12 @@ function readHeadFields(
       return m[1]
     }
   }
-  return { title: grab('aiTitle'), gitBranch: grab('gitBranch'), lastPrompt: firstUserPrompt(txt) }
+  return {
+    title: grab('aiTitle'),
+    gitBranch: grab('gitBranch'),
+    lastPrompt: firstUserPrompt(txt),
+    headless: isHeadlessSdk(txt)
+  }
 }
 
 // 1º prompt de verdade do usuário — rótulo de fallback pras conversas SEM aiTitle no picker (em vez
@@ -134,7 +165,12 @@ export function listClaudeSessions(cwd: string): ClaudeSessionInfo[] {
     seen.add(sid)
     const full = join(dir, `${sid}.jsonl`)
     let mtimeMs = 0
-    let head = { title: null, gitBranch: null, lastPrompt: null } as ReturnType<typeof readHeadFields>
+    let head = {
+      title: null,
+      gitBranch: null,
+      lastPrompt: null,
+      headless: false
+    } as ReturnType<typeof readHeadFields>
     let lastTurnMs = 0
     try {
       mtimeMs = statSync(full).mtimeMs
@@ -151,7 +187,11 @@ export function listClaudeSessions(cwd: string): ClaudeSessionInfo[] {
         continue
       }
     }
-    rows.push({ id: sid, mtimeMs, lastTurnMs, ...head })
+    // Sessão headless (claude -p / Agent SDK de um loop): fora do picker — não é resumível e só
+    // duplicaria a lista com o mesmo primeiro-prompt. `headless` é false pra pasta-só (head ilegível).
+    if (head.headless) continue
+    const { headless: _headless, ...headInfo } = head
+    rows.push({ id: sid, mtimeMs, lastTurnMs, ...headInfo })
   }
   rows.sort((a, b) => b.mtimeMs - a.mtimeMs)
   return rows
@@ -194,6 +234,25 @@ function lastTurnTime(file: string): number {
     if (t > max) max = t
   }
   return max
+}
+
+// Primeiro prompt do usuário lido do HEAD do .jsonl — MESMO texto que alimenta o picker
+// (readHeadFields.lastPrompt), exposto pro pty-manager usar como FALLBACK de título de aba ao vivo
+// quando a conversa não tem aiTitle. É o caso de versões antigas do claude (< as que geram aiTitle
+// automaticamente, ex. 2.1.80): sem isto a aba ficava eternamente no placeholder embora o picker já
+// mostrasse o primeiro prompt. null enquanto não há prompt humano legível.
+export function readFirstPrompt(file: string): string | null {
+  let txt = ''
+  try {
+    const fd = openSync(file, 'r')
+    const buf = Buffer.alloc(262144) // mesmo head do readHeadFields (folga p/ imagem inline no topo)
+    const n = readSync(fd, buf, 0, buf.length, 0)
+    closeSync(fd)
+    txt = buf.toString('utf8', 0, n)
+  } catch {
+    return null
+  }
+  return firstUserPrompt(txt)
 }
 
 /** Caminho do .jsonl da conversa do claude pra este cwd + sessionId. */

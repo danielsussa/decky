@@ -28,13 +28,12 @@ export default function TerminalHost({
         const isActive = s.id === activeId
         // `claudeSessionId` é sticky (capturado uma vez, não some quando o claude sai de foreground)
         // → é ELE, não o flag instantâneo `claude`, que decide o resume: se a aba já teve uma
-        // conversa, relança nela com `--resume <id>`. `claude` sem id (rodou mas não capturamos a
-        // conversa) cai no `claude` limpo. Terminal lê isto só no mount, flips em runtime não re-injetam.
+        // conversa, relança nela com `--resume <id>`. Sem conversa, usa o `autorunCmd` (comando default
+        // do workspace, ex 'claude --model x') e cai no `claude` limpo pro seed legado `claude:true`.
+        // Terminal lê isto só no mount, flips em runtime não re-injetam.
         const autorun = s.claudeSessionId
           ? `claude --resume ${s.claudeSessionId}`
-          : s.claude
-            ? 'claude'
-            : undefined
+          : (s.autorunCmd ?? (s.claude ? 'claude' : undefined))
         return (
           <div key={s.id} className={`termhost-body ${isActive ? 'termhost-body-active' : ''}`}>
             <Terminal

@@ -23,7 +23,7 @@ function engineForSession(_id?: string): string {
 
 type PtyDataMsg = { id: string; data: string }
 type PtyExitMsg = { id: string; code: number }
-type PtyClaudeMsg = { id: string; running: boolean; sessionId?: string }
+type PtyClaudeMsg = { id: string; running: boolean; sessionId?: string; launchCmd?: string }
 type ClaudeSessionInfo = {
   id: string
   title: string | null
@@ -272,6 +272,14 @@ const deckApi = {
       return () => ipcRenderer.removeListener('app:flush', listener)
     },
     flushDone: (): void => ipcRenderer.send('app:flush-done'),
+    // Main devolveu o foco de OS pra janela depois que um WebContentsView (card) o roubou durante
+    // uma carga em background. win.webContents.focus() não recoloca o <textarea> do xterm, então o
+    // renderer recoloca no terminal ativo aqui. Ver web-views.guardLoadFocus / returnFocusToRenderer.
+    onFocusStolenBack: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('app:focus-stolen-back', listener)
+      return () => ipcRenderer.removeListener('app:focus-stolen-back', listener)
+    },
     // Main forwards every link click / window.open from the renderer here so we can spawn an
     // internal web card instead of leaking to the OS browser.
     onOpenUrl: (callback: (url: string) => void): (() => void) => {

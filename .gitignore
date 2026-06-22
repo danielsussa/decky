@@ -12,6 +12,9 @@ out
 .deck-dev/
 build/decky-signing.p12
 packages/decky-server/dist/
+# tsc output emitted alongside the .ts source (rootDir:./src, no outDir) — regenerable build
+# artifact for the plain-node/remote-engine path; the .ts is the source of truth.
+packages/decky-server/src/**/*.js
 .venv/
 scripts/out/
 

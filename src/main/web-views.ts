@@ -263,6 +263,7 @@ class WebViewsManager {
     if (s.pendingUrl && rounded.width > 0 && rounded.height > 0) {
       const url = s.pendingUrl
       s.pendingUrl = null
+      this.guardLoadFocus(s.view.webContents)
       void s.view.webContents.loadURL(url).catch(() => {})
     }
     // Dwell tracking: non-zero bounds = visível, zero = escondido. O capture.ts ignora flips
@@ -281,6 +282,7 @@ class WebViewsManager {
     const s = this.views.get(cardId)
     if (!s) return
     s.failedUrl = null
+    this.guardLoadFocus(s.view.webContents)
     void s.view.webContents.loadURL(url).catch(() => {})
   }
 
@@ -306,21 +308,35 @@ class WebViewsManager {
     if (wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward()
   }
 
+  // Qualquer (re)carga de uma WebContentsView faz o Chromium dar o foco de OS pra view nativa —
+  // roubando o foco do renderer "do nada" enquanto o usuário pode estar digitando no terminal. Isso
+  // vale pro live-reload (reload), pra navegação em background (navigate) E pra PRIMEIRA carga de um
+  // card recém-criado (setBounds dispara o loadURL adiado) — ex: o agente faz preview_show/monta um
+  // card enquanto o usuário digita. Chamar ANTES de disparar o load.
+  //
+  // Só devolvemos o foco se o RENDERER (terminal/UI) o tinha quando a carga começou: se estava na
+  // própria view, em OUTRO card, ou noutro app, não mexe. E não basta `win.webContents.focus()` —
+  // o Chromium devolve o foco de OS pra janela mas o <textarea> do xterm fica blur (activeElement
+  // vira o body) e o que o usuário digita não cai em lugar nenhum. Por isso, além de focar a janela,
+  // mandamos um IPC pro renderer recolocar o foco no elemento certo (o terminal ativo).
+  private guardLoadFocus(wc: WebContents): void {
+    const win = this.getWin()
+    const rendererHadFocus =
+      !!win && !win.isDestroyed() && !win.webContents.isDestroyed() && win.webContents.isFocused()
+    if (!rendererHadFocus) return
+    wc.once('did-stop-loading', () => {
+      const w = this.getWin()
+      if (!w || w.isDestroyed() || w.webContents.isDestroyed()) return
+      if (!w.webContents.isFocused()) w.webContents.focus()
+      w.webContents.send('app:focus-stolen-back')
+    })
+  }
+
   reload(cardId: string): void {
     const s = this.views.get(cardId)
     if (!s) return
     const wc = s.view.webContents
-    // Live-reload (arquivo do card muda no disco) recarrega a view enquanto o usuário pode estar
-    // digitando no terminal do renderer. Ao recarregar, o Chromium devolve o foco de OS pra view
-    // nativa — roubando o foco "do nada". Se a view NÃO estava com foco (caso do live-reload; o
-    // reload manual pelo address bar tem a view focada), devolvemos o foco ao renderer assim que o
-    // novo load assenta.
-    if (!wc.isFocused()) {
-      wc.once('did-stop-loading', () => {
-        const win = this.getWin()
-        if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.focus()
-      })
-    }
+    this.guardLoadFocus(wc)
     // Reload em cima da página de erro recarregaria o próprio data: URL (no-op visual). O que
     // o usuário quer é tentar de novo a URL que falhou — re-disparamos a navegação real.
     if (s.failedUrl) {

@@ -272,19 +272,22 @@ function randomSessionName(): string {
 
 // withClaude seeds the session with claude as its foreground process (TerminalHost autoruns
 // `claude`) — used when the workspace's persisted default (defaultCmdByWs) is 'claude'.
-function defaultSession(cwd: string, withClaude = false): Session {
+function defaultSession(cwd: string, autorunCmd?: string | null): Session {
   return {
     id: `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     label: randomSessionName(),
     project: projectFromCwd(cwd),
     cwd,
-    ...(withClaude ? { claude: true } : {})
+    ...(autorunCmd ? { autorunCmd } : {})
   }
 }
 
-// The workspace's chosen default starts a new session in `claude` (vs a plain shell).
-function wantsClaudeDefault(map: Record<string, string>, cwd: string): boolean {
-  return map[cwd] === 'claude'
+// O comando default escolhido pro workspace: a string a dar autorun numa aba nova. A sentinela 'shell'
+// (ou nada escolhido) = shell puro → null. Qualquer outra string ('claude', 'claude --model x', a
+// expansão de um alias…) = autorun dela. Antes isto era um booleano só-claude (wantsClaudeDefault).
+function defaultCmdFor(map: Record<string, string>, cwd: string): string | null {
+  const v = map[cwd]
+  return v && v !== 'shell' ? v : null
 }
 
 // Drop legacy claude-specific fields persistidos antes do refactor "terminal direto" — o disco
@@ -623,18 +626,22 @@ function App(): React.JSX.Element {
   // id-da-aba -> comando em foreground (npm run dev…), vira sufixo no nome da aba. Transitório (não
   // persiste): empurrado pelo pty-manager, '' quando o processo termina / volta pro prompt.
   const [runningById, setRunningById] = useState<Record<string, string>>({})
-  // Lista completa das conversas do claude do workspace ativo (do disco) — fonte do picker
-  // "sessões anteriores". Recarregada por workspace junto do aiTitleBySid.
-  const [claudeSessions, setClaudeSessions] = useState<
-    {
-      id: string
-      title: string | null
-      gitBranch: string | null
-      lastPrompt: string | null
-      mtimeMs: number
-      lastTurnMs: number
-    }[]
-  >([])
+  // Conversas do claude do disco, indexadas por workspace — fonte do picker "sessões anteriores".
+  // Carregada pra TODO workspace expandido na árvore (não só o ativo), pra o picker abrir embaixo
+  // de qualquer workspace. Recarregada junto do aiTitleBySid.
+  const [claudeSessionsByWs, setClaudeSessionsByWs] = useState<
+    Record<
+      string,
+      {
+        id: string
+        title: string | null
+        gitBranch: string | null
+        lastPrompt: string | null
+        mtimeMs: number
+        lastTurnMs: number
+      }[]
+    >
+  >({})
   const [wsLoaded, setWsLoaded] = useState(false)
   const [lastWorkspaceResolved, setLastWorkspaceResolved] = useState(false)
   // Per-workspace abs path to <workspace>/.decky[-dev]/cards/tags-index.html. Materialized by
@@ -670,6 +677,10 @@ function App(): React.JSX.Element {
   // Drives a thin accent strip on top so the user knows which area their keys land in.
   // Tracked via a global focusin + pointerdown listener (see effect below).
   const [focusedPanel, setFocusedPanel] = useState<'terminal' | 'tree' | 'preview' | null>(null)
+  // Mirror em ref pro handler de "foco roubado de volta" (onFocusStolenBack) saber, sem re-criar o
+  // listener, em qual painel o usuário estava quando um card roubou o foco.
+  const focusedPanelRef = useRef(focusedPanel)
+  focusedPanelRef.current = focusedPanel
   // Dev-only rebuild (packaged macOS app + ~/.decky/dev.json marker). Triggered from the
   // command palette (Cmd/Ctrl+P) or the dev keyboard accel. See dev-rebuild.ts.
   const [devInfo, setDevInfo] = useState<{ enabled: boolean; accel: string }>({
@@ -687,6 +698,9 @@ function App(): React.JSX.Element {
   // switch workspace first; these tell the load effect what to do once its sessions land.
   const pendingActiveRef = useRef<string | null>(null)
   const pendingNewRef = useRef(false)
+  // claudeSessionId a resumir num workspace que ainda não é o ativo (picker "sessões anteriores"
+  // de um workspace não-ativo): trocamos de workspace e o load effect abre a aba `--resume`.
+  const pendingResumeRef = useRef<string | null>(null)
   const userInputAtRef = useRef<Record<string, number>>({})
   // When each session was last switched-to (made visible). Output within
   // SWITCH_REPAINT_GUARD_MS of this is the switch-induced repaint, not bot activity.
@@ -873,7 +887,7 @@ function App(): React.JSX.Element {
     // claude entrou/saiu de foreground num terminal. Grava o estado na sessão (persistido no
     // workspace.json) pra o próximo boot relançar `claude --resume <id>` por cima do shell.
     // Atualiza nas DUAS listas (sessions = workspace atual; liveSessions = pool cross-workspace).
-    const unsubClaude = window.deck.pty.onClaude(({ id, running, sessionId }) => {
+    const unsubClaude = window.deck.pty.onClaude(({ id, running, sessionId, launchCmd }) => {
       const patch = (s: Session): Session => {
         if (s.id !== id) return s
         // Atualiza pro id capturado — o birthtime (no pty-manager) garante que é a conversa DESTA
@@ -881,8 +895,11 @@ function App(): React.JSX.Element {
         // claude sai pro shell sem id novo (sticky). E PERMITE re-associação: se um claude NOVO
         // inicia na mesma aba (saiu de A, abriu B), o birthtime captura B e a aba vira B.
         const nextSid = running && sessionId ? sessionId : s.claudeSessionId
-        if (s.claude === running && s.claudeSessionId === nextSid) return s
-        return { ...s, claude: running, claudeSessionId: nextSid }
+        // launchCmd é sticky (vem num evento próprio, sem sessionId) — preserva entre flips.
+        const nextLaunch = launchCmd ?? s.launchCmd
+        if (s.claude === running && s.claudeSessionId === nextSid && s.launchCmd === nextLaunch)
+          return s
+        return { ...s, claude: running, claudeSessionId: nextSid, launchCmd: nextLaunch }
       }
       setSessions((prev) => {
         const next = prev.map(patch)
@@ -1036,7 +1053,7 @@ function App(): React.JSX.Element {
       const { workspace: ws, startupCwd: scwd, defaultCmdByWs: dmap } = stateRef.current
       const cwd = ws || scwd
       if (!cwd) return
-      const def = defaultSession(cwd, wantsClaudeDefault(dmap, cwd))
+      const def = defaultSession(cwd, defaultCmdFor(dmap, cwd))
       setSessions((prev) => [...prev, def])
       setActiveId(def.id)
     })
@@ -1320,13 +1337,30 @@ function App(): React.JSX.Element {
         if (pendingNewRef.current) {
           const def = defaultSession(
             workspace,
-            wantsClaudeDefault(stateRef.current.defaultCmdByWs, workspace)
+            defaultCmdFor(stateRef.current.defaultCmdByWs, workspace)
           )
           sess = [...sess, def]
           initial = def.id
         }
+        // Resume de uma "sessão anterior" escolhida num workspace que não era o ativo: abre uma
+        // aba nova com o claudeSessionId e foca. O contexto de cards é restaurado abaixo (depois
+        // do claudeCtxRe deste workspace estar carregado).
+        const resumeSid = pendingResumeRef.current
+        let resumeDefId: string | null = null
+        if (resumeSid) {
+          const open = sess.find((s) => s.claudeSessionId === resumeSid)
+          if (open) {
+            initial = open.id
+          } else {
+            const def = { ...defaultSession(workspace), claudeSessionId: resumeSid }
+            sess = [...sess, def]
+            initial = def.id
+            resumeDefId = def.id
+          }
+        }
         pendingActiveRef.current = null
         pendingNewRef.current = false
+        pendingResumeRef.current = null
         // Mark the loaded workspace BEFORE setSessions: the prune effect keys off this ref to
         // know which workspace `sessions` represents. If we update it later, the `await
         // rehydrate({p: pinned})` below splits the microtask — React processes the setSessions
@@ -1353,13 +1387,29 @@ function App(): React.JSX.Element {
         if (!cancelled) setPinned(pinnedRe)
         const claudeCtxRe = await rehydrateCardsByClaude(data.cardsByClaudeSession, workspace)
         if (!cancelled) setCardsByClaudeSession(claudeCtxRe)
+        // Restaura o painel direito da conversa resumida cross-workspace, agora que o contexto
+        // de cards deste workspace está carregado.
+        if (!cancelled && resumeDefId && resumeSid) {
+          const defId = resumeDefId
+          const ctx = claudeCtxRe[resumeSid]
+          if (ctx) {
+            setCardsBySession((p) => ({ ...p, [defId]: ctx.cards }))
+            setFocusedCardBySession((p) => ({ ...p, [defId]: ctx.focused }))
+            setPreviewsByCard((p) => ({ ...p, [defId]: ctx.previews }))
+          }
+        }
       } else {
-        const def = defaultSession(
+        const base = defaultSession(
           workspace,
-          wantsClaudeDefault(stateRef.current.defaultCmdByWs, workspace)
+          defaultCmdFor(stateRef.current.defaultCmdByWs, workspace)
         )
+        // Workspace sem state persistido mas com uma "sessão anterior" no disco a resumir.
+        const def = pendingResumeRef.current
+          ? { ...base, claudeSessionId: pendingResumeRef.current }
+          : base
         pendingActiveRef.current = null
         pendingNewRef.current = false
+        pendingResumeRef.current = null
         loadedWorkspaceRef.current = workspace
         setSessions([def])
         setActiveId(def.id)
@@ -1795,7 +1845,7 @@ function App(): React.JSX.Element {
         const { workspace: ws, startupCwd: scwd, defaultCmdByWs: dmap } = stateRef.current
         const cwd = ws || scwd
         if (cwd) {
-          const def = defaultSession(cwd, wantsClaudeDefault(dmap, cwd))
+          const def = defaultSession(cwd, defaultCmdFor(dmap, cwd))
           setSessions((prev) => [...prev, def])
           setActiveId(def.id)
         }
@@ -1904,10 +1954,31 @@ function App(): React.JSX.Element {
         })
       )
     })
+    // Um WebContentsView (card) roubou o foco de OS durante uma carga em background (live-reload,
+    // navegação, ou 1ª carga de um card recém-mostrado) e o main já devolveu o foco pra janela. Mas
+    // win.webContents.focus() NÃO recoloca o <textarea> escondido do xterm — o activeElement vira o
+    // body e o que o usuário digita não cai em lugar nenhum ("o foco vai embora do nada"). Aqui a
+    // gente recoloca no terminal ativo, mas só se o usuário estava MESMO no terminal e nada editável
+    // (address bar, form/editor card) recuperou o foco — pra não roubar de quem não era do terminal.
+    const unsubFocusBack = window.deck.app.onFocusStolenBack(() => {
+      if (focusedPanelRef.current !== 'terminal') return
+      const ae = document.activeElement as HTMLElement | null
+      if (
+        ae &&
+        ae !== document.body &&
+        (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)
+      )
+        return
+      const ta = document.querySelector(
+        '.termhost-body-active .xterm-helper-textarea'
+      ) as HTMLElement | null
+      ta?.focus()
+    })
     return () => {
       unsubPalette()
       unsubFind()
       unsubShortcut()
+      unsubFocusBack()
     }
   }, [])
 
@@ -2023,30 +2094,49 @@ function App(): React.JSX.Element {
     .sort()
     .join(',')
 
-  // Lê o aiTitle das conversas do claude deste workspace pra dar nome real às abas, e alimenta o
+  // Workspaces cujas conversas do claude precisam estar carregadas: o ativo (dá nome às abas) +
+  // todos os expandidos na árvore (o picker "sessões anteriores" só renderiza embaixo de um
+  // workspace expandido, então não há por que ler do disco os colapsados). Chave estável e ordenada
+  // pra o efeito não re-rodar à toa.
+  const wsToLoadKey = [...new Set([workspace, ...expandedWorkspaces].filter(Boolean))]
+    .sort()
+    .join('|')
+
+  // Lê o aiTitle das conversas do claude desses workspaces pra dar nome real às abas, e alimenta o
   // picker "sessões anteriores". Lê dos arquivos ~/.claude/projects/<slug>/*.jsonl via o server.
-  // Re-roda a cada troca de workspace E a cada mudança no conjunto de abas abertas (openSidsKey),
-  // não só uma vez — senão o snapshot fica stale e conversas pós-snapshot somem ao fechar. Não
-  // persiste (display). Como a lista vem 100% do disco, o replace de aiTitleBySid é seguro.
+  // Re-roda a cada mudança no conjunto de workspaces a carregar (ativo + expandidos) E a cada
+  // mudança no conjunto de abas abertas (openSidsKey), não só uma vez — senão o snapshot fica stale
+  // e conversas pós-snapshot somem ao fechar. Não persiste (display). Como a lista vem 100% do
+  // disco, o replace de aiTitleBySid/claudeSessionsByWs é seguro.
   useEffect(() => {
-    if (!wsLoaded || !workspace) return
+    if (!wsLoaded) return
+    const targets = wsToLoadKey ? wsToLoadKey.split('|') : []
+    if (!targets.length) return
     let cancelled = false
-    void window.deck.sessions.listClaude(workspace).then((list) => {
+    void Promise.all(
+      targets.map((ws) =>
+        window.deck.sessions.listClaude(ws).then((list) => [ws, list] as const)
+      )
+    ).then((pairs) => {
       if (cancelled) return
+      const byWs: Record<string, (typeof pairs)[number][1]> = {}
       const bySid: Record<string, string> = {}
       const turnDelta: Record<string, number> = {}
-      for (const c of list) {
-        if (c.title) bySid[c.id] = c.title
-        turnDelta[c.id] = c.lastTurnMs
+      for (const [ws, list] of pairs) {
+        byWs[ws] = list
+        for (const c of list) {
+          if (c.title) bySid[c.id] = c.title
+          turnDelta[c.id] = c.lastTurnMs
+        }
       }
       setAiTitleBySid(bySid)
-      setClaudeSessions(list)
+      setClaudeSessionsByWs(byWs)
       setLastTurnBySid((prev) => ({ ...prev, ...turnDelta }))
     })
     return () => {
       cancelled = true
     }
-  }, [wsLoaded, workspace, openSidsKey])
+  }, [wsLoaded, wsToLoadKey, openSidsKey])
 
   // Tab name priority: explicit session_set_title > claude aiTitle > default placeholder. Quando há
   // um comando rodando em foreground (npm run dev…), some como sufixo: `toucan-happy (npm run dev)`.
@@ -2058,18 +2148,34 @@ function App(): React.JSX.Element {
     return label !== s.label ? { ...s, label } : s
   })
 
-  // Picker "sessões anteriores": conversas do claude do workspace ativo que NÃO estão abertas como
-  // aba, mais recentes primeiro. Mesmo conjunto de sids do openSidsKey (que dispara o reload do
-  // claudeSessions), então o filtro e o snapshot ficam coerentes no mesmo render — sem duplicação.
+  // Picker "sessões anteriores" por workspace: conversas do claude que NÃO estão abertas como aba,
+  // mais recentes primeiro (a lista de cada ws já vem ordenada por mtime desc). Abertas-como-aba do
+  // ws ATIVO vêm do openSidsKey (mesmo conjunto que dispara o reload, então filtro e snapshot ficam
+  // coerentes no mesmo render); dos demais workspaces, das suas abas em cache (wsSessionsCache).
   const openClaudeSids = new Set(openSidsKey ? openSidsKey.split(',') : [])
-  // Não abertas, mais recentes primeiro (claudeSessions já vem ordenado por mtime desc). A lista
-  // fica escondida até o toggle, então renderizar todas (scroll) é ok.
-  const claudePrev = claudeSessions.filter((c) => !openClaudeSids.has(c.id))
+  const claudePrevByWs: Record<string, (typeof claudeSessionsByWs)[string]> = {}
+  for (const [ws, list] of Object.entries(claudeSessionsByWs)) {
+    const openInWs =
+      ws === workspace
+        ? openClaudeSids
+        : new Set(
+            (wsSessionsCache[ws] ?? [])
+              .map((s) => s.claudeSessionId)
+              .filter(Boolean) as string[]
+          )
+    claudePrevByWs[ws] = list.filter((c) => !openInWs.has(c.id))
+  }
 
   // Abre uma conversa anterior do claude como nova aba (shell + autorun `claude --resume <id>` no
-  // TerminalHost, via o claudeSessionId). Se já estiver aberta, só foca.
-  const loadClaudeSession = (sessionId: string): void => {
-    if (!workspace) return
+  // TerminalHost, via o claudeSessionId). Se o picker for de um workspace que NÃO é o ativo, troca
+  // de workspace primeiro e deixa o load effect abrir a aba `--resume` (pendingResumeRef). Se já
+  // estiver aberta no ws ativo, só foca.
+  const loadClaudeSession = (ws: string, sessionId: string): void => {
+    if (ws !== workspace) {
+      pendingResumeRef.current = sessionId
+      setWorkspace(ws)
+      return
+    }
     const open = sessions.find((s) => s.claudeSessionId === sessionId)
     if (open) {
       setActiveId(open.id)
@@ -2090,10 +2196,13 @@ function App(): React.JSX.Element {
 
   // "x" do picker: apaga DEFINITIVAMENTE a conversa anterior — some da lista E remove o .jsonl do
   // disco (não dá mais pra `--resume`), além de descartar o contexto de cards guardado por ela.
-  const deleteClaudeSession = (sessionId: string): void => {
-    if (!workspace) return
-    void window.deck.sessions.deleteClaude(workspace, sessionId)
-    setClaudeSessions((prev) => prev.filter((c) => c.id !== sessionId))
+  const deleteClaudeSession = (ws: string, sessionId: string): void => {
+    void window.deck.sessions.deleteClaude(ws, sessionId)
+    setClaudeSessionsByWs((prev) => {
+      const list = prev[ws]
+      if (!list) return prev
+      return { ...prev, [ws]: list.filter((c) => c.id !== sessionId) }
+    })
     setAiTitleBySid((prev) => {
       if (!(sessionId in prev)) return prev
       const { [sessionId]: _drop, ...rest } = prev
@@ -2304,7 +2413,7 @@ function App(): React.JSX.Element {
   const newSession = (): void => {
     const cwd = workspace || startupCwd
     if (!cwd) return
-    const def = defaultSession(cwd, wantsClaudeDefault(defaultCmdByWs, cwd))
+    const def = defaultSession(cwd, defaultCmdFor(defaultCmdByWs, cwd))
     setSessions((prev) => [...prev, def])
     setActiveId(def.id)
   }
@@ -2837,6 +2946,13 @@ function App(): React.JSX.Element {
     previewedNav
   }
 
+  // Comando rodando na aba ATIVA, pra oferecer "definir <cmd> como default". Usa o launchCmd capturado
+  // (expansão real do alias, ex 'claude --model x'); cai pro literal 'claude' se o claude roda mas a
+  // linha ainda não foi capturada.
+  const activeSessionNow = sessions.find((s) => s.id === activeId)
+  const activeLaunchCmd =
+    activeSessionNow?.launchCmd ?? (activeSessionNow?.claude ? 'claude' : null)
+
   const paletteCommands: Command[] = [
     {
       id: 'theme:toggle-mode',
@@ -2844,6 +2960,22 @@ function App(): React.JSX.Element {
       hint: t('cmd.appearance'),
       run: toggleMode
     },
+    // Definir o comando da aba atual (claude, ou o alias expandido com suas flags) como default do
+    // workspace — novas abas passam a abrir com ele. Só aparece quando há um comando capturado e ele
+    // ainda não é o default vigente.
+    ...(workspace && activeLaunchCmd && defaultCmdByWs[workspace] !== activeLaunchCmd
+      ? [
+          {
+            id: 'ws:set-default-cmd',
+            label: `Definir "${activeLaunchCmd}" como default do workspace`,
+            hint:
+              workspace in defaultCmdByWs
+                ? `substitui "${defaultCmdByWs[workspace]}"`
+                : 'novas abas abrem com este comando',
+            run: () => setDefaultCmdByWs((p) => ({ ...p, [workspace]: activeLaunchCmd }))
+          }
+        ]
+      : []),
     ...(workspace
       ? [
           {
@@ -2967,17 +3099,20 @@ function App(): React.JSX.Element {
                     const ws = loadedWorkspaceRef.current
                     const aS = sessions.find((s) => s.id === activeId)
                     if (!ws || !aS?.claude || ws in defaultCmdByWs) return null
+                    // Comando real desta aba (alias expandido com flags); cai pro 'claude' literal se
+                    // ainda não capturamos a linha.
+                    const cmd = aS.launchCmd ?? 'claude'
                     return (
                       <div className="default-cmd-banner">
                         <span className="default-cmd-banner-text">
-                          Deixar o <strong>claude</strong> como default deste workspace?
+                          Deixar o <strong>{cmd}</strong> como default deste workspace?
                         </span>
                         <button
                           type="button"
                           className="default-cmd-banner-btn"
-                          onClick={() => setDefaultCmdByWs((p) => ({ ...p, [ws]: 'claude' }))}
+                          onClick={() => setDefaultCmdByWs((p) => ({ ...p, [ws]: cmd }))}
                         >
-                          Sim, sempre abrir claude
+                          Sim, sempre abrir {cmd}
                         </button>
                         <button
                           type="button"
@@ -3015,7 +3150,7 @@ function App(): React.JSX.Element {
                   mode={mode}
                   themeFor={themeFor}
                   nameOf={projectFromCwd}
-                  claudePrev={claudePrev}
+                  claudePrevByWs={claudePrevByWs}
                   onLoadClaudeSession={loadClaudeSession}
                   onDeleteClaudeSession={deleteClaudeSession}
                   onToggleExpand={toggleExpand}

@@ -6,7 +6,7 @@ export type { PreviewSource, Locale, Engine }
 
 export type PtyDataMsg = { id: string; data: string }
 export type PtyExitMsg = { id: string; code: number }
-export type PtyClaudeMsg = { id: string; running: boolean; sessionId?: string }
+export type PtyClaudeMsg = { id: string; running: boolean; sessionId?: string; launchCmd?: string }
 export type ClaudeSessionInfo = {
   id: string
   title: string | null
@@ -140,6 +140,7 @@ export interface DeckAPI {
     onMenuDevRebuild: (callback: () => void) => () => void
     onFlush: (callback: () => void) => () => void
     flushDone: () => void
+    onFocusStolenBack: (callback: () => void) => () => void
     onOpenUrl: (callback: (url: string) => void) => () => void
     openExternal: (url: string) => Promise<void>
     cardUrlToPath: (url: string) => Promise<string | null>

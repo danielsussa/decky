@@ -38,8 +38,9 @@ export function registerPtyHandlers(
       const win = getWindow()
       if (win && !win.isDestroyed()) win.webContents.send('pty:claude', { id, ...info })
     },
-    // aiTitle do claude → título da aba. Fonte ÚNICA de nome de sessão. Persiste no sessionTitles
-    // (o gate/tabs leem dele) + broadcast pro renderer pintar a aba na hora.
+    // Título da aba vindo do .jsonl da conversa: aiTitle do claude, ou o 1º prompt como fallback
+    // (versões antigas do claude não geram aiTitle — ver syncAiTitle). Fonte única de nome de sessão.
+    // Persiste no sessionTitles (o gate/tabs leem dele) + broadcast pro renderer pintar a aba na hora.
     onTitle(id, title) {
       setSessionTitle(id, title)
       broadcastSessionTitle(getWindow, getWsServer, id, title)

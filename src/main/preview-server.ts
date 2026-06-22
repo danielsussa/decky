@@ -174,6 +174,33 @@ function resolveWebCard(
   return { cardId, wc }
 }
 
+// Um agente dirigindo um web card roda em BACKGROUND em relação ao usuário, que pode estar
+// digitando no terminal nesse exato momento. loadURL, o `el.focus()` do typeJs e o `el.click()`
+// do clickJs fazem o WebContentsView do card pegar o foco de OS — o cursor some do terminal "do
+// nada". rendererHadFocus captura, ANTES da ação, se o renderer (terminal/UI) estava com o foco
+// e o card não; returnFocusToRenderer devolve depois. Quando o usuário está de fato no card (wc
+// focado) não mexe; focusForIntervention (block/captcha) foca a própria janela, então é
+// consistente. Espelha o guard de live-reload em web-views.ts (reload()).
+function rendererHadFocus(getWindow: () => BrowserWindow | null, wc: WebContents): boolean {
+  const win = getWindow()
+  return (
+    !!win &&
+    !win.isDestroyed() &&
+    !win.webContents.isDestroyed() &&
+    win.webContents.isFocused() &&
+    !wc.isFocused()
+  )
+}
+
+function returnFocusToRenderer(getWindow: () => BrowserWindow | null): void {
+  const win = getWindow()
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
+  if (!win.webContents.isFocused()) win.webContents.focus()
+  // win.webContents.focus() devolve o foco de OS pra janela mas não recoloca o <textarea> do xterm;
+  // o renderer recoloca no terminal ativo ao receber isto (mesmo guard de web-views.guardLoadFocus).
+  win.webContents.send('app:focus-stolen-back')
+}
+
 interface WebActBody {
   action?: string
   cardId?: string
@@ -317,6 +344,7 @@ async function runWebActionInner(
     if (target) {
       // Caminho que dirige um card já aberto — sinaliza atividade pro tracker. Cria card
       // novo NÃO sinaliza (não há controle de algo que ainda não existe).
+      const keepFocus = rendererHadFocus(getWindow, target.wc)
       trackActivityStart(target.wc, 'mcp-http:navigate')
       try {
         await target.wc.loadURL(url).catch(() => {})
@@ -332,6 +360,7 @@ async function runWebActionInner(
         }
       } finally {
         trackActivityEnd()
+        if (keepFocus) returnFocusToRenderer(getWindow)
       }
     }
     // Explicit cardId that doesn't exist is an error; no cardId → open a fresh web card.
@@ -357,6 +386,7 @@ async function runWebActionInner(
       target = resolveWebCard(sessionId, newId)
       created = true
     }
+    const keepFocus = rendererHadFocus(getWindow, target.wc)
     trackActivityStart(target.wc, 'mcp-http:resilient-navigate')
     try {
       const result = await navigateResilient(target.wc, url, {
@@ -376,6 +406,7 @@ async function runWebActionInner(
       return { ...result, cardId: target.cardId, created }
     } finally {
       trackActivityEnd()
+      if (keepFocus) returnFocusToRenderer(getWindow)
     }
   }
 
@@ -389,6 +420,8 @@ async function runWebActionInner(
     body.action === 'type' ||
     body.action === 'eval' ||
     body.action === 'click-label'
+  // Ações ATIVAS focam um elemento da página (typeJs/clickJs) → roubam o foco de OS do terminal.
+  const keepFocus = isActive && rendererHadFocus(getWindow, wc)
   if (isActive) trackActivityStart(wc, `mcp-http:${body.action}`)
   try {
     switch (body.action) {
@@ -440,6 +473,7 @@ async function runWebActionInner(
     }
   } finally {
     if (isActive) trackActivityEnd()
+    if (keepFocus) returnFocusToRenderer(getWindow)
   }
 }
 

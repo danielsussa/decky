@@ -16,7 +16,6 @@ import type { PreviewSource } from '@decky/shared'
 import { KNOWN_WIDGET_TYPES } from '@decky/shared'
 import { bgUrlFor, bgUrlAt } from './lib/bg-images'
 import ThemePicker from './components/ThemePicker'
-import AboutPanel, { type AboutInfo } from './components/AboutPanel'
 import { t } from './lib/i18n'
 import {
   applyTheme,
@@ -673,8 +672,6 @@ function App(): React.JSX.Element {
   const [cardSearchOpen, setCardSearchOpen] = useState(false)
   // Seletor de Tema (grid de imagens) aberto por Cmd+P → "Tema".
   const [themePickerOpen, setThemePickerOpen] = useState(false)
-  // About panel (app menu / Help → About decky). null = closed; the menu click fetches the info.
-  const [aboutInfo, setAboutInfo] = useState<AboutInfo | null>(null)
   const [openPanels, setOpenPanels] = useState<PanelId[]>([])
   // Which sub-panel (terminal / sessions tree / cards preview) currently holds focus.
   // Drives a thin accent strip on top so the user knows which area their keys land in.
@@ -1971,9 +1968,6 @@ function App(): React.JSX.Element {
   useEffect(() => {
     const unsubPalette = window.deck.app.onMenuTogglePalette(() => setPaletteOpen((v) => !v))
     const unsubFind = window.deck.app.onMenuToggleFind(() => setCardSearchOpen((v) => !v))
-    const unsubAbout = window.deck.app.onMenuAbout(() => {
-      void window.deck.app.getAboutInfo().then(setAboutInfo)
-    })
     // Configurable accels (Cmd+Arrow nav, Cmd+Ctrl+P pin, Cmd+Enter preview commit) can't be
     // menu items — main forwards them from web cards' before-input-event and we replay as a
     // real KeyboardEvent on window so the capture-phase keydown above handles them as usual.
@@ -2013,7 +2007,6 @@ function App(): React.JSX.Element {
     return () => {
       unsubPalette()
       unsubFind()
-      unsubAbout()
       unsubShortcut()
       unsubFocusBack()
     }
@@ -3071,7 +3064,7 @@ function App(): React.JSX.Element {
   // Overlays that cover the canvas area force every web card's native overlay to hide
   // (a WebContentsView paints above the React shell, so without this it would obscure the
   // command palette). Keep this short and additive — anything truly overlay-shaped goes here.
-  const overlayActive = paletteOpen || cardSearchOpen || themePickerOpen || aboutInfo !== null
+  const overlayActive = paletteOpen || cardSearchOpen || themePickerOpen
 
   return (
     <OverlayActiveProvider active={overlayActive}>
@@ -3289,7 +3282,6 @@ function App(): React.JSX.Element {
             onClose={() => setThemePickerOpen(false)}
           />
         )}
-        {aboutInfo && <AboutPanel info={aboutInfo} onClose={() => setAboutInfo(null)} />}
         {cardSearchOpen && workspace && (
           <CardSearch
             workspace={workspace}

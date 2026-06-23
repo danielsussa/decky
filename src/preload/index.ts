@@ -265,18 +265,6 @@ const deckApi = {
       ipcRenderer.on('menu:dev-rebuild', listener)
       return () => ipcRenderer.removeListener('menu:dev-rebuild', listener)
     },
-    onMenuAbout: (callback: () => void): (() => void) => {
-      const listener = (): void => callback()
-      ipcRenderer.on('menu:about', listener)
-      return () => ipcRenderer.removeListener('menu:about', listener)
-    },
-    getAboutInfo: (): Promise<{
-      name: string
-      version: string
-      sha: string
-      date: string
-      label: string
-    }> => ipcRenderer.invoke('app:get-about-info'),
     // Quit-time flush: main sends 'app:flush' and holds the exit until we reply 'app:flush-done'.
     onFlush: (callback: () => void): (() => void) => {
       const listener = (): void => callback()

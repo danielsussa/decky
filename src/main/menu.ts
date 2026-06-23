@@ -40,10 +40,7 @@ export function buildMenu(
           {
             label: app.name,
             submenu: [
-              // Custom About → opens decky's own on-brand About panel in the renderer, instead of
-              // the bare native macOS panel (which setAboutPanelOptions still backs for `cmd`-less
-              // callers / crash reporter).
-              { label: `About ${app.name}`, click: () => sendToRenderer('menu:about') },
+              { role: 'about' },
               { type: 'separator' },
               { role: 'services' },
               { type: 'separator' },
@@ -149,15 +146,6 @@ export function buildMenu(
         ...(isMac
           ? ([{ type: 'separator' }, { role: 'front' }] satisfies MenuItemConstructorOptions[])
           : [])
-      ]
-    },
-
-    {
-      role: 'help',
-      submenu: [
-        // On non-mac this is the only About entry (mac also has it in the app menu). Same
-        // renderer panel either way.
-        { label: `About ${app.name}`, click: () => sendToRenderer('menu:about') }
       ]
     }
   ]

@@ -1,6 +1,6 @@
 {
   "name": "decky",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "license": "Apache-2.0",
   "description": "decky — casca pra dirigir o agente Claude + me CLI: terminal, Live View, arquivos do projeto e pendências num só painel.",

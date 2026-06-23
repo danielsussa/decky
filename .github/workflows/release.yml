@@ -32,8 +32,10 @@ jobs:
         include:
           - runner: macos-14   # Apple Silicon
             arch: arm64
-          - runner: macos-13   # Intel
-            arch: x64
+          # Intel (x64) é dropado: o cask publicado sempre foi arm-only e o runner
+          # macos-13 ficava emperrado na fila por horas, segurando o update-cask
+          # (needs: build). Pra re-habilitar Intel, recoloque a entrada x64/macos-13
+          # aqui E restaure o sha intel no render do cask + no packaging/decky.rb.
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -100,11 +102,9 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           ARM_SHA=$(shasum -a 256 artifacts/dmg-arm64/*.dmg | awk '{print $1}')
-          X64_SHA=$(shasum -a 256 artifacts/dmg-x64/*.dmg | awk '{print $1}')
-          echo "version=$VERSION  arm=$ARM_SHA  x64=$X64_SHA"
+          echo "version=$VERSION  arm=$ARM_SHA"
           sed -e "s/^  version \".*\"/  version \"$VERSION\"/" \
               -e "s/REPLACE_WITH_ARM64_DMG_SHA256/$ARM_SHA/" \
-              -e "s/REPLACE_WITH_X64_DMG_SHA256/$X64_SHA/" \
               packaging/decky.rb > /tmp/decky.rb
 
       - name: Push to Homebrew tap

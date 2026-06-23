@@ -345,6 +345,9 @@ app
       nativeTheme.themeSource = mode === 'light' ? 'light' : 'dark'
       return true
     })
+    // DIAG temporário: o renderer reporta aqui quando o terminal perde o foco, pra registrarmos no
+    // decky-startup.log (o console do renderer não vai pra lá). Caçando o "foco vai embora do nada".
+    ipcMain.on('app:diag', (_e, msg: string) => diag(`[focus] ${msg}`))
     setupWebSession(() => mainWindow)
     attachWebContentsPopupRouter(() => mainWindow)
     setupHistory()
@@ -443,6 +446,18 @@ app
     )
     ipcMain.handle('sessions:get-titles', () => getSessionTitles())
     ipcMain.handle('app:get-startup-cwd', () => process.cwd())
+    // About panel data — the renderer has no build defines (only main/preload do), so it pulls
+    // name/version/sha/date over IPC instead of importing getBuildInfo directly.
+    ipcMain.handle('app:get-about-info', () => {
+      const b = getBuildInfo()
+      return {
+        name: app.getName(),
+        version: app.getVersion(),
+        sha: b.sha,
+        date: b.date,
+        label: b.label
+      }
+    })
     // Explicit "open in the OS browser" affordance — used by the external-link button on the
     // web card, since every other window.open in the renderer now routes to an internal card.
     ipcMain.handle('app:open-external', (_e, url: string) => shell.openExternal(url))

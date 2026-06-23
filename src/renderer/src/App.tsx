@@ -16,6 +16,7 @@ import type { PreviewSource } from '@decky/shared'
 import { KNOWN_WIDGET_TYPES } from '@decky/shared'
 import { bgUrlFor, bgUrlAt } from './lib/bg-images'
 import ThemePicker from './components/ThemePicker'
+import AboutPanel, { type AboutInfo } from './components/AboutPanel'
 import { t } from './lib/i18n'
 import {
   applyTheme,
@@ -672,6 +673,8 @@ function App(): React.JSX.Element {
   const [cardSearchOpen, setCardSearchOpen] = useState(false)
   // Seletor de Tema (grid de imagens) aberto por Cmd+P → "Tema".
   const [themePickerOpen, setThemePickerOpen] = useState(false)
+  // About panel (app menu / Help → About decky). null = closed; the menu click fetches the info.
+  const [aboutInfo, setAboutInfo] = useState<AboutInfo | null>(null)
   const [openPanels, setOpenPanels] = useState<PanelId[]>([])
   // Which sub-panel (terminal / sessions tree / cards preview) currently holds focus.
   // Drives a thin accent strip on top so the user knows which area their keys land in.
@@ -1246,6 +1249,36 @@ function App(): React.JSX.Element {
   useEffect(() => {
     const iv = setInterval(() => setNow(Date.now()), 600)
     return () => clearInterval(iv)
+  }, [])
+
+  // DIAG temporário (caçando "o foco vai embora do nada"): registra TODA vez que o terminal ativo
+  // perde o foco — pra onde foi (relatedTarget), o que ficou ativo logo depois, e se o renderer ainda
+  // tem o foco de OS (document.hasFocus). relatedTarget/activeElement preenchidos = roubo dentro do
+  // renderer (outro input/card React); null + hasFocus=false = um WebContentsView/OS roubou de fora.
+  useEffect(() => {
+    const describe = (el: Element | null): string => {
+      if (!el) return 'null'
+      const e = el as HTMLElement
+      const cls = (e.className || '').toString().trim().split(/\s+/).slice(0, 3).join('.')
+      const panel = e.closest?.('[data-panel]') as HTMLElement | null
+      return `${e.tagName.toLowerCase()}${cls ? '.' + cls : ''}${panel ? ` @${panel.dataset.panel}` : ''}`
+    }
+    const onFocusOut = (e: FocusEvent): void => {
+      const target = e.target as HTMLElement | null
+      if (!target?.closest?.('.termhost-body-active')) return
+      const related = describe(e.relatedTarget as Element | null)
+      window.deck.app.diag(
+        `terminal lost focus → relatedTarget=${related} hasFocus=${document.hasFocus()}`
+      )
+      // O activeElement só assenta no próximo tick — registra pra onde o foco realmente foi parar.
+      setTimeout(() => {
+        window.deck.app.diag(
+          `  ...settled: activeElement=${describe(document.activeElement)} hasFocus=${document.hasFocus()} panel=${focusedPanelRef.current}`
+        )
+      }, 0)
+    }
+    document.addEventListener('focusout', onFocusOut, true)
+    return () => document.removeEventListener('focusout', onFocusOut, true)
   }, [])
 
   // Track which sub-panel (terminal / tree / preview) the user is currently in. focusin handles
@@ -1938,6 +1971,9 @@ function App(): React.JSX.Element {
   useEffect(() => {
     const unsubPalette = window.deck.app.onMenuTogglePalette(() => setPaletteOpen((v) => !v))
     const unsubFind = window.deck.app.onMenuToggleFind(() => setCardSearchOpen((v) => !v))
+    const unsubAbout = window.deck.app.onMenuAbout(() => {
+      void window.deck.app.getAboutInfo().then(setAboutInfo)
+    })
     // Configurable accels (Cmd+Arrow nav, Cmd+Ctrl+P pin, Cmd+Enter preview commit) can't be
     // menu items — main forwards them from web cards' before-input-event and we replay as a
     // real KeyboardEvent on window so the capture-phase keydown above handles them as usual.
@@ -1977,6 +2013,7 @@ function App(): React.JSX.Element {
     return () => {
       unsubPalette()
       unsubFind()
+      unsubAbout()
       unsubShortcut()
       unsubFocusBack()
     }
@@ -3034,7 +3071,7 @@ function App(): React.JSX.Element {
   // Overlays that cover the canvas area force every web card's native overlay to hide
   // (a WebContentsView paints above the React shell, so without this it would obscure the
   // command palette). Keep this short and additive — anything truly overlay-shaped goes here.
-  const overlayActive = paletteOpen || cardSearchOpen || themePickerOpen
+  const overlayActive = paletteOpen || cardSearchOpen || themePickerOpen || aboutInfo !== null
 
   return (
     <OverlayActiveProvider active={overlayActive}>
@@ -3252,6 +3289,7 @@ function App(): React.JSX.Element {
             onClose={() => setThemePickerOpen(false)}
           />
         )}
+        {aboutInfo && <AboutPanel info={aboutInfo} onClose={() => setAboutInfo(null)} />}
         {cardSearchOpen && workspace && (
           <CardSearch
             workspace={workspace}

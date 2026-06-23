@@ -265,6 +265,18 @@ const deckApi = {
       ipcRenderer.on('menu:dev-rebuild', listener)
       return () => ipcRenderer.removeListener('menu:dev-rebuild', listener)
     },
+    onMenuAbout: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('menu:about', listener)
+      return () => ipcRenderer.removeListener('menu:about', listener)
+    },
+    getAboutInfo: (): Promise<{
+      name: string
+      version: string
+      sha: string
+      date: string
+      label: string
+    }> => ipcRenderer.invoke('app:get-about-info'),
     // Quit-time flush: main sends 'app:flush' and holds the exit until we reply 'app:flush-done'.
     onFlush: (callback: () => void): (() => void) => {
       const listener = (): void => callback()
@@ -272,6 +284,8 @@ const deckApi = {
       return () => ipcRenderer.removeListener('app:flush', listener)
     },
     flushDone: (): void => ipcRenderer.send('app:flush-done'),
+    // DIAG temporário: reporta perda de foco do terminal pro log do main (caçando o foco que some).
+    diag: (msg: string): void => ipcRenderer.send('app:diag', msg),
     // Main devolveu o foco de OS pra janela depois que um WebContentsView (card) o roubou durante
     // uma carga em background. win.webContents.focus() não recoloca o <textarea> do xterm, então o
     // renderer recoloca no terminal ativo aqui. Ver web-views.guardLoadFocus / returnFocusToRenderer.

@@ -138,8 +138,17 @@ export interface DeckAPI {
     onMenuTogglePalette: (callback: () => void) => () => void
     onMenuToggleFind: (callback: () => void) => () => void
     onMenuDevRebuild: (callback: () => void) => () => void
+    onMenuAbout: (callback: () => void) => () => void
+    getAboutInfo: () => Promise<{
+      name: string
+      version: string
+      sha: string
+      date: string
+      label: string
+    }>
     onFlush: (callback: () => void) => () => void
     flushDone: () => void
+    diag: (msg: string) => void
     onFocusStolenBack: (callback: () => void) => () => void
     onOpenUrl: (callback: (url: string) => void) => () => void
     openExternal: (url: string) => Promise<void>

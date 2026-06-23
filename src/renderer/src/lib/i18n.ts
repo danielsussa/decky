@@ -224,7 +224,18 @@ const messages = {
   'cmd.testNotification': { pt: 'Testar notificação', en: 'Test notification' },
   'cmd.diagnostic': { pt: 'diagnóstico', en: 'diagnostic' },
   'cmd.notificationTestBody': { pt: 'teste de notificação', en: 'notification test' },
-  'cmd.panelHint': { pt: 'painel', en: 'panel' }
+  'cmd.panelHint': { pt: 'painel', en: 'panel' },
+
+  // about panel
+  'about.tagline': {
+    pt: 'Um shell com terminal + painel de cards pra dirigir o Claude.',
+    en: 'A terminal shell with a card panel to drive Claude.'
+  },
+  'about.version': { pt: 'Versão', en: 'Version' },
+  'about.build': { pt: 'Build', en: 'Build' },
+  'about.repo': { pt: 'Repositório', en: 'Repository' },
+  'about.copyBuild': { pt: 'copiar info do build', en: 'copy build info' },
+  'about.copied': { pt: 'copiado!', en: 'copied!' }
 } as const satisfies Record<string, Record<Locale, string>>
 
 export type MessageKey = keyof typeof messages

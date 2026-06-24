@@ -12,6 +12,9 @@ interface TerminalHostProps {
   mode: Mode
   // Resolves a session's cwd to its workspace's theme (uses the persisted assignment table).
   themeFor: (path: string | null | undefined) => Theme
+  // Comando default do workspace da cwd (defaultCmdByWs) — base do relançamento no resume. Ex.: um
+  // wrapper que sobe o claude. null = sem default → cai no 'claude' puro.
+  launchCmdFor?: (cwd: string) => string | null
   onUserInput: (id: string) => void
 }
 
@@ -20,6 +23,7 @@ export default function TerminalHost({
   activeId,
   mode,
   themeFor,
+  launchCmdFor,
   onUserInput
 }: TerminalHostProps): React.JSX.Element {
   return (
@@ -31,8 +35,18 @@ export default function TerminalHost({
         // conversa, relança nela com `--resume <id>`. Sem conversa, usa o `autorunCmd` (comando default
         // do workspace, ex 'claude --model x') e cai no `claude` limpo pro seed legado `claude:true`.
         // Terminal lê isto só no mount, flips em runtime não re-injetam.
+        //
+        // BASE DO RESUME: o comando default do workspace (defaultCmdByWs, via launchCmdFor) — ex. um
+        // wrapper `~/bin/launch.sh` que faz `exec claude "$@"`. Appendamos `--resume <id>` à base e o
+        // wrapper repassa pro claude. Sem default → 'claude' puro (idêntico ao comportamento anterior).
+        // Não appendamos se a base já fixa a conversa (--resume/--continue/--from-pr/--session-id).
+        const resumeBase = (launchCmdFor?.(s.cwd) ?? s.autorunCmd ?? 'claude').trim()
+        const baseFixesSession =
+          /(^|\s)(--resume|-r|--continue|-c|--from-pr|--session-id)(\s|$)/.test(resumeBase)
         const autorun = s.claudeSessionId
-          ? `claude --resume ${s.claudeSessionId}`
+          ? baseFixesSession
+            ? resumeBase
+            : `${resumeBase} --resume ${s.claudeSessionId}`
           : (s.autorunCmd ?? (s.claude ? 'claude' : undefined))
         return (
           <div key={s.id} className={`termhost-body ${isActive ? 'termhost-body-active' : ''}`}>

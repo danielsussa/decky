@@ -3179,6 +3179,7 @@ function App(): React.JSX.Element {
                     activeId={activeId}
                     mode={mode}
                     themeFor={themeFor}
+                    launchCmdFor={(cwd) => defaultCmdFor(defaultCmdByWs, cwd)}
                     onUserInput={(id) => {
                       userInputAtRef.current[id] = Date.now()
                     }}

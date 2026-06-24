@@ -195,6 +195,7 @@ const lastTitle = new Map<string, string>() // id -> último aiTitle empurrado (
 const claudeOn = new Set<string>() // ids cujo foreground é claude (suprime anotação de comando)
 const lastRunning = new Map<string, string>() // id -> último cmd anotado na aba (dedup + clear)
 const boundLogged = new Set<string>() // ids que já logaram [nobind] nesta run (1x por run, debug)
+const wrappedClaude = new Set<string>() // ids cujo claude foi detectado SOB wrapper (lifecycle async, não sync)
 
 // Basename do processo: tira o `-` de login-shell e qualquer path ("/usr/bin/node" -> "node").
 function procBase(p: string): string {
@@ -287,6 +288,27 @@ function captureLaunchCmd(id: string, shellPid: number): void {
       if (err2) return
       const launchCmd = stripInjectedSid(out2.trim())
       if (launchCmd) events.onClaude?.(id, { running: true, launchCmd })
+    })
+  })
+}
+
+// Detecta claude rodando SOB um wrapper. node-pty.process só vê o LÍDER do process-group em foreground
+// do tty; um shell-script não-interativo (ex. `bash meu.sh` que chama claude) NÃO tem job control, então
+// o claude herda o pgrp do bash e o líder do foreground continua sendo o bash — term.process reporta
+// 'bash', looksLikeClaude falha, e a detecção sync do poll nunca vê o claude (logo: sem vínculo, sem
+// título). Mas o claude roda como descendente NO MESMO grupo de foreground; varremos o grupo e procuramos
+// um processo 'claude'. Async (não trava o poll). Bail barato no prompt ocioso (tpgid == pgid do shell).
+function detectWrappedClaude(shellPid: number, cb: (running: boolean) => void): void {
+  execFile('ps', ['-o', 'tpgid=,pgid=', '-p', String(shellPid)], (err, out) => {
+    if (err) return cb(false)
+    const [tpgidStr, pgidStr] = out.trim().split(/\s+/)
+    const tpgid = Number(tpgidStr)
+    const pgid = Number(pgidStr)
+    // sem job em foreground (prompt) ou sem tty → não há wrapper rodando nada
+    if (!Number.isFinite(tpgid) || tpgid <= 0 || tpgid === pgid) return cb(false)
+    execFile('ps', ['-g', String(tpgid), '-o', 'comm='], (err2, out2) => {
+      if (err2) return cb(false)
+      cb(out2.split('\n').some((l) => procBase(l.trim()) === 'claude'))
     })
   })
 }
@@ -543,6 +565,39 @@ function pollProcesses(): void {
       }
     }
 
+    // WRAPPER: claude sob um shell-script não-interativo não vira o líder do pgrp de foreground, então a
+    // detecção sync acima (por term.process) nunca o vê. Varredura async da árvore de foreground cobre
+    // esse caso — gerencia TODO o ciclo do claude-sob-wrapper (claudeOn entra/sai por aqui), separado do
+    // caminho sync que cuida do claude direto. Só roda quando o título não acusou claude E ou ninguém
+    // detectou ainda, ou fomos nós (wrappedClaude) — assim o claude DIRETO (e seus tool-calls) não paga
+    // o custo do ps nem corre risco de interferência.
+    if (!looksLikeClaude(base) && (!claudeOn.has(id) || wrappedClaude.has(id))) {
+      detectWrappedClaude(term.pid, (running) => {
+        if (running && !claudeOn.has(id)) {
+          // claude apareceu sob o wrapper → âncora do birthtime + marca foreground (o bind por birthtime
+          // vem no próximo poll, já com claudeOn setado). O shim foi pulado (wrapper), então é birth.
+          claudeStartAt.set(id, Date.now())
+          captureLaunchCmd(id, term.pid)
+          claudeOn.add(id)
+          wrappedClaude.add(id)
+          titleLog(`[claude-fg] id=${id} via=wrapper`)
+          events.onClaude?.(id, { running: true })
+        } else if (!running && wrappedClaude.has(id) && isShellProc(base)) {
+          // wrapper terminou e voltamos ao shell → solta o vínculo igual ao unbind sync.
+          claudeOn.delete(id)
+          wrappedClaude.delete(id)
+          events.onClaude?.(id, { running: false })
+          sidById.delete(id)
+          claudeStartAt.delete(id)
+          lastTitleMtime.delete(id)
+          lastTitle.delete(id)
+          boundLogged.delete(id)
+          clearAnnouncedSid(id)
+          titleLog(`[unbind] id=${id} claude (wrapper) saiu pro shell`)
+        }
+      })
+    }
+
     // VÍNCULO aba↔conversa. Só enquanto o claude é o foreground desta aba (claudeOn — persiste em
     // tool-calls, some no retorno ao shell). Ordem: (1) anúncio determinístico do shim, (2) reconcile
     // de GHOST bind, (3) fallback por birthtime.
@@ -695,6 +750,7 @@ function spawnPty(args: CreatePtyArgs): void {
   lastProc.delete(args.id)
   claudeStartAt.delete(args.id)
   claudeOn.delete(args.id)
+  wrappedClaude.delete(args.id)
   lastRunning.delete(args.id)
   // SEED: se a aba vai resumir uma conversa conhecida, semeia o tracker com ela → a aba não tenta
   // capturar nenhuma conversa (já sabe a sua) e não rouba a de outra aba. Limpo no exit do claude
@@ -714,6 +770,7 @@ function spawnPty(args: CreatePtyArgs): void {
     sidById.delete(args.id)
     claudeStartAt.delete(args.id)
     claudeOn.delete(args.id)
+    wrappedClaude.delete(args.id)
     lastRunning.delete(args.id)
     boundLogged.delete(args.id)
     clearAnnouncedSid(args.id)

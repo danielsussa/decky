@@ -865,6 +865,33 @@ async function handleRequest(
     return
   }
 
+  // POST /sessions/rename { title } — rename THIS session's tab and PIN it: the renderer marks the
+  // session as user-titled, so the auto-title (claude aiTitle / first prompt) never overrides it
+  // again, and the name persists across restart. Empty title clears the pin (back to auto-title).
+  // Reuses the `session:title-changed` event with `pinned:true` so the renderer can tell manual from
+  // auto. The caller is `decky rename`.
+  if (req.method === 'POST' && url === '/sessions/rename') {
+    try {
+      const id = sessionIdFrom(req)
+      if (!id || id === GLOBAL_KEY) {
+        sendJson(res, 400, { error: 'no session (run inside a decky tab)' })
+        return
+      }
+      const raw = await readBody(req)
+      const body = JSON.parse(raw) as { title?: unknown }
+      const title = typeof body.title === 'string' ? body.title.trim().slice(0, 80) : ''
+      const win = getWindow()
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('session:title-changed', { id, title, pinned: true })
+      }
+      getWsServer()?.broadcast('session:title-changed', { id, title, pinned: true })
+      sendJson(res, 200, { ok: true, id, title })
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message })
+    }
+    return
+  }
+
   // POST /cards/reload { path } — push-based live reload: tells the renderer to re-render the
   // open card(s) whose source file is `path`. Used after a card-manifesto is mutated on disk
   // (decky add-widget/title) so the card updates deterministically, WITHOUT depending on the fs

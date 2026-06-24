@@ -76,6 +76,8 @@ interface WorkspaceState {
   focusedCardBySession?: Record<string, string | null>
   previews?: Record<string, Record<string, PreviewSource>>
   titles?: Record<string, string>
+  // ids de abas com nome FIXADO via `decky rename` — o auto-título não as sobrescreve.
+  pinnedTitles?: Record<string, true>
   pinned?: Record<string, PreviewSource>
   // Cards associados por CONVERSA do claude (claudeSessionId → contexto). Sobrevive ao fechar a aba;
   // o picker "sessões anteriores" restaura daqui. Substituiu o antigo `stash`.
@@ -85,6 +87,17 @@ interface WorkspaceState {
 function pickTitles(sessions: Session[], titles: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const s of sessions) if (titles[s.id]) out[s.id] = titles[s.id]
+  return out
+}
+
+// Mesmo filtro do pickTitles, pros ids de abas com nome FIXADO (decky rename): só persiste os que
+// ainda existem.
+function pickPinnedTitles(
+  sessions: Session[],
+  pinnedTitles: Record<string, true>
+): Record<string, true> {
+  const out: Record<string, true> = {}
+  for (const s of sessions) if (pinnedTitles[s.id]) out[s.id] = true
   return out
 }
 
@@ -549,7 +562,11 @@ async function rehydrateCardsByClaude(
   const re = await window.deck.preview.rehydrate(byCard, workspace)
   const out: Record<string, ClaudeCardCtx> = {}
   for (const [sid, ctx] of Object.entries(map)) {
-    out[sid] = { cards: ctx.cards ?? [], focused: ctx.focused ?? null, previews: re[sid] ?? ctx.previews ?? {} }
+    out[sid] = {
+      cards: ctx.cards ?? [],
+      focused: ctx.focused ?? null,
+      previews: re[sid] ?? ctx.previews ?? {}
+    }
   }
   return out
 }
@@ -618,8 +635,15 @@ function App(): React.JSX.Element {
   // Cards associados por CONVERSA do claude (claudeSessionId → {cards, focused, previews}). Mantido
   // pelo effect abaixo a partir dos mapas vivos (keyados por id-da-aba) das sessões abertas que têm
   // claudeSessionId, preservando conversas fechadas. Persistido no workspace.json; o picker restaura.
-  const [cardsByClaudeSession, setCardsByClaudeSession] = useState<Record<string, ClaudeCardCtx>>({})
+  const [cardsByClaudeSession, setCardsByClaudeSession] = useState<Record<string, ClaudeCardCtx>>(
+    {}
+  )
   const [titles, setTitles] = useState<Record<string, string>>({})
+  // Abas renomeadas à mão (decky rename) → o nome é FIXO: o auto-título (aiTitle/1º prompt) não
+  // sobrescreve mais. Persiste no workspace.json. O ref espelha o state pra ser lido dentro do
+  // handler de title-changed (closure) sem depender do valor capturado.
+  const [pinnedTitles, setPinnedTitles] = useState<Record<string, true>>({})
+  const pinnedTitlesRef = useRef<Record<string, true>>({})
   // claudeSessionId -> aiTitle (título auto-gerado pelo claude), lido dos .jsonl do workspace.
   // Dá nome real às abas (prioridade: título explícito > aiTitle > placeholder). Não persiste.
   const [aiTitleBySid, setAiTitleBySid] = useState<Record<string, string>>({})
@@ -753,6 +777,7 @@ function App(): React.JSX.Element {
     focusedCardBySession,
     previewsByCard,
     titles,
+    pinnedTitles,
     pinned,
     cardsByClaudeSession,
     defaultCmdByWs,
@@ -769,6 +794,7 @@ function App(): React.JSX.Element {
     focusedCardBySession,
     previewsByCard,
     titles,
+    pinnedTitles,
     pinned,
     cardsByClaudeSession,
     defaultCmdByWs,
@@ -1019,7 +1045,26 @@ function App(): React.JSX.Element {
         }
       }
     )
-    const unsubTitle = window.deck.sessions.onTitleChange(({ id, title }) => {
+    const unsubTitle = window.deck.sessions.onTitleChange(({ id, title, pinned }) => {
+      if (pinned) {
+        // rename manual: fixa (ou, com title vazio, libera) o nome da aba.
+        setPinnedTitles((prev) => {
+          const next = { ...prev }
+          if (title) next[id] = true
+          else delete next[id]
+          pinnedTitlesRef.current = next
+          return next
+        })
+        setTitles((prev) => {
+          const next = { ...prev }
+          if (title) next[id] = title
+          else delete next[id]
+          return next
+        })
+        return
+      }
+      // auto-título: nunca sobrescreve uma aba renomeada (pinada) pelo usuário.
+      if (pinnedTitlesRef.current[id]) return
       setTitles((prev) => ({ ...prev, [id]: title }))
     })
     const unsubRunning = window.deck.sessions.onRunningChange(({ id, cmd }) => {
@@ -1193,6 +1238,7 @@ function App(): React.JSX.Element {
           focusedCardBySession: filterToSessionIds(s.focusedCardBySession, ids),
           previews: serializePreviews(filterToSessionIds(s.previewsByCard, ids), ws),
           titles: pickTitles(s.sessions, s.titles),
+          pinnedTitles: pickPinnedTitles(s.sessions, s.pinnedTitles),
           pinned: serializePreviews({ p: s.pinned }, ws).p,
           cardsByClaudeSession: serializeCardsByClaude(s.cardsByClaudeSession, ws)
         })
@@ -1341,6 +1387,7 @@ function App(): React.JSX.Element {
         focusedCardBySession: filterToSessionIds(focusedCardBySession, prevIds),
         previews: serializePreviews(filterToSessionIds(previewsByCard, prevIds), prevWs),
         titles: pickTitles(sessions, titles),
+        pinnedTitles: pickPinnedTitles(sessions, pinnedTitles),
         pinned: serializePreviews({ p: pinned }, prevWs).p,
         cardsByClaudeSession: serializeCardsByClaude(cardsByClaudeSession, prevWs)
       })
@@ -1430,6 +1477,13 @@ function App(): React.JSX.Element {
         )
         setPreviewsByCard((prev) => mergeSessionScopedMap(prev, previews, wsIds))
         if (data.titles) setTitles((prev) => ({ ...prev, ...data.titles }))
+        if (data.pinnedTitles) {
+          setPinnedTitles((prev) => {
+            const next = { ...prev, ...data.pinnedTitles }
+            pinnedTitlesRef.current = next
+            return next
+          })
+        }
         const pinnedRe = data.pinned
           ? ((await window.deck.preview.rehydrate({ p: data.pinned }, workspace)).p ?? {})
           : {}
@@ -1509,6 +1563,7 @@ function App(): React.JSX.Element {
         focusedCardBySession: filterToSessionIds(focusedCardBySession, ids),
         previews: serializePreviews(filterToSessionIds(previewsByCard, ids), workspace),
         titles: pickTitles(sessions, titles),
+        pinnedTitles: pickPinnedTitles(sessions, pinnedTitles),
         pinned: serializePreviews({ p: pinned }, workspace).p,
         cardsByClaudeSession: serializeCardsByClaude(cardsByClaudeSession, workspace)
       })
@@ -2163,9 +2218,7 @@ function App(): React.JSX.Element {
     if (!targets.length) return
     let cancelled = false
     void Promise.all(
-      targets.map((ws) =>
-        window.deck.sessions.listClaude(ws).then((list) => [ws, list] as const)
-      )
+      targets.map((ws) => window.deck.sessions.listClaude(ws).then((list) => [ws, list] as const))
     ).then((pairs) => {
       if (cancelled) return
       const byWs: Record<string, (typeof pairs)[number][1]> = {}
@@ -2208,9 +2261,7 @@ function App(): React.JSX.Element {
       ws === workspace
         ? openClaudeSids
         : new Set(
-            (wsSessionsCache[ws] ?? [])
-              .map((s) => s.claudeSessionId)
-              .filter(Boolean) as string[]
+            (wsSessionsCache[ws] ?? []).map((s) => s.claudeSessionId).filter(Boolean) as string[]
           )
     claudePrevByWs[ws] = list.filter((c) => !openInWs.has(c.id))
   }
@@ -2423,6 +2474,11 @@ function App(): React.JSX.Element {
           previews: filterToSessionIds(data.previews ?? {}, remaining),
           titles: data.titles
             ? Object.fromEntries(Object.entries(data.titles).filter(([k]) => remaining.has(k)))
+            : undefined,
+          pinnedTitles: data.pinnedTitles
+            ? Object.fromEntries(
+                Object.entries(data.pinnedTitles).filter(([k]) => remaining.has(k))
+              )
             : undefined
         })
       })()
@@ -2466,7 +2522,6 @@ function App(): React.JSX.Element {
     setSessions((prev) => [...prev, def])
     setActiveId(def.id)
   }
-
 
   // Open a browser card in the active session, focused. Empty url = "nova aba" (URL bar
   // auto-focuses); with url = navigates straight there (used by palette `//query` shortcut).
@@ -2968,10 +3023,7 @@ function App(): React.JSX.Element {
       out[ws] = list.filter((s) => {
         const durable = s.claudeSessionId ? (lastTurnBySid[s.claudeSessionId] ?? 0) : 0
         const keep =
-          s.id === activeId ||
-          sessionActivity[s.id]?.active ||
-          durable === 0 ||
-          now - durable < win
+          s.id === activeId || sessionActivity[s.id]?.active || durable === 0 || now - durable < win
         if (!keep) hiddenSessionCount++
         return keep
       })

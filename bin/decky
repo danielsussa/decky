@@ -107,6 +107,16 @@ async function cmdNewTab(args) {
   out(`new web tab opened: ${title}`)
 }
 
+// Renames the CURRENT session's tab and PINS the name: once set, the auto-title (claude aiTitle /
+// first prompt) never overrides it again, and it survives restart. `decky rename ""` clears the pin
+// (back to auto-title). Operates on DECKY_SESSION_ID (this tab).
+async function cmdRename(args) {
+  requireSession()
+  const title = args.join(' ').trim()
+  await api('POST', '/sessions/rename', { title })
+  out(title ? `tab renamed (pinned): ${title}` : 'tab name unpinned (auto-title restored)')
+}
+
 // A decky tab is one of two kinds: a `web` tab (points at an external site, type 'web') or a `card`
 // tab (renders a decky card — html/markdown/json/diff/…). A web tab becomes a card the moment it
 // gains its own widget/content. `me` (the me-daemon Live View) and `none` (empty) are neither, so we
@@ -131,7 +141,13 @@ async function cmdListTabs(args = []) {
   const focused = mirror.focused || null
   // Machine-readable: the agent needs the ids to drive a specific tab with `--card=<id>`.
   if (flags.json === true) {
-    out(JSON.stringify({ focused, tabs: cards.map((c) => ({ ...c, cat: tabCategory(c.type) })) }, null, 2))
+    out(
+      JSON.stringify(
+        { focused, tabs: cards.map((c) => ({ ...c, cat: tabCategory(c.type) })) },
+        null,
+        2
+      )
+    )
     return
   }
   if (!cards.length) {
@@ -570,7 +586,9 @@ async function cmdPop(args) {
   // Incremental pop (no reload → no flicker), removing the same count from the live DOM.
   await notifyPatch(target.path, { op: 'pop', n: removed.length })
   const ids = removed.map((w) => `#${w.id} (${w.type})`).join(', ')
-  out(`popped ${removed.length} widget${removed.length === 1 ? '' : 's'}: ${ids} — ${widgets.length} left`)
+  out(
+    `popped ${removed.length} widget${removed.length === 1 ? '' : 's'}: ${ids} — ${widgets.length} left`
+  )
 }
 
 // Convenience one-liner: ensure a title on screen. Appends to the focused manifest, or creates a
@@ -1051,6 +1069,10 @@ const COMMANDS = {
     run: cmdWeb
   },
   'new-tab': { summary: 'open a new empty web tab, named: decky new-tab <title>', run: cmdNewTab },
+  rename: {
+    summary: 'rename this tab and pin it (auto-title stops overriding): decky rename <name>',
+    run: cmdRename
+  },
   'list-tabs': {
     summary: 'list the tabs open in the current session (web vs card)',
     run: cmdListTabs

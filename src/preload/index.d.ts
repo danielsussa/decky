@@ -121,7 +121,9 @@ export interface DeckAPI {
   }
   sessions: {
     getTitles: () => Promise<Record<string, string>>
-    onTitleChange: (callback: (msg: { id: string; title: string }) => void) => () => void
+    onTitleChange: (
+      callback: (msg: { id: string; title: string; pinned?: boolean }) => void
+    ) => () => void
     onRunningChange: (callback: (msg: { id: string; cmd: string }) => void) => () => void
     onAdd: (callback: (msg: { cwd: string }) => void) => () => void
     onWebTab: (callback: (msg: { title?: string }) => void) => () => void

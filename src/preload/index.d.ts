@@ -141,6 +141,7 @@ export interface DeckAPI {
     onFlush: (callback: () => void) => () => void
     flushDone: () => void
     diag: (msg: string) => void
+    typingPing: () => void
     onFocusStolenBack: (callback: () => void) => () => void
     onOpenUrl: (callback: (url: string) => void) => () => void
     openExternal: (url: string) => Promise<void>

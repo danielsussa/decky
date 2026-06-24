@@ -26,6 +26,29 @@ const wlog = (msg: string): void => {
   if (LIFECYCLE_DIAG) diag(`[web-views] ${msg}`)
 }
 
+// Enquanto o usuário digita num campo editável do renderer (terminal, address bar, form…), NENHUM
+// card pode roubar o foco de OS. O renderer manda um ping a cada tecla (app:typing-ping); se um
+// WebContentsView ganhar o foco logo em seguida (site faz el.focus(), autofocus, vídeo, anúncio,
+// re-render…), o evento 'focus' do WebContents devolve o foco na hora. Usamos RECÊNCIA, não um flag:
+// clicar num card não gera ping, então clique do usuário num card foca normal — só o roubo "do nada"
+// enquanto se digita é revertido.
+// Cor de fundo da WebContentsView por scheme: cards card:// querem transparente (mostram o tema
+// do shell atrás); páginas web externas querem branco (canvas base do navegador), senão páginas
+// que não pintam o próprio bg em toda a área (ex: Stripe checkout) deixam o wallpaper vazar.
+function bgForUrl(url: string | undefined | null): string {
+  return url && url.startsWith('card://') ? '#00000000' : '#ffffff'
+}
+
+const TYPING_RECENCY_MS = 1200
+let lastRendererTypingTs = 0
+export function noteRendererTyping(): void {
+  // Date.now() é permitido em app code (a restrição é só pra scripts de workflow).
+  lastRendererTypingTs = Date.now()
+}
+function rendererTypingRecently(): boolean {
+  return Date.now() - lastRendererTypingTs < TYPING_RECENCY_MS
+}
+
 // One WebContentsView per web card. Top-level webContents (not a <webview> tag), which Google's
 // account login accepts — no `disallowed_useragent`. The view is a native overlay positioned
 // over the React shell; the shell's address bar lives ABOVE this overlay in DOM order, so the
@@ -181,10 +204,13 @@ class WebViewsManager {
         webSecurity: false
       }
     })
-    // Fundo transparente: deixa o shell da app (bg-0 + overlay de paisagem do tema) aparecer
-    // atrás do card quando a página não pinta o próprio fundo (cards card:// usam body transparente).
-    // Sites externos pintam o próprio bg, então seguem opacos onde desenham.
-    view.setBackgroundColor('#00000000')
+    // Fundo: cards card:// usam body transparente p/ deixar o shell da app (bg-0 + paisagem do
+    // tema) aparecer atrás → transparente. Sites externos NEM SEMPRE pintam fundo opaco em toda
+    // a área (ex: Stripe checkout deixa a coluna esquerda sem bg, contando com o canvas branco do
+    // navegador); se a view fosse transparente, o wallpaper do app vazaria por trás. Por isso:
+    // card:// → transparente, http(s)/resto → branco (igual ao canvas base do Chrome). O scheme
+    // real é reconfirmado no did-navigate; aqui usamos o initialUrl só p/ evitar flash inicial.
+    view.setBackgroundColor(bgForUrl(initialUrl))
     const wc = view.webContents
     const state: ViewState = {
       view,
@@ -423,6 +449,17 @@ class WebViewsManager {
     const fire = (): void => emit(cardId)
     wc.on('did-start-loading', fire)
     wc.on('did-stop-loading', fire)
+    // Anti-roubo de foco: se este card ganhar o foco de OS enquanto o usuário está digitando no
+    // renderer, devolve na hora. Cobre QUALQUER causa (load, el.focus() do site, autofocus, vídeo,
+    // anúncio) num único ponto — o evento 'focus' do WebContents dispara em toda troca de foco entre
+    // views da mesma janela. Recência (TYPING_RECENCY_MS) não briga com cliques do usuário no card.
+    wc.on('focus', () => {
+      if (!rendererTypingRecently()) return
+      const win = this.getWin()
+      if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
+      win.webContents.focus()
+      win.webContents.send('app:focus-stolen-back')
+    })
     // HTTP auth (401 Basic/Digest, ou 407 de proxy). Sem este handler o Electron cancela a
     // autenticação e a página fica em branco/erro — diferente do Chrome, que abre o popup de
     // login. Replicamos esse popup com um modal próprio e devolvemos as credenciais via callback.
@@ -483,6 +520,13 @@ class WebViewsManager {
       if (url.startsWith('data:')) {
         fire()
         return
+      }
+      // Reconfirma o fundo pelo scheme real: card:// transparente (tema do shell atrás), web branco
+      // (senão páginas que não pintam o próprio bg em toda área deixam o wallpaper da app vazar).
+      try {
+        s?.view.setBackgroundColor(bgForUrl(url))
+      } catch {
+        // view já destruída
       }
       // Top-level navigation pra outra origem → o favicon atual não vale mais. Limpa pra
       // não exibir o ícone do site anterior até o do novo chegar.
@@ -1140,6 +1184,8 @@ export function setupWebViews(getWin: () => BrowserWindow | null): void {
     manager!.destroy(cardId)
     return true
   })
+  // Ping de "estou digitando" do renderer — alimenta o anti-roubo de foco em wireEvents (wc.on focus).
+  ipcMain.on('app:typing-ping', () => noteRendererTyping())
   ipcMain.on('web:set-bounds', (_e, payload: { cardId: string; bounds: Bounds }) => {
     manager!.setBounds(payload.cardId, payload.bounds)
   })

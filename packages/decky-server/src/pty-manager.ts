@@ -1,9 +1,22 @@
 import * as pty from 'node-pty'
 import os from 'os'
 import { execSync, execFile } from 'node:child_process'
-import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
+import {
+  existsSync,
+  readdirSync,
+  statSync,
+  readFileSync,
+  unlinkSync,
+  appendFileSync,
+  mkdirSync,
+  writeFileSync,
+  openSync,
+  readSync,
+  closeSync
+} from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { workspaceCardsDir } from '@decky/shared/node'
+import { planShellSpawn } from './shell-adapters'
 import {
   claudeSessionFile,
   isHeadlessClaudeSession,
@@ -181,6 +194,7 @@ const lastTitleMtime = new Map<string, number>() // id -> mtime do .jsonl já li
 const lastTitle = new Map<string, string>() // id -> último aiTitle empurrado (dedup de evento)
 const claudeOn = new Set<string>() // ids cujo foreground é claude (suprime anotação de comando)
 const lastRunning = new Map<string, string>() // id -> último cmd anotado na aba (dedup + clear)
+const boundLogged = new Set<string>() // ids que já logaram [nobind] nesta run (1x por run, debug)
 
 // Basename do processo: tira o `-` de login-shell e qualquer path ("/usr/bin/node" -> "node").
 function procBase(p: string): string {
@@ -253,7 +267,7 @@ function resolveRunningCmd(id: string, shellPid: number): void {
   })
 }
 
-// Remove o `--session-id <uuid>` que o shim do claude injeta (ver ensureZshShim) — é por-conversa, não
+// Remove o `--session-id <uuid>` que o shim do claude injeta (ver shell-adapters.ts) — é por-conversa, não
 // faz parte do "comando default" que o usuário quer relançar em abas novas.
 function stripInjectedSid(cmd: string): string {
   return cmd.replace(/\s+--session-id\s+[0-9a-f-]{36}/i, '').trim()
@@ -289,7 +303,7 @@ function claudeProjectSlug(cwd: string): string {
 // confundir a pasta `memory/` (e outras) com uma sessão ao varrer o dir do projeto.
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-// Vínculo DETERMINÍSTICO aba↔conversa: a função `claude` do shim (ver ensureZshShim) gera um uuid,
+// Vínculo DETERMINÍSTICO aba↔conversa: a função `claude` do shim (ver shell-adapters.ts) gera um uuid,
 // força `claude --session-id <uuid>` e ANUNCIA o id escrevendo $DECKY_CLAUDE_SID_DIR/<DECKY_SESSION_ID>
 // (= o id desta aba). O server lê esse arquivo e vincula na hora, sem adivinhar por birthtime/nome de
 // processo (que já causou vários casos de "sessão sem nome"). A heurística de birthtime fica só como
@@ -393,6 +407,44 @@ function claudeSessionExistsOnDisk(cwd: string, sid: string): boolean {
   return false
 }
 
+// Log de diagnóstico do pipeline de título/vínculo, em ~/.decky/title-debug.log. SEMPRE ligado, mas
+// minúsculo (só transições: claude em foreground, bind, resultado do título, emit). Existe porque o
+// console do processo main se PERDE quando o decky é aberto pelo Finder (stdout sem terminal) — sem
+// um arquivo não dá pra diagnosticar "aba sem título" numa máquina remota. Trunca em 128KB. Nunca
+// derruba o poll: qualquer erro de I/O é engolido.
+let titleLogPath: string | null = null
+function titleLog(msg: string): void {
+  try {
+    if (!titleLogPath) {
+      const dir = join(os.homedir(), '.decky')
+      mkdirSync(dir, { recursive: true })
+      titleLogPath = join(dir, 'title-debug.log')
+    }
+    try {
+      if (statSync(titleLogPath).size > 131072) writeFileSync(titleLogPath, '')
+    } catch {
+      /* ainda não existe */
+    }
+    appendFileSync(titleLogPath, `${new Date().toISOString()} ${msg}\n`)
+  } catch {
+    /* log nunca pode quebrar o poll */
+  }
+}
+
+// Amostra crua do começo do .jsonl (1ª linha não-meta) — pro caso de aiTitle E firstPrompt darem
+// null: preciso ver o SCHEMA do transcript daquela versão do claude pra ajustar o parser.
+function titleHeadSample(file: string): string {
+  try {
+    const fd = openSync(file, 'r')
+    const buf = Buffer.alloc(1200)
+    const n = readSync(fd, buf, 0, buf.length, 0)
+    closeSync(fd)
+    return buf.toString('utf8', 0, n).replace(/\s+/g, ' ').slice(0, 600)
+  } catch {
+    return '(ilegível)'
+  }
+}
+
 // Sync contínuo do título da aba a partir do .jsonl da conversa. Roda no poll pra cada aba com
 // conversa do claude já resolvida (sidById). Gated por mtime do .jsonl (não re-parseia a cada 1.5s)
 // e por valor (não re-emite o mesmo título).
@@ -406,14 +458,22 @@ function syncAiTitle(id: string, cwd: string, claudeSessionId: string): void {
   try {
     mtimeMs = statSync(file).mtimeMs
   } catch {
+    titleLog(`[title] id=${id} sid=${claudeSessionId} SEM .jsonl no disco (${file})`)
     return
   }
   if (lastTitleMtime.get(id) === mtimeMs) return
   lastTitleMtime.set(id, mtimeMs)
-  const title = readLatestAiTitle(file) ?? readFirstPrompt(file)
+  const ai = readLatestAiTitle(file)
+  const fp = readFirstPrompt(file)
+  const title = ai ?? fp
+  titleLog(
+    `[title] id=${id} sid=${claudeSessionId} aiTitle=${ai ? JSON.stringify(ai) : 'null'} firstPrompt=${fp ? JSON.stringify(fp) : 'null'}`
+  )
+  if (!ai && !fp) titleLog(`[title-null-head] id=${id} ${titleHeadSample(file)}`)
   if (!title || lastTitle.get(id) === title) return
   lastTitle.set(id, title)
   events.onTitle?.(id, title)
+  titleLog(`[emit] id=${id} title=${JSON.stringify(title)}`)
 }
 
 function pollProcesses(): void {
@@ -447,6 +507,7 @@ function pollProcesses(): void {
       // claude em foreground (nome 'claude' ou a versão X.Y.Z) → flip imediato (responsivo p/ a
       // animação de borda).
       if (looksLikeClaude(base)) {
+        if (!claudeOn.has(id)) titleLog(`[claude-fg] id=${id} proc=${JSON.stringify(proc)}`)
         claudeOn.add(id)
         events.onClaude?.(id, { running: true })
       }
@@ -464,7 +525,9 @@ function pollProcesses(): void {
         claudeStartAt.delete(id)
         lastTitleMtime.delete(id) // próxima conversa (.jsonl novo) re-sincroniza do zero
         lastTitle.delete(id)
+        boundLogged.delete(id) // próxima run re-loga [nobind] se voltar a não vincular
         clearAnnouncedSid(id) // descarta anúncio não-consumido desta run (evita re-vínculo stale)
+        titleLog(`[unbind] id=${id} claude saiu pro shell`)
       }
 
       // Anotação do comando em foreground (sufixo da aba). Enquanto o claude é o foreground ele já
@@ -493,6 +556,7 @@ function pollProcesses(): void {
       if (!sidById.has(id)) {
         const announced = readAnnouncedSid(id)
         if (announced) {
+          titleLog(`[bind] id=${id} via=announce sid=${announced}`)
           sidById.set(id, announced)
           events.onClaude?.(id, { running: true, sessionId: announced })
         }
@@ -521,6 +585,7 @@ function pollProcesses(): void {
       if (bound && since > 0 && !claudeSessionExistsOnDisk(cwd, bound)) {
         const real = resolveClaudeSessionByBirth(cwd, since, claimed, upperMs)
         if (real && real !== bound) {
+          titleLog(`[bind] id=${id} via=ghost sid=${real} (era ${bound})`)
           sidById.set(id, real)
           lastTitleMtime.delete(id) // re-sincroniza o título do zero pra conversa nova
           lastTitle.delete(id)
@@ -536,8 +601,17 @@ function pollProcesses(): void {
       if (!sidById.has(id) && since > 0) {
         const sessionId = resolveClaudeSessionByBirth(cwd, since, claimed, upperMs)
         if (sessionId) {
+          titleLog(`[bind] id=${id} via=birth sid=${sessionId}`)
           sidById.set(id, sessionId)
           events.onClaude?.(id, { running: true, sessionId })
+        } else if (!boundLogged.has(id)) {
+          // claude em foreground mas NENHUM caminho vinculou ainda (sem anúncio do shim e sem .jsonl
+          // novo na janela de birthtime). Logo 1x por run — é o sintoma "aba presa sem título".
+          boundLogged.add(id)
+          const announceFile = join(claudeSidDir(), id)
+          titleLog(
+            `[nobind] id=${id} since=${since} announceFile=${existsSync(announceFile)} cwd=${cwd}`
+          )
         }
       }
     }
@@ -553,70 +627,6 @@ function startProcPolling(): void {
   pollTimer = setInterval(pollProcesses, 1500)
   // Não segura o event loop vivo só por causa do poll.
   pollTimer.unref?.()
-}
-
-// Histórico de shell ISOLADO por aba: cada pty ganha seu próprio HISTFILE (persistente, keyed pelo
-// session id), pra Ctrl-R / seta-pra-cima não vazarem comandos entre terminais. zsh é o caso
-// chato: o /etc/zshrc força HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history no startup, sobrescrevendo
-// qualquer HISTFILE do env. Por isso usamos um ZDOTDIR "shim" (carrega a config real do usuário e
-// SÓ no fim fixa o HISTFILE da aba). Pra outros shells (bash) o HISTFILE do env basta.
-// Função `claude` injetada no shim: força um --session-id conhecido e o anuncia pro decky (vínculo
-// determinístico). Passthrough quando o id já vem dado/criado (--resume/--continue/--session-id/
-// --from-pr) ou fora de uma sessão decky. `command claude` pula a função e acha o binário real (sem
-// loop). Lowercase no uuid pra casar com o basename do .jsonl que o claude cria.
-const CLAUDE_SHIM_FN =
-  'claude() {\n' +
-  '  if [[ -z "$DECKY_SESSION_ID" || -z "$DECKY_CLAUDE_SID_DIR" ]]; then command claude "$@"; return; fi\n' +
-  '  local a\n' +
-  '  for a in "$@"; do\n' +
-  '    case "$a" in -r|--resume|-c|--continue|--session-id|--from-pr) command claude "$@"; return ;; esac\n' +
-  '  done\n' +
-  '  local sid="$(uuidgen | tr "A-Z" "a-z")"\n' +
-  '  mkdir -p "$DECKY_CLAUDE_SID_DIR"\n' +
-  '  print -rn -- "$sid" > "$DECKY_CLAUDE_SID_DIR/$DECKY_SESSION_ID"\n' +
-  '  command claude --session-id "$sid" "$@"\n' +
-  '}\n'
-
-let zshShimDir: string | null = null
-function ensureZshShim(): string {
-  if (zshShimDir) return zshShimDir
-  const dir = join(os.homedir(), '.decky', 'zsh')
-  mkdirSync(dir, { recursive: true })
-  // .zshenv mantém o ZDOTDIR=shim ativo até o estágio do .zshrc; só carrega o real do usuário.
-  writeFileSync(join(dir, '.zshenv'), '[ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"\n')
-  // .zshrc devolve ZDOTDIR pro $HOME (config real e subshells veem o normal), carrega o .zshrc do
-  // usuário, define a função `claude` (vínculo determinístico) e por ÚLTIMO isola o histórico desta
-  // aba (vence até se o real setasse HISTFILE). A função vem DEPOIS do .zshrc do usuário pra ganhar
-  // de aliases/funções dele.
-  writeFileSync(
-    join(dir, '.zshrc'),
-    'ZDOTDIR="$HOME"\n' +
-      '[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"\n' +
-      CLAUDE_SHIM_FN +
-      '[ -n "$DECKY_HISTFILE" ] && HISTFILE="$DECKY_HISTFILE"\n'
-  )
-  // Defensivo (o spawn é non-login, mas caso mude): login shells carregam os reais.
-  writeFileSync(join(dir, '.zprofile'), '[ -f "$HOME/.zprofile" ] && source "$HOME/.zprofile"\n')
-  writeFileSync(join(dir, '.zlogin'), '[ -f "$HOME/.zlogin" ] && source "$HOME/.zlogin"\n')
-  zshShimDir = dir
-  return dir
-}
-
-// Env extra que isola o histórico desta aba. HISTFILE persistente keyed pelo session id (sobrevive
-// a restarts da MESMA aba). Pra zsh, injeta também o ZDOTDIR shim.
-function historyEnv(sessionId: string, shellFile: string): Record<string, string> {
-  const env: Record<string, string> = {}
-  try {
-    const histDir = join(os.homedir(), '.decky', 'histories')
-    mkdirSync(histDir, { recursive: true })
-    const histfile = join(histDir, sessionId)
-    env.HISTFILE = histfile
-    env.DECKY_HISTFILE = histfile
-    if (basename(shellFile).includes('zsh')) env.ZDOTDIR = ensureZshShim()
-  } catch {
-    // se algo falhar, segue sem isolamento (melhor que derrubar o spawn)
-  }
-  return env
 }
 
 // O process.env do decky.app pode estar CONTAMINADO: se o app foi iniciado de dentro de uma sessão
@@ -641,7 +651,10 @@ function spawnPty(args: CreatePtyArgs): void {
   // O renderer pode ter mandado um path absoluto resolvido no host LOCAL (Mac); num engine
   // remoto esse path não existe. Refaz o resolve aqui, no host onde realmente vamos spawnar.
   const file = resolveBinForHost(requestedFile)
-  const argv = args.command ? args.command.slice(1) : []
+  // Comando custom (ex.: `claude --resume`) NÃO é um shell interativo → sem adapter (login/shim).
+  // Shell puro → o adapter resolve argv (login+interativo) + env (HISTFILE isolado, ZDOTDIR shim).
+  const plan = args.command ? null : planShellSpawn(file, args.id)
+  const argv = args.command ? args.command.slice(1) : (plan?.args ?? [])
 
   let term: pty.IPty
   try {
@@ -665,8 +678,8 @@ function spawnPty(args: CreatePtyArgs): void {
         DECKY_URL: process.env.DECKY_URL || 'http://127.0.0.1:6790',
         // Where this workspace's shared card files live, so tools can Glob/Read them.
         DECKY_CARDS_DIR: workspaceCardsDir(args.cwd ?? os.homedir()),
-        // Histórico de shell isolado por aba (HISTFILE próprio + ZDOTDIR shim no zsh).
-        ...historyEnv(args.id, file)
+        // Histórico isolado por aba + shim do shell (ZDOTDIR no zsh) — ver shell-adapters.ts.
+        ...(plan?.env ?? {})
       }
     })
   } catch (err) {
@@ -702,6 +715,7 @@ function spawnPty(args: CreatePtyArgs): void {
     claudeStartAt.delete(args.id)
     claudeOn.delete(args.id)
     lastRunning.delete(args.id)
+    boundLogged.delete(args.id)
     clearAnnouncedSid(args.id)
     events.onExit?.(args.id, exitCode)
     settleDying(args.id) // unblock any create() waiting on this id to die

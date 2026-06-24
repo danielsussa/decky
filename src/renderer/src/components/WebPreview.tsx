@@ -190,7 +190,11 @@ export default function WebPreview({
         .then((rows) => {
           if (cancelled) return
           setSuggestions(rows)
-          setHighlight(rows.length > 0 ? 0 : -1)
+          // NÃO pré-seleciona a primeira sugestão: Enter sempre commita o texto digitado
+          // (ex: "garimpar.me" → garimpar.me). Pré-highlight fazia o Enter sequestrar a sugestão
+          // de histórico nº 0 (ex: 127.0.0.1:3000/business-plan) e navegar pra ela. Pra escolher
+          // uma sugestão, o usuário desce com ArrowDown (que seta highlight explicitamente).
+          setHighlight(-1)
         })
         .catch(() => {
           if (!cancelled) setSuggestions([])

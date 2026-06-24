@@ -274,6 +274,9 @@ const deckApi = {
     flushDone: (): void => ipcRenderer.send('app:flush-done'),
     // DIAG temporário: reporta perda de foco do terminal pro log do main (caçando o foco que some).
     diag: (msg: string): void => ipcRenderer.send('app:diag', msg),
+    // Ping "estou digitando num campo editável" — o main usa pra reverter qualquer card que roube o
+    // foco de OS logo em seguida. Throttle no renderer (não precisa 1 por tecla).
+    typingPing: (): void => ipcRenderer.send('app:typing-ping'),
     // Main devolveu o foco de OS pra janela depois que um WebContentsView (card) o roubou durante
     // uma carga em background. win.webContents.focus() não recoloca o <textarea> do xterm, então o
     // renderer recoloca no terminal ativo aqui. Ver web-views.guardLoadFocus / returnFocusToRenderer.

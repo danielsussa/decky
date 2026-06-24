@@ -1248,6 +1248,25 @@ function App(): React.JSX.Element {
     return () => clearInterval(iv)
   }, [])
 
+  // Avisa o main "estou digitando num campo editável" a cada tecla (throttle 250ms) → o main reverte
+  // qualquer card que roube o foco de OS logo em seguida (web-views.wireEvents 'focus'). Cobre
+  // terminal, address bar, forms, qualquer input. Captura na fase de captura pra pegar antes de tudo.
+  useEffect(() => {
+    let lastPing = 0
+    const onKey = (): void => {
+      const ae = document.activeElement as HTMLElement | null
+      if (!ae) return
+      const editable = ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable
+      if (!editable) return
+      const now = Date.now()
+      if (now - lastPing < 250) return
+      lastPing = now
+      window.deck.app.typingPing()
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [])
+
   // DIAG temporário (caçando "o foco vai embora do nada"): registra TODA vez que o terminal ativo
   // perde o foco — pra onde foi (relatedTarget), o que ficou ativo logo depois, e se o renderer ainda
   // tem o foco de OS (document.hasFocus). relatedTarget/activeElement preenchidos = roubo dentro do

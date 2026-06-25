@@ -50,7 +50,7 @@ import { registerDevRebuildHandlers } from './dev-rebuild'
 import { getBuildInfo } from '@decky/shared'
 import { registerAssetScheme, setupAssetProtocol } from './asset-protocol'
 import { registerCardScheme, setupCardProtocol, cardUrlToAbsPath } from './card-protocol'
-import { setupWebSession, attachWebContentsPopupRouter } from './web-session'
+import { setupWebSession, attachWebContentsPopupRouter, STEALTH_DISGUISE } from './web-session'
 import { setupWebViews } from './web-views'
 import { setupHistory } from './history'
 import { setupHtmlServer } from './html-server'
@@ -336,11 +336,14 @@ app
     // Global default UA: strip the Electron/app token so any web surface that falls back to it
     // (a popup in the instant before the deckweb partition UA applies) still reads as plain Chrome.
     // The per-partition setUserAgent in setupWebSession is the main path; this is the safety net.
-    app.userAgentFallback = app.userAgentFallback
-      .replace(`Electron/${process.versions.electron}`, '')
-      .replace(`${app.getName()}/${app.getVersion()}`, '')
-      .replace(/\s+/g, ' ')
-      .trim()
+    // Gated by STEALTH_DISGUISE: when off we stay an honest Electron/Chromium (Electron token kept).
+    if (STEALTH_DISGUISE) {
+      app.userAgentFallback = app.userAgentFallback
+        .replace(`Electron/${process.versions.electron}`, '')
+        .replace(`${app.getName()}/${app.getVersion()}`, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    }
     // Drive prefers-color-scheme inside every embedded webContents from decky's own theme mode
     // (persisted as 'themeMode' in state-store; toggled in the renderer). Set the initial value
     // from disk so the first web card created during startup already gets the right scheme,

@@ -317,6 +317,20 @@ const TOOLS = [
       },
       required: ['code']
     }
+  },
+  {
+    name: 'browser_scroll',
+    description:
+      'Scroll the focused web card and dispatch real scroll events. Use this when content is lazy-loaded (stuck on "Loading…") and a snapshot misses it — scrolling fires the IntersectionObserver that renders it (a plain scrollTop set via browser_eval often does NOT). Pass `ref` to bring a specific element into view, or `dir` to page through. Re-snapshot afterwards for fresh refs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'Optional element ref to scroll into view (from the latest snapshot).' },
+        dir: { type: 'string', enum: ['down', 'up', 'top', 'bottom'], description: "Scroll direction when no ref is given (default 'down')." },
+        amount: { type: 'number', description: 'Optional per-step pixels (default ~90% of viewport height).' },
+        card: { type: 'string', description: 'Optional web card id' }
+      }
+    }
   }
 ]
 
@@ -612,6 +626,11 @@ async function handleCall(name, args) {
   if (name === 'browser_eval') {
     if (typeof a.code !== 'string') throw new Error('browser_eval: code required')
     return JSON.stringify(await post('/web/act', { action: 'eval', code: a.code, cardId: a.card }))
+  }
+  if (name === 'browser_scroll') {
+    return JSON.stringify(
+      await post('/web/act', { action: 'scroll', ref: a.ref, dir: a.dir, amount: a.amount, cardId: a.card })
+    )
   }
 
   throw new Error(`unknown tool: ${name}`)

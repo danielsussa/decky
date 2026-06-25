@@ -9,6 +9,17 @@ import { diag } from '@decky/server'
 // or runaway permission on the webview can't leak into decky itself.
 export const WEB_PARTITION = 'persist:deckweb'
 
+// EXPERIMENT: present an HONEST Chromium instead of a faked "Google Chrome". VS Code's plain
+// Chromium webview does Gmail login AND Cloudflare Turnstile with zero spoofing; our disguise
+// (forced UA + Sec-CH-UA "Google Chrome" hints + navigator.userAgentData/window.chrome/Worker
+// spoof in the preload) is INCONSISTENT — it can't reach the captcha's out-of-process iframe — so
+// Turnstile flags it and greys out. With this false: skip setUserAgent, the UA/Sec-CH-UA header
+// injection (web-session), the userAgentFallback Electron-strip (index.ts), and the preload's
+// stealth IIFE (webview-preload.js) — keeping __meTracker + the FedCM disable (the real Google
+// login fix). Flip back to true to restore the full disguise. NOTE: the preload's stealth IIFE is
+// gated separately in webview-preload.js (it has no access to this const) — keep them in sync.
+export const STEALTH_DISGUISE = false
+
 // Chrome's UA shape; we fill the Chromium major from process.versions.chrome at runtime so the
 // string matches the actual engine version each Electron upgrade brings.
 function chromeUserAgent(): string {
@@ -145,7 +156,7 @@ export function setupWebSession(getMainWindow: () => BrowserWindow | null): void
   //    pages or outright blocks. The 2nd arg sets Accept-Language to the host locale.
   const ua = chromeUserAgent()
   const lang = app.getLocale() || 'en-US'
-  ses.setUserAgent(ua, lang)
+  if (STEALTH_DISGUISE) ses.setUserAgent(ua, lang)
 
   // Some endpoints sniff per-request headers in addition to the UA. Enforce UA, Accept-Language,
   // and the Sec-CH-UA client hints together — Google's account login specifically gates on the
@@ -165,12 +176,15 @@ export function setupWebSession(getMainWindow: () => BrowserWindow | null): void
   const hints = clientHintsHeaders()
   ses.webRequest.onBeforeSendHeaders((details, cb) => {
     const h = details.requestHeaders
-    setHeader(h, 'User-Agent', ua)
+    // Accept-Language is honest browser behaviour either way — always set it.
     setHeader(h, 'Accept-Language', `${lang},${lang.split('-')[0]};q=0.9,en;q=0.8`)
-    // Only set hints on secure contexts — browsers don't send Sec-CH-* over plain http,
-    // mirroring that avoids accidentally outing us as non-standard on http endpoints.
-    if (details.url.startsWith('https://')) {
-      for (const [k, v] of Object.entries(hints)) setHeader(h, k, v)
+    if (STEALTH_DISGUISE) {
+      setHeader(h, 'User-Agent', ua)
+      // Only set hints on secure contexts — browsers don't send Sec-CH-* over plain http,
+      // mirroring that avoids accidentally outing us as non-standard on http endpoints.
+      if (details.url.startsWith('https://')) {
+        for (const [k, v] of Object.entries(hints)) setHeader(h, k, v)
+      }
     }
     cb({ requestHeaders: h })
   })

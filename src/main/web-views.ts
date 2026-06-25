@@ -201,7 +201,12 @@ class WebViewsManager {
         // CSP estilo navegador que bloqueia cross-scheme (card:// → http://). Sem Node + sandbox
         // continua isolando o renderer; o trade-off é exatamente o que cards precisam: HTML
         // arbitrário com assets locais + iframes pra serviços do host.
-        webSecurity: false
+        // MAS: só pros cards card://. Pra web cards REAIS (sites externos) webSecurity TEM que
+        // ficar ON — com ela OFF o same-origin/SameSite/origin-de-postMessage ficam bagunçados e
+        // anti-bots cross-origin quebram: o Cloudflare Turnstile (e reCAPTCHA/hCaptcha) gira pra
+        // sempre sem nunca emitir token. Web cards começam com http(s):// ou vazio (tab nova);
+        // só os content cards começam com card://. Escopa pelo scheme da URL inicial.
+        webSecurity: !(initialUrl || '').startsWith('card://')
       }
     })
     // Fundo: cards card:// usam body transparente p/ deixar o shell da app (bg-0 + paisagem do

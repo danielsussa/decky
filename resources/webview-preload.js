@@ -58,6 +58,12 @@ function spoofUserAgentData() {
 }
 
 ;(() => {
+  // EXPERIMENT: stealth disguise OFF — be an honest Chromium (see STEALTH_DISGUISE in
+  // web-session.ts). Skip every userAgentData/window.chrome/Worker/permissions spoof; the
+  // __meTracker IIFE below still runs (it's instrumentation, not disguise). Remove this early
+  // return (and re-enable STEALTH_DISGUISE) to restore the disguise.
+  return
+
   // navigator.webdriver — DELIBERATELY left untouched. In a top-level WebContentsView (no
   // --enable-automation) the native value is already `false`; overriding it with a defineProperty
   // getter is not only redundant but counterproductive — CreepJS-class detectors notice the
@@ -364,69 +370,89 @@ function spoofUserAgentData() {
       return String(u)
     }
   }
-  const origFetch = window.fetch ? window.fetch.bind(window) : null
-  if (origFetch) {
-    window.fetch = function (input, init) {
-      if (init && init.keepalive) return origFetch(input, init)
-      inFlight++
-      const method = (init && init.method) || (input && input.method) || 'GET'
-      const url = typeof input === 'string' ? input : (input && input.url) || String(input)
-      const rec = {
-        url: absUrl(url),
-        method: String(method).toUpperCase(),
-        status: 0,
-        startedAt: Date.now(),
-        finishedAt: undefined,
-        failed: false
-      }
-      pushReq(rec)
-      return origFetch(input, init).then(
-        (r) => {
-          inFlight--
-          rec.status = r.status
-          rec.finishedAt = Date.now()
-          return r
-        },
-        (e) => {
-          inFlight--
-          rec.failed = true
-          rec.finishedAt = Date.now()
-          throw e
+  // Wrap fetch/XHR through a Proxy, NOT a plain function. A bare `window.fetch = function(){}`
+  // wrapper makes Function.prototype.toString.call(fetch) report the wrapper source instead of
+  // "[native code]" — anti-bot scripts (Cloudflare Turnstile) read that as a tampered page and
+  // the challenge fails to execute (error 300010). A Proxy whose target is the native function
+  // keeps toString reporting native while the apply trap still does our in-flight counting.
+  const nativeFetch = window.fetch
+  if (typeof nativeFetch === 'function') {
+    window.fetch = new Proxy(nativeFetch, {
+      apply(target, _thisArg, args) {
+        const init = args[1]
+        // keepalive (beacons): pass straight through, force `this` = window so the call is legal.
+        if (init && init.keepalive) return Reflect.apply(target, window, args)
+        inFlight++
+        const input = args[0]
+        const method = (init && init.method) || (input && input.method) || 'GET'
+        const url = typeof input === 'string' ? input : (input && input.url) || String(input)
+        const rec = {
+          url: absUrl(url),
+          method: String(method).toUpperCase(),
+          status: 0,
+          startedAt: Date.now(),
+          finishedAt: undefined,
+          failed: false
         }
-      )
-    }
+        pushReq(rec)
+        return Reflect.apply(target, window, args).then(
+          (r) => {
+            inFlight--
+            rec.status = r.status
+            rec.finishedAt = Date.now()
+            return r
+          },
+          (e) => {
+            inFlight--
+            rec.failed = true
+            rec.finishedAt = Date.now()
+            throw e
+          }
+        )
+      }
+    })
   }
   const XHR = XMLHttpRequest.prototype
-  const origOpen = XHR.open
-  XHR.open = function (method, url, ...rest) {
-    this.__meReq = { method: String(method || 'GET').toUpperCase(), url: absUrl(url || '') }
-    return origOpen.call(this, method, url, ...rest)
-  }
-  const origSend = XHR.send
-  XHR.send = function (...args) {
-    if (!this.__meCounted) {
-      this.__meCounted = true
-      inFlight++
-      const rec = {
-        url: (this.__meReq && this.__meReq.url) || '',
-        method: (this.__meReq && this.__meReq.method) || 'GET',
-        status: 0,
-        startedAt: Date.now(),
-        finishedAt: undefined,
-        failed: false
+  const nativeOpen = XHR.open
+  XHR.open = new Proxy(nativeOpen, {
+    apply(target, thisArg, args) {
+      try {
+        thisArg.__meReq = {
+          method: String(args[0] || 'GET').toUpperCase(),
+          url: absUrl(args[1] || '')
+        }
+      } catch {
+        /* ignore */
       }
-      pushReq(rec)
-      const xhr = this
-      const dec = () => {
-        inFlight--
-        rec.status = xhr.status
-        rec.finishedAt = Date.now()
-        rec.failed = xhr.status === 0
-      }
-      this.addEventListener('loadend', dec, { once: true })
+      return Reflect.apply(target, thisArg, args)
     }
-    return origSend.apply(this, args)
-  }
+  })
+  const nativeSend = XHR.send
+  XHR.send = new Proxy(nativeSend, {
+    apply(target, thisArg, args) {
+      if (!thisArg.__meCounted) {
+        thisArg.__meCounted = true
+        inFlight++
+        const rec = {
+          url: (thisArg.__meReq && thisArg.__meReq.url) || '',
+          method: (thisArg.__meReq && thisArg.__meReq.method) || 'GET',
+          status: 0,
+          startedAt: Date.now(),
+          finishedAt: undefined,
+          failed: false
+        }
+        pushReq(rec)
+        const dec = () => {
+          inFlight--
+          rec.status = thisArg.status
+          rec.finishedAt = Date.now()
+          rec.failed = thisArg.status === 0
+        }
+        thisArg.addEventListener('loadend', dec, { once: true })
+      }
+      return Reflect.apply(target, thisArg, args)
+    }
+  })
   const startObserver = () => {
     if (!document.documentElement) {
       setTimeout(startObserver, 10)

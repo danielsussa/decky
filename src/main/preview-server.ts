@@ -26,6 +26,7 @@ import {
   clickJs,
   clickLabel,
   READ_JS,
+  scrollJs,
   settle,
   SNAPSHOT_JS,
   typeJs,
@@ -208,6 +209,9 @@ interface WebActBody {
   ref?: string
   text?: string
   code?: string
+  // scroll: direction ('down'|'up'|'top'|'bottom') + optional per-step pixel amount.
+  dir?: string
+  amount?: number
   // Facilitators (settle / wait-until / wait-request / click-label).
   expression?: string
   pattern?: string
@@ -419,6 +423,7 @@ async function runWebActionInner(
     body.action === 'click' ||
     body.action === 'type' ||
     body.action === 'eval' ||
+    body.action === 'scroll' ||
     body.action === 'click-label'
   // Ações ATIVAS focam um elemento da página (typeJs/clickJs) → roubam o foco de OS do terminal.
   const keepFocus = isActive && rendererHadFocus(getWindow, wc)
@@ -438,6 +443,11 @@ async function runWebActionInner(
         )
       case 'eval':
         return await wc.executeJavaScript(String(body.code ?? ''))
+      case 'scroll':
+        return await wc.executeJavaScript(
+          scrollJs({ ref: body.ref, dir: body.dir, amount: body.amount }),
+          true
+        )
       // ── Facilitators ──
       case 'settle':
       case 'wait':

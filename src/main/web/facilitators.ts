@@ -84,6 +84,19 @@ export const SNAPSHOT_JS = `(() => {
       rec.value = el.value || '';
       rec.options = Array.from(el.options).map((o) => ({ value: o.value, label: o.text }));
     }
+    // Interactive STATE — so the agent sees toggle/checkbox/radio/tab/accordion state
+    // instead of guessing from the label. Only emit a field when the element actually
+    // carries that state, to keep records lean.
+    const ariaChecked = el.getAttribute('aria-checked');
+    if (el.tagName === 'INPUT' && (type === 'checkbox' || type === 'radio')) rec.checked = !!el.checked;
+    else if (ariaChecked === 'true' || ariaChecked === 'false') rec.checked = ariaChecked === 'true';
+    const ariaExpanded = el.getAttribute('aria-expanded');
+    if (ariaExpanded === 'true' || ariaExpanded === 'false') rec.expanded = ariaExpanded === 'true';
+    const ariaSelected = el.getAttribute('aria-selected');
+    if (ariaSelected === 'true' || ariaSelected === 'false') rec.selected = ariaSelected === 'true';
+    const ariaPressed = el.getAttribute('aria-pressed');
+    if (ariaPressed === 'true' || ariaPressed === 'false') rec.pressed = ariaPressed === 'true';
+    if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') rec.disabled = true;
     out.push(rec);
   }
   return { url: location.href, title: document.title, elements: out };
@@ -131,6 +144,48 @@ export function typeJs(ref: string, text: string): string {
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     return { ok: true };
+  })()`
+}
+
+// Scroll the page (or a specific ref into view) and dispatch real scroll events. Plain
+// `scrollTop = …` via eval often does NOT fire the IntersectionObserver that SPAs (e.g. Google
+// Ads) use to lazy-render sections, so the content stays stuck on "Loading". This finds the
+// tallest scrollable container, moves it, and dispatches `scroll` so observers/listeners react.
+// dir: 'down' (default) | 'up' | 'top' | 'bottom'. `amount` overrides the per-step pixels.
+export function scrollJs(opts: { ref?: string; dir?: string; amount?: number }): string {
+  const dirLit = JSON.stringify(opts.dir || 'down')
+  const amtLit = typeof opts.amount === 'number' ? String(opts.amount) : 'null'
+  const refExpr = opts.ref ? JSON.stringify(opts.ref) : 'null'
+  return `(() => {
+    const ref = ${refExpr};
+    const dir = ${dirLit};
+    const amount = ${amtLit};
+    const pickScroller = () => {
+      const se = document.scrollingElement || document.documentElement;
+      let best = se, bestScore = se.scrollHeight - se.clientHeight;
+      for (const e of document.querySelectorAll('*')) {
+        const score = e.scrollHeight - e.clientHeight;
+        if (score > bestScore && e.clientHeight > 200) { best = e; bestScore = score; }
+      }
+      return best;
+    };
+    if (ref) {
+      const el = document.querySelector('[data-mcp-ref=' + JSON.stringify(ref) + ']') || document.querySelector('[data-mcp-sid=' + JSON.stringify(ref) + ']');
+      if (!el) return { ok: false, error: 'ref not found: ' + ref };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      el.dispatchEvent(new Event('scroll', { bubbles: true }));
+      window.dispatchEvent(new Event('scroll'));
+      return { ok: true, scrolledTo: ref };
+    }
+    const sc = pickScroller();
+    const step = amount != null ? amount : Math.round(sc.clientHeight * 0.9);
+    if (dir === 'top') sc.scrollTop = 0;
+    else if (dir === 'bottom') sc.scrollTop = sc.scrollHeight;
+    else if (dir === 'up') sc.scrollTop -= step;
+    else sc.scrollTop += step;
+    sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+    window.dispatchEvent(new Event('scroll'));
+    return { ok: true, y: Math.round(sc.scrollTop), max: Math.round(sc.scrollHeight - sc.clientHeight) };
   })()`
 }
 

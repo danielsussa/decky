@@ -28,7 +28,7 @@ import {
 import { registerLegacyIpcBridges } from './legacy-ipc'
 import { registerCardsHandlers } from './cards-store'
 import { registerTagsIndexHandlers } from './tags-index-watcher'
-import { searchCards } from '@decky/server'
+import { searchCards, pinSessionTitle } from '@decky/server'
 import { resolveWikilink, computeBacklinks } from '@decky/server'
 import { workspaceCardsDir } from '@decky/shared/node'
 import { registerCardMirrorHandlers } from './card-mirror'
@@ -282,6 +282,12 @@ app
         wsServer.handle<void, Record<string, string>>('sessions:get-titles', () =>
           getSessionTitles()
         )
+        // sessions:set-title — rename manual da aba (duplo-clique). FIXA o título: o aiTitle do claude
+        // para de sobrescrever. Título vazio desfixa e volta pro aiTitle/1º-prompt.
+        wsServer.handle<{ id: string; title: string }, boolean>('sessions:set-title', (args) => {
+          pinSessionTitle(args?.id ?? '', args?.title ?? '')
+          return true
+        })
         // claudeSessions:list — conversas do claude no disco pra este cwd (aiTitle, branch, mtime).
         // O renderer usa pra reconciliar o título das abas abertas + montar o picker de anteriores.
         wsServer.handle<{ cwd: string }, ClaudeSessionInfo[]>('claudeSessions:list', (args) =>
@@ -445,6 +451,9 @@ app
       rehydratePreviews(byCard, workspace)
     )
     ipcMain.handle('sessions:get-titles', () => getSessionTitles())
+    ipcMain.handle('sessions:set-title', (_e, args: { id: string; title: string }) =>
+      pinSessionTitle(args?.id ?? '', args?.title ?? '')
+    )
     ipcMain.handle('app:get-startup-cwd', () => process.cwd())
     // Explicit "open in the OS browser" affordance — used by the external-link button on the
     // web card, since every other window.open in the renderer now routes to an internal card.

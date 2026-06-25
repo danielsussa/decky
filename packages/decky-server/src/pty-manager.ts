@@ -192,6 +192,11 @@ const claudeStartAt = new Map<string, number>() // id -> instante em que algo (c
 const cwdById = new Map<string, string>() // id -> cwd (pra achar o .jsonl do claude)
 const lastTitleMtime = new Map<string, number>() // id -> mtime do .jsonl já lido (gate de re-parse)
 const lastTitle = new Map<string, string>() // id -> último aiTitle empurrado (dedup de evento)
+// Abas com título FIXADO pelo usuário (rename manual via duplo-clique na UI). Enquanto fixado, o
+// syncAiTitle NÃO sobrescreve — é o que faz valer a prioridade "explícito > aiTitle > placeholder".
+// Persiste pela vida da sessão (sobrevive a runs do claude); só sai no onExit da pty (ou ao desfixar
+// com um rename vazio).
+const pinnedTitles = new Set<string>() // ids cujo título foi fixado manualmente pelo usuário
 const claudeOn = new Set<string>() // ids cujo foreground é claude (suprime anotação de comando)
 const lastRunning = new Map<string, string>() // id -> último cmd anotado na aba (dedup + clear)
 const boundLogged = new Set<string>() // ids que já logaram [nobind] nesta run (1x por run, debug)
@@ -475,6 +480,8 @@ function titleHeadSample(file: string): string {
 // lá usamos o 1º prompt, o MESMO que o picker "sessões anteriores" já mostra. Assim a aba nunca fica
 // presa no placeholder aleatório, e quando o aiTitle chega ele sobrescreve o fallback.
 function syncAiTitle(id: string, cwd: string, claudeSessionId: string): void {
+  // Título fixado manualmente vence o aiTitle — não toca na aba enquanto o pin existir.
+  if (pinnedTitles.has(id)) return
   const file = claudeSessionFile(cwd, claudeSessionId)
   let mtimeMs: number
   try {
@@ -773,6 +780,7 @@ function spawnPty(args: CreatePtyArgs): void {
     wrappedClaude.delete(args.id)
     lastRunning.delete(args.id)
     boundLogged.delete(args.id)
+    pinnedTitles.delete(args.id)
     clearAnnouncedSid(args.id)
     events.onExit?.(args.id, exitCode)
     settleDying(args.id) // unblock any create() waiting on this id to die
@@ -790,6 +798,22 @@ export async function createPty(args: CreatePtyArgs): Promise<void> {
 
 export function writePty(id: string, data: string): void {
   ptys.get(id)?.write(data)
+}
+
+// Rename manual da aba (duplo-clique na UI). FIXA o título: o syncAiTitle para de sobrescrever, então
+// vale "explícito > aiTitle > placeholder". Um título vazio DESFIXA — volta pro aiTitle/1º-prompt: solta
+// o pin e zera os gates de dedup pra que o próximo poll re-emita o título derivado da conversa.
+export function pinSessionTitle(id: string, title: string): void {
+  const t = title.trim()
+  if (!t) {
+    pinnedTitles.delete(id)
+    lastTitle.delete(id)
+    lastTitleMtime.delete(id) // força syncAiTitle a re-parsear e re-emitir o título derivado
+    return
+  }
+  pinnedTitles.add(id)
+  lastTitle.set(id, t)
+  events.onTitle?.(id, t)
 }
 
 export function killPty(id: string): void {

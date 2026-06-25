@@ -55,6 +55,7 @@ interface WorkspaceTreeProps {
   onDeleteClaudeSession: (ws: string, sessionId: string) => void
   onToggleExpand: (ws: string) => void
   onSelectSession: (ws: string, sessionId: string) => void
+  onRenameSession: (ws: string, sessionId: string, title: string) => void
   onNewSession: (ws: string) => void
   onCloseSession: (ws: string, sessionId: string) => void
   onCloseWorkspace: (ws: string) => void
@@ -79,6 +80,7 @@ export default function WorkspaceTree({
   nameOf,
   onToggleExpand,
   onSelectSession,
+  onRenameSession,
   onNewSession,
   onCloseSession,
   onCloseWorkspace,
@@ -88,6 +90,8 @@ export default function WorkspaceTree({
 }: WorkspaceTreeProps): React.JSX.Element {
   // Per-workspace toggle for the "sessões anteriores" list (claude conversations not open as tabs).
   const [prevOpenFor, setPrevOpenFor] = useState<Record<string, boolean>>({})
+  // Rename inline da aba: duplo-clique no nome abre um input. { id, value } enquanto edita; null fora.
+  const [editing, setEditing] = useState<{ id: string; value: string } | null>(null)
   // Force-show children of the previewed workspace so the highlighted session is visible,
   // without mutating the user's persistent expanded state.
   const visualExpanded =
@@ -153,17 +157,41 @@ export default function WorkspaceTree({
                   className={`wstree-session ${isActiveSession ? 'wstree-session-active' : ''} ${isPreviewedSession ? 'wstree-session-previewed' : ''}`}
                   key={s.id}
                 >
-                  <button
-                    type="button"
-                    className="wstree-session-btn"
-                    title={s.label}
-                    onClick={() => onSelectSession(ws, s.id)}
-                  >
-                    <span
-                      className={`wstree-dot ${act?.active ? 'wstree-dot-on' : ''} ${act?.done ? 'wstree-dot-done' : ''}`}
+                  {editing?.id === s.id ? (
+                    <input
+                      className="wstree-session-edit"
+                      autoFocus
+                      value={editing.value}
+                      spellCheck={false}
+                      onChange={(e) => setEditing({ id: s.id, value: e.target.value })}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          onRenameSession(ws, s.id, editing.value)
+                          setEditing(null)
+                        } else if (e.key === 'Escape') {
+                          setEditing(null)
+                        }
+                      }}
+                      onBlur={() => {
+                        onRenameSession(ws, s.id, editing.value)
+                        setEditing(null)
+                      }}
                     />
-                    <span className="wstree-session-name">{s.label}</span>
-                  </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="wstree-session-btn"
+                      title={s.label}
+                      onClick={() => onSelectSession(ws, s.id)}
+                      onDoubleClick={() => setEditing({ id: s.id, value: s.label })}
+                    >
+                      <span
+                        className={`wstree-dot ${act?.active ? 'wstree-dot-on' : ''} ${act?.done ? 'wstree-dot-done' : ''}`}
+                      />
+                      <span className="wstree-session-name">{s.label}</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="wstree-x"

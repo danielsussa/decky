@@ -218,6 +218,9 @@ const deckApi = {
   },
   sessions: {
     getTitles: (): Promise<Record<string, string>> => wsInvoke(L, 'sessions:get-titles'),
+    // Rename manual da aba (duplo-clique). Fixa o título; '' desfixa e volta pro aiTitle.
+    setTitle: (id: string, title: string): Promise<boolean> =>
+      wsInvoke(L, 'sessions:set-title', { id, title }),
     onTitleChange: (
       callback: (msg: { id: string; title: string; pinned?: boolean }) => void
     ): (() => void) =>

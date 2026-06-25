@@ -121,6 +121,7 @@ export interface DeckAPI {
   }
   sessions: {
     getTitles: () => Promise<Record<string, string>>
+    setTitle: (id: string, title: string) => Promise<boolean>
     onTitleChange: (
       callback: (msg: { id: string; title: string; pinned?: boolean }) => void
     ) => () => void

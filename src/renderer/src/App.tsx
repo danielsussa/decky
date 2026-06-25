@@ -2598,6 +2598,20 @@ function App(): React.JSX.Element {
     setWorkspace(ws)
   }
 
+  // Rename manual da aba (duplo-clique no nome da sessão). Fixa o título no server (o aiTitle do claude
+  // para de sobrescrever) e atualiza `titles` na hora — fonte de maior prioridade no label da aba.
+  // Título vazio = desfixar: limpa o local e o server volta a derivar do aiTitle/1º-prompt.
+  const renameSession = (_ws: string, sid: string, title: string): void => {
+    const t = title.trim()
+    setTitles((prev) => {
+      const next = { ...prev }
+      if (t) next[sid] = t
+      else delete next[sid]
+      return next
+    })
+    void window.deck.sessions.setTitle(sid, t)
+  }
+
   const newSessionIn = (ws: string): void => {
     if (ws === workspace) {
       newSession()
@@ -3257,6 +3271,7 @@ function App(): React.JSX.Element {
                   onDeleteClaudeSession={deleteClaudeSession}
                   onToggleExpand={toggleExpand}
                   onSelectSession={selectSession}
+                  onRenameSession={renameSession}
                   onNewSession={newSessionIn}
                   onCloseSession={handleClose}
                   onCloseWorkspace={closeWorkspace}
